@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "我的知识库" %}
+
+{% block content %}
+<div class="page-actions">
+  {{ ui.page_header("我的知识库", "这里存放 StarMind 为你沉淀好的知识页面、方法论、SOP 与可调用 Skills。") }}
+  <div class="button-row"><a class="btn primary" href="/ui/wiki/new">＋ 新建页面</a><a class="btn secondary" href="/ui/sources">查看原始资料</a></div>
+</div>
+{% if created == "agent" %}
+  <div class="notice ok">专项 Sub-Agent 已加入工作军团。</div>
+{% endif %}
+<div class="soft-notice">原始资料永久保留；知识页面、方法论、SOP 与 Skills 可持续迭代。</div>
+
+<section class="wiki-layout">
+  <aside class="glass-card wiki-tree">
+    <div class="wiki-level">
+      <span>一级目录</span>
+      <strong>内容类型</strong>
+    </div>
+    <nav class="wiki-primary-nav">
+      {% for section in wiki_sections %}
+        <a class="tree-item {{ 'active' if active_section.id == section.id else '' }}" href="/ui/wiki?section={{ section.id }}">
+          <span>{{ section.name }}</span>
+          <b>{{ section_counts.get(section.id, 0) }}</b>
+        </a>
+      {% endfor %}
+    </nav>
+    <div class="wiki-level secondary">
+      <span>二级目录</span>
+      <strong>{{ active_section.name }}</strong>
+    </div>
+    <div class="wiki-page-list wiki-secondary-list">
+      {% for page in pages[:12] %}
+        <a class="wiki-page-link {{ 'active' if selected_page and selected_page.page_id == page.page_id else '' }}" href="/ui/wiki?section={{ active_section.id }}&page_id={{ page.page_id }}">
+          <span>{{ page.title }}</span>
+          <small>{{ page.last_updated_at.strftime("%Y/%m/%d") }}</small>
+        </a>
+      {% else %}
+        <p class="tree-empty">这里还没有页面。</p>
+      {% endfor %}
+    </div>
+  </aside>
+  <article class="glass-card wiki-reader">
+    {% if selected_page %}
+      <div class="doc-title-row"><span>▣</span><h2>{{ selected_page.title }}</h2></div>
+      <div class="doc-meta-row">
+        {% for tag in selected_tags %}
+          <span class="status-chip primary">{{ tag }}</span>
+        {% endfor %}
+      </div>
+      <div class="markdown-body wiki-markdown">{{ selected_markdown_html | safe }}</div>
+    {% else %}
+      <div class="wiki-overview">
+        <span class="section-kicker">{{ active_section.name }}</span>
+        <h2>从二级目录选择一篇页面开始阅读</h2>
+        {% if pages %}
+          <p>当前一级目录下有 {{ pages | length }} 条沉淀页面。点击二级目录中的标题后，会在这里打开全文；原始视频、链接和逐字稿请到“原始资料”里查看。</p>
+        {% else %}
+          <p>当前分类还没有页面。你可以在“待处理”里选择原始资料，生成知识库页面、方法论、SOP 或 Skill。</p>
+          <a class="btn primary" href="/ui/pending">去待处理沉淀资料</a>
+        {% endif %}
+      </div>
+    {% endif %}
+  </article>
+  <aside class="wiki-side">
+    <section class="glass-card">
+      <h2>页面信息</h2>
+      <dl class="meta-list">
+        <dt>页面类型</dt><dd>{{ selected_page.page_type if selected_page else "—" }}</dd>
+        <dt>更新时间</dt><dd>{{ selected_page.last_updated_at.strftime("%Y/%m/%d %H:%M") if selected_page else "—" }}</dd>
+        <dt>标签</dt><dd>{% for tag in selected_tags %}<span class="status-chip primary">{{ tag }}</span> {% else %}—{% endfor %}</dd>
+      </dl>
+    </section>
+    <section class="glass-card">
+      <h2>引用来源</h2>
+      <div class="compact-list">
+        {% for ref in selected_refs %}
+          {% set source = source_map.get(ref.raw_source_id) %}
+          <a class="source-ref-link" href="{{ ref.url }}" target="_blank" rel="noreferrer">
+            <strong>{{ source.title if source else "原始资料" }}</strong>
+            <span>{{ ref.url }}</span>
+          </a>
+        {% else %}
+          <p>暂无引用来源</p>
+        {% endfor %}
+      </div>
+    </section>
+    <section class="glass-card agent-legion-card">
+      <h2>工作军团</h2>
+      <div class="agent-list">
+        {% for agent in agent_legion[:2] %}
+          <div>
+            <strong>{{ agent.name }}</strong>
+            <span>{{ agent.focus }}</span>
+          </div>
+        {% endfor %}
+      </div>
+      <form class="agent-form" method="post" action="/knowledge/agents">
+        <input name="name" placeholder="专项 Agent 名称" required>
+        <input name="focus" placeholder="负责什么专项工作" required>
+        <select name="cadence">
+          <option>每周</option>
+          <option>每两周</option>
+          <option>每月</option>
+          <option>按需</option>
+        </select>
+        <button class="btn secondary full" type="submit">加入工作军团</button>
+      </form>
+    </section>
+  </aside>
+</section>
+{% endblock %}

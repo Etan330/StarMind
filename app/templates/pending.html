@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "待处理内容" %}
+
+{% block content %}
+{{ ui.page_header("待处理内容", "StarMind 已经帮你初步整理好了，你只需要处理少量需要确认的内容。") }}
+
+{% if created == "passive-link" %}
+  <div class="notice ok">链接已加入待处理。</div>
+{% elif created == "manual-idea" %}
+  <div class="notice ok">想法已加入待处理，后续可以沉淀成页面或专项资料。</div>
+{% elif created == "confirmed" %}
+  <div class="notice ok">内容已确认入库。</div>
+{% elif created == "skipped" %}
+  <div class="notice">已暂时跳过。</div>
+{% elif created == "recycled" %}
+  <div class="notice ok">已放入回收站。</div>
+{% elif created == "processed" %}
+  <div class="notice ok">已生成原始资料，可继续沉淀为知识库、方法论或 SOP。</div>
+{% elif created == "batch-processed" %}
+  <div class="notice ok">已批量处理待确认内容。</div>
+{% elif created == "knowledge-page" %}
+  <div class="notice ok">已沉淀为知识库页面。</div>
+{% elif created == "methodology-page" %}
+  <div class="notice ok">已沉淀为方法论资料。</div>
+{% elif created == "sop-page" %}
+  <div class="notice ok">已生成 SOP。</div>
+{% elif created == "skill-page" %}
+  <div class="notice ok">已生成 Skill，并完成可调用性评估。</div>
+{% elif created == "duplicate-link" %}
+  <div class="notice">这个链接已经存在，StarMind 没有重复加入。</div>
+{% elif created == "classified" %}
+  <div class="notice ok">Agent 已筛选 {{ request.query_params.get('count', '0') }} 条内容：高置信知识进入原始资料，不确定内容留在待确认。</div>
+{% elif created == "restored" %}
+  <div class="notice ok">已从回收站恢复。</div>
+{% endif %}
+
+{% set default_tab = "pending" if pending_candidates else "ingested" if raw_sources else "pending" %}
+
+<section class="metric-row three">
+  {{ ui.metric_card("待确认", stats.pending_count or 0, "warning", "✓") }}
+  {{ ui.metric_card("待沉淀", stats.raw_source_count or 0, "success", "◎") }}
+  {{ ui.metric_card("回收站", stats.recycle_bin_count or 0, "danger", "⌫") }}
+</section>
+
+<section class="pending-layout">
+  <div class="glass-card item-list-card">
+    <div class="pending-card-head">
+      <div>
+        <h2>内容分拣</h2>
+        <p>先让 Agent 自动筛选，用户只处理不确定内容。</p>
+      </div>
+      <form method="post" action="/agent/classify-pending">
+        <input type="hidden" name="limit" value="20">
+        <button class="btn secondary small" type="submit" data-busy-text="正在筛选...">让 Agent 先筛一遍</button>
+      </form>
+    </div>
+    <div class="pending-tabs" data-pending-tabs>
+      <button class="{{ 'active' if default_tab == 'pending' else '' }}" type="button" data-tab-target="pending">待确认 <span>{{ pending_candidates | length }}</span></button>
+      <button class="{{ 'active' if default_tab == 'ingested' else '' }}" type="button" data-tab-target="ingested">待沉淀 <span>{{ raw_sources | length }}</span></button>
+      <button class="{{ 'active' if default_tab == 'recycled' else '' }}" type="button" data-tab-target="recycled">回收站 <span>{{ recycle_items | length }}</span></button>
+    </div>
+    <div class="item-list" data-tab-panel="pending" {{ "hidden" if default_tab != "pending" else "" }}>
+      {% for candidate in pending_candidates %}
+        <article class="content-item {{ 'active' if loop.first else '' }}"
+          data-preview-type="candidate"
+          data-preview-id="{{ candidate.id }}"
+          data-item-title="{{ candidate.title | e }}"
+          data-item-meta="{{ candidate.platform }} · {{ candidate.created_at.strftime('%Y/%m/%d') }}"
+          data-item-url="{{ candidate.canonical_url | e }}"
+          data-item-status="待确认">
+          <div class="source-avatar">{{ candidate.platform[:2] | upper }}</div>
+          <div>
+            <strong>{{ candidate.title }}</strong>
+            <p>{{ candidate.platform }} · {{ candidate.created_at.strftime("%Y/%m/%d") }}</p>
+            <small>{{ candidate.canonical_url[:96] }}{% if candidate.canonical_url|length > 96 %}...{% endif %}</small>
+          </div>
+          <span class="status-chip warning">待确认</span>
+        </article>
+      {% else %}
+        {{ ui.empty_state("暂无待确认内容", "新的收藏、链接或想法进入后，会先出现在这里等待你判断。") }}
+      {% endfor %}
+    </div>
+    <div class="item-list" data-tab-panel="ingested" {{ "hidden" if default_tab != "ingested" else "" }}>
+      {% for source in raw_sources %}
+        <article class="content-item {{ 'active' if not pending_candidates and loop.first else '' }}"
+          data-preview-type="source"
+          data-preview-id="{{ source.id }}"
+          data-item-title="{{ source.title | e }}"
+          data-item-meta="{{ source.platform }} · {{ source.created_at.strftime('%Y/%m/%d') }}"
+          data-item-url="{{ source.canonical_url | e }}"
+          data-item-status="待沉淀">
+          <div class="source-avatar">{{ source.platform[:2] | upper }}</div>
+          <div>
+            <strong>{{ source.title }}</strong>
+            <p>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</p>
+            <small>{{ source.canonical_url[:96] }}{% if source.canonical_url|length > 96 %}...{% endif %}</small>
+          </div>
+          <span class="status-chip success">已入库</span>
+        </article>
+      {% else %}
+        {{ ui.empty_state("暂无待沉淀资料", "确认入库后会出现在这里，再继续生成知识库、方法论、SOP 或 Skill。") }}
+      {% endfor %}
+    </div>
+    <div class="item-list" data-tab-panel="recycled" {{ "hidden" if default_tab != "recycled" else "" }}>
+      {% for item in recycle_items %}
+        <article class="content-item"
+          data-preview-type="recycled"
+          data-preview-id="{{ item.id }}"
+          data-item-title="{{ item.title | e }}"
+          data-item-meta="{{ item.platform }} · {{ item.archived_at.strftime('%Y/%m/%d') }}"
+          data-item-url="{{ item.canonical_url | e }}"
+          data-item-status="回收站">
+          <div class="source-avatar">{{ item.platform[:2] | upper }}</div>
+          <div>
+            <strong>{{ item.title }}</strong>
+            <p>{{ item.platform }} · {{ item.archived_at.strftime("%Y/%m/%d") }}</p>
+            <small>{{ item.reason }}</small>
+          </div>
+          <span class="status-chip danger">回收站</span>
+        </article>
+      {% else %}
+        {{ ui.empty_state("回收站为空", "被你放入回收站的内容会出现在这里。") }}
+      {% endfor %}
+    </div>
+  </div>
+
+  <aside class="glass-card preview-card">
+    {% set initial_source = selected_source if not selected_candidate else none %}
+    <div class="preview-source" data-preview-source>
+      {% if selected_candidate %}待确认{% elif initial_source %}待沉淀{% else %}未选择{% endif %}
+    </div>
+    <h2 data-preview-title>{{ selected_candidate.title if selected_candidate else initial_source.title if initial_source else "选择一条内容查看预览" }}</h2>
+    <p data-preview-meta>{{ selected_candidate.platform ~ " · " ~ selected_candidate.created_at.strftime("%Y/%m/%d") if selected_candidate else initial_source.platform ~ " · " ~ initial_source.created_at.strftime("%Y/%m/%d") if initial_source else "StarMind 会在这里展示摘要、提取片段和来源信息。" }}</p>
+    <div class="quote-box" data-preview-url>{{ selected_candidate.canonical_url if selected_candidate else initial_source.canonical_url if initial_source else "流程：待确认 → 确认入库 → 待沉淀 → 知识库 / 方法论 / SOP / Skill。" }}</div>
+    <div class="action-stack">
+      <div data-actions-candidate {{ "" if selected_candidate else "hidden" }}>
+        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/confirm" data-candidate-action="confirm"><button class="btn primary full" type="submit">确认入库</button></form>
+        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/skip" data-candidate-action="skip"><button class="btn secondary full" type="submit">暂时跳过</button></form>
+        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/recycle" data-candidate-action="recycle"><button class="btn danger full" type="submit">放入回收站</button></form>
+      </div>
+      <div data-actions-source {{ "hidden" if selected_candidate or not initial_source else "" }}>
+        <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="page">
+          <input type="hidden" name="page_type" value="knowledge">
+          <input type="hidden" name="force" value="1">
+          <button class="btn primary full" type="submit" data-busy-text="正在生成知识页...">沉淀到知识库</button>
+        </form>
+        <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="methodology">
+          <input type="hidden" name="page_type" value="methodology">
+          <input type="hidden" name="force" value="1">
+          <button class="btn secondary full" type="submit" data-busy-text="正在生成方法论...">生成方法论</button>
+        </form>
+        <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="sop">
+          <input type="hidden" name="page_type" value="sop">
+          <input type="hidden" name="force" value="1">
+          <button class="btn secondary full" type="submit" data-busy-text="正在生成 SOP...">生成 SOP</button>
+        </form>
+        <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="skill">
+          <input type="hidden" name="page_type" value="skill">
+          <input type="hidden" name="force" value="1">
+          <button class="btn secondary full" type="submit" data-busy-text="正在生成 Skill...">生成 Skill</button>
+        </form>
+      </div>
+      <div data-actions-recycled hidden>
+        <form method="post" action="/recycle/0/restore" data-recycled-action="review">
+          <input type="hidden" name="target" value="review">
+          <button class="btn secondary full" type="submit">恢复到待确认</button>
+        </form>
+        <form method="post" action="/recycle/0/restore" data-recycled-action="knowledge">
+          <input type="hidden" name="target" value="knowledge">
+          <button class="btn primary full" type="submit">恢复并标为知识</button>
+        </form>
+      </div>
+      <div data-actions-empty {{ "hidden" if selected_candidate or initial_source else "" }}>
+        <a class="btn secondary full" href="/">回到首页同步收藏夹</a>
+      </div>
+    </div>
+  </aside>
+</section>
+{% endblock %}

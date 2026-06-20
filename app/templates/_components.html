@@ -1,0 +1,30 @@
+{% macro page_header(title, subtitle="", badge="") %}
+<header class="page-header">
+  <div>
+    <h1>{{ title }}</h1>
+    {% if subtitle %}<p>{{ subtitle }}</p>{% endif %}
+  </div>
+  {% if badge %}<span class="header-badge">{{ badge }}</span>{% endif %}
+</header>
+{% endmacro %}
+
+{% macro metric_card(label, value, tone="primary", icon="") %}
+<article class="metric-card {{ tone }}">
+  {% if icon %}<span class="metric-icon">{{ icon }}</span>{% endif %}
+  <div>
+    <span>{{ label }}</span>
+    <strong>{{ value }}</strong>
+  </div>
+</article>
+{% endmacro %}
+
+{% macro status_chip(label, tone="neutral") %}
+<span class="status-chip {{ tone }}">{{ label }}</span>
+{% endmacro %}
+
+{% macro empty_state(title, subtitle="") %}
+<div class="empty-state">
+  <strong>{{ title }}</strong>
+  {% if subtitle %}<p>{{ subtitle }}</p>{% endif %}
+</div>
+{% endmacro %}

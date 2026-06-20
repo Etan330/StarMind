@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="{{ 'en' if ui_lang == 'en' else 'zh-CN' }}">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title or "StarMind" }}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/css/design-system.css">
+    <link rel="stylesheet" href="/static/css/animations.css">
+    <link rel="stylesheet" href="/static/css/components.css">
+    <link rel="stylesheet" href="/static/css/pages.css">
+    <link rel="stylesheet" href="/static/css/product-redesign.css">
+  </head>
+  <body>
+    <div class="app-ambient-bg" aria-hidden="true">
+      <span class="ambient-orb orb-a"></span>
+      <span class="ambient-orb orb-b"></span>
+      <span class="ambient-orb orb-c"></span>
+    </div>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/">
+          <span class="brand-mark">✦</span>
+          <span>
+            <strong>StarMind</strong>
+          </span>
+        </a>
+        <nav class="nav">
+          <a class="{{ 'active' if active == 'home' else '' }}" href="/"><span>⌂</span>{{ nav_labels.home }}</a>
+          <a class="{{ 'active' if active == 'connectors' else '' }}" href="/ui/connectors" data-tour-order="2" data-tour-title="连接收藏来源" data-tour-body="这里专门连接抖音、小红书、Bilibili 等收藏夹来源；单独粘贴链接不放在这里。"><span>◎</span>{{ nav_labels.connectors }}</a>
+          <a class="{{ 'active' if active == 'pending' else '' }}" href="/ui/pending" data-tour-order="4" data-tour-title="处理少量不确定内容" data-tour-body="同步后，Agent 会先筛选；你只需要确认少量边界内容，并把资料沉淀为知识页面、SOP 或 Skill。"><span>▱</span>{{ nav_labels.pending }}</a>
+          <a class="{{ 'active' if active == 'sources' else '' }}" href="/ui/sources" data-tour-order="5" data-tour-title="查看原始资料" data-tour-body="原始资料会保留作者、来源、链接和逐字稿。Agent 不会删除它们，方便你随时回看证据。"><span>▭</span>{{ nav_labels.sources }}</a>
+          <a class="{{ 'active' if active == 'wiki' else '' }}" href="/ui/wiki" data-tour-order="6" data-tour-title="阅读沉淀成果" data-tour-body="知识库只展示沉淀后的知识页面、方法论、SOP 和 Skills，不直接混入原始资料。"><span>◉</span>{{ nav_labels.wiki }}</a>
+        </nav>
+        <div class="sidebar-bottom">
+          <nav class="nav utility-nav">
+            <a class="{{ 'active' if active == 'activation' else '' }}" href="/ui/activation" data-tour-order="8" data-tour-title="让知识主动回来" data-tour-body="激活规则用于定期唤醒沉淀资料，让知识不再吃灰。你可以设置每日、每周或按需运行。"><span>✺</span>{{ nav_labels.activation }}</a>
+            <a class="{{ 'active' if active == 'settings' else '' }}" href="/ui/settings" data-tour-order="9" data-tour-title="配置模型方案" data-tour-body="在这里保存 DeepSeek 等模型方案。保存后的方案会出现在首页提问框，方便随时切换。"><span>⚙</span>{{ nav_labels.settings }}</a>
+          </nav>
+          <form class="language-switch" method="post" action="/ui/language">
+            <input type="hidden" name="next" value="{{ request.url.path }}">
+            <button name="language" value="zh" class="{{ 'active' if ui_lang == 'zh' else '' }}" type="submit">中</button>
+            <button name="language" value="en" class="{{ 'active' if ui_lang == 'en' else '' }}" type="submit">EN</button>
+          </form>
+        </div>
+      </aside>
+
+      <main class="content-shell">
+        <section class="page-surface">
+          {% block content %}{% endblock %}
+        </section>
+      </main>
+    </div>
+    {% block scripts %}{% endblock %}
+    <script src="/static/app.js"></script>
+    <script>
+      (() => {
+        const steps = Array.from(document.querySelectorAll("[data-tour-title]")).sort((a, b) => {
+          const aOrder = Number(a.dataset.tourOrder || "999");
+          const bOrder = Number(b.dataset.tourOrder || "999");
+          return aOrder - bOrder;
+        });
+        if (!steps.length) return;
+
+        let index = 0;
+        const mask = document.createElement("div");
+        mask.className = "tour-mask";
+        const spotlight = document.createElement("div");
+        spotlight.className = "tour-spotlight";
+        const card = document.createElement("div");
+        card.className = "tour-card";
+        document.body.append(mask, spotlight, card);
+
+        const render = () => {
+          const target = steps[index];
+          const rect = target.getBoundingClientRect();
+          spotlight.style.width = `${rect.width + 18}px`;
+          spotlight.style.height = `${rect.height + 18}px`;
+          spotlight.style.left = `${rect.left - 9 + window.scrollX}px`;
+          spotlight.style.top = `${rect.top - 9 + window.scrollY}px`;
+
+          const cardWidth = 286;
+          const preferRight = rect.left + rect.width + cardWidth + 28 < window.innerWidth;
+          const left = preferRight ? rect.right + 20 : Math.max(20, rect.left - cardWidth - 20);
+          const top = Math.min(window.innerHeight - 190, Math.max(20, rect.top + rect.height / 2 - 82));
+          card.style.left = `${left + window.scrollX}px`;
+          card.style.top = `${top + window.scrollY}px`;
+          card.dataset.side = preferRight ? "left" : "right";
+          card.innerHTML = `
+            <span class="tour-step">第 ${index + 1} 步 / ${steps.length}</span>
+            <strong>${target.dataset.tourTitle}</strong>
+            <p>${target.dataset.tourBody}</p>
+            <div class="tour-actions">
+              <button type="button" data-tour-skip>跳过</button>
+              <button type="button" data-tour-next>${index === steps.length - 1 ? "完成" : "下一步"}</button>
+            </div>
+          `;
+          target.classList.add("tour-target");
+          steps.forEach((item, itemIndex) => {
+            if (itemIndex !== index) item.classList.remove("tour-target");
+          });
+        };
+
+        const close = () => {
+          mask.remove();
+          spotlight.remove();
+          card.remove();
+          steps.forEach((item) => item.classList.remove("tour-target"));
+          document.body.classList.remove("tour-open");
+        };
+
+        card.addEventListener("click", (event) => {
+          if (event.target.matches("[data-tour-skip]")) close();
+          if (event.target.matches("[data-tour-next]")) {
+            if (index >= steps.length - 1) {
+              close();
+              return;
+            }
+            index += 1;
+            render();
+          }
+        });
+
+        window.addEventListener("resize", render);
+        window.addEventListener("scroll", render, { passive: true });
+        window.addEventListener("load", () => {
+          document.body.classList.add("tour-open");
+          render();
+        });
+      })();
+    </script>
+  </body>
+</html>

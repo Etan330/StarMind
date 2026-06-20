@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "连接来源" %}
+
+{% block content %}
+{{ ui.page_header("连接来源", "这里只管理收藏夹和平台数据源，按常用程度与知识价值排序。") }}
+
+{% if scan %}
+  <div class="notice ok">同步已完成：{{ scan }}</div>
+{% endif %}
+{% if created %}
+  <div class="notice ok">连接来源已创建：{{ created }}</div>
+{% endif %}
+
+<section class="source-list">
+  {% for preset in platform_presets %}
+    {% set connector = connectors_by_platform.get(preset.platform) %}
+    {% set connection = source_connections.get(preset.platform) %}
+    {% set status = "需接入采集" if connection and connection.status == "configured_only" else "已配置" if connection else "已连接" if connector else preset.status %}
+    <article class="source-row glass-card">
+      <div class="source-logo">
+        {% if preset.logo_url %}
+          <img src="{{ preset.logo_url }}" alt="{{ preset.name }} logo">
+        {% else %}
+          <span>✦</span>
+        {% endif %}
+      </div>
+      <div class="source-main">
+        <div class="source-title-line">
+          <h2>{{ preset.name }}</h2>
+          {{ ui.status_chip(status, "success" if status in ["已连接", "已配置"] else "warning" if status in ["开发中", "需接入采集"] else "neutral") }}
+          <span class="source-fit">{{ preset.fit }}</span>
+        </div>
+        <p>{{ preset.reason }}</p>
+        <small>接入方式：{{ preset.auth_hint }}</small>
+      </div>
+      <div class="source-action">
+        {% if connector and connector.connector_type == "browser_douyin" %}
+          <a class="btn primary" href="/ui/source-setup/{{ preset.platform }}">继续同步</a>
+        {% elif connection and connection.status == "configured_only" %}
+          <a class="btn secondary" href="/ui/source-setup/{{ preset.platform }}">查看接入状态</a>
+        {% else %}
+          <a class="btn secondary" href="/ui/source-setup/{{ preset.platform }}">{{ preset.action }}</a>
+        {% endif %}
+      </div>
+    </article>
+  {% endfor %}
+</section>
+
+<section class="glass-card platform-decision-card">
+  <details>
+    <summary>暂不放进第一批的平台</summary>
+    <div class="platform-exclusion-list">
+      {% for item in platform_exclusions %}
+        <div><strong>{{ item.name }}</strong><span>{{ item.reason }}</span></div>
+      {% endfor %}
+    </div>
+  </details>
+</section>
+
+<section class="glass-card advanced-card">
+  <details>
+    <summary>高级信息：边界链接同步</summary>
+    <div class="advanced-grid">
+      {% for connector in connectors %}
+        <div class="advanced-item">
+          <span>{{ connector.name }}</span>
+          <code>last_top_url：{{ connector.last_top_url or "—" }}</code><br>
+          <code>last_boundary_url：{{ connector.last_boundary_url or "—" }}</code><br>
+          <code>scan_mode：{{ connector.scan_mode or "boundary_url" }}</code>
+        </div>
+      {% else %}
+        <div class="advanced-item">
+          <span>暂无连接来源</span>
+          <code>连接抖音、小红书或其他平台后，这里会显示边界链接。</code>
+        </div>
+      {% endfor %}
+      <div class="advanced-item">
+        <span>Sync Ledger</span>
+        {% for item in recent_ledger %}
+          <code>{{ item.platform }} · {{ item.canonical_url }}</code><br>
+        {% else %}
+          <code>暂无同步记录</code>
+        {% endfor %}
+      </div>
+    </div>
+  </details>
+</section>
+{% endblock %}

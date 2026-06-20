@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "原始资料" %}
+
+{% block content %}
+{{ ui.page_header("原始资料", "按进入方式查看资料。点击条目先在本地查看内容，再决定是否打开原始链接。", "Agent 禁止删除") }}
+
+<section class="raw-source-layout">
+  <div class="source-groups">
+    <article class="source-group glass-card" data-source-group="favorites">
+      <details open>
+        <summary><span>收藏夹<small>点击展开 / 收起</small></span><b>{{ favorite_sources | length }}</b></summary>
+        <div class="source-group-list" data-expand-list>
+          {% for source in favorite_sources %}
+            <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-expand-item>
+              <strong>{{ source.title }}</strong>
+              <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+            </a>
+          {% else %}
+            {{ ui.empty_state("还没有来自收藏夹的资料", "先同步一次收藏夹。") }}
+          {% endfor %}
+        </div>
+        {% if favorite_sources | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+      </details>
+    </article>
+
+    <article class="source-group glass-card" data-source-group="distill">
+      <details>
+        <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_requests | length }}</b></summary>
+        <div class="source-group-list" data-expand-list>
+          {% for item in distill_requests %}
+            <a class="source-line" href="/ui/distill" data-expand-item>
+              <strong>{{ item.target_name }}</strong>
+              <span>{{ item.platform }} · {{ item.category }} · {{ item.status }}</span>
+            </a>
+          {% else %}
+            {{ ui.empty_state("还没有博主蒸馏资料", "在首页或蒸馏页面创建第一个任务。") }}
+          {% endfor %}
+        </div>
+        {% if distill_requests | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+      </details>
+    </article>
+
+    <article class="source-group glass-card" data-source-group="links">
+      <details>
+        <summary><span>用户贴的链接<small>点击展开 / 收起</small></span><b>{{ link_items | length }}</b></summary>
+        <div class="source-group-list" data-expand-list>
+          {% for item in link_items %}
+            <a class="source-line" href="/ui/pending" data-expand-item>
+              <strong>{{ item.title }}</strong>
+              <span>{{ item.platform }} · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
+            </a>
+          {% else %}
+            {{ ui.empty_state("还没有单独导入的链接", "用“导入链接”功能加入第一条。") }}
+          {% endfor %}
+        </div>
+        {% if link_items | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+      </details>
+    </article>
+
+    <article class="source-group glass-card" data-source-group="ideas">
+      <details>
+        <summary><span>临时 idea<small>点击展开 / 收起</small></span><b>{{ idea_items | length }}</b></summary>
+        <div class="source-group-list" data-expand-list>
+          {% for item in idea_items %}
+            <a class="source-line" href="/ui/pending" data-expand-item>
+              <strong>{{ item.title }}</strong>
+              <span>手动录入 · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
+            </a>
+          {% else %}
+            {{ ui.empty_state("还没有手动想法", "用“记录想法”功能把临时 idea 写进来。") }}
+          {% endfor %}
+        </div>
+        {% if idea_items | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+      </details>
+    </article>
+  </div>
+
+  <aside class="glass-card raw-source-preview">
+    {% if selected_source %}
+      <div class="raw-preview-kicker">本地原始资料</div>
+      <header class="raw-preview-head">
+        <h2>{{ selected_source.title }}</h2>
+        <span class="status-chip primary">{{ selected_source_type_label }}</span>
+      </header>
+      <section class="raw-meta-grid">
+        <div>
+          <span>来源平台</span>
+          <strong>{{ selected_source.platform }}</strong>
+        </div>
+        <div>
+          <span>作者</span>
+          <strong>{{ selected_source.author or "未知" }}</strong>
+        </div>
+        <div>
+          <span>逐字稿状态</span>
+          <strong>{{ selected_metadata.transcript_status or "待补全" }}</strong>
+        </div>
+        <div>
+          <span>入库时间</span>
+          <strong>{{ selected_source.created_at.strftime("%Y/%m/%d %H:%M") }}</strong>
+        </div>
+      </section>
+      <section class="transcript-panel raw-transcript-card">
+        <div class="panel-label">逐字稿 / 页面可见文本</div>
+        <pre>{{ selected_transcript or selected_raw_text or "当前还没有拿到平台字幕或音频 ASR 文本。已先保存链接、标题和页面信息，等待后续 ASR 任务补全。" }}</pre>
+      </section>
+      <div class="source-preview-actions">
+        <a class="btn secondary full" href="{{ selected_source.canonical_url }}" target="_blank" rel="noreferrer">打开原始链接</a>
+      </div>
+    {% else %}
+      <div class="wiki-overview">
+        <span class="section-kicker">原始资料</span>
+        <h2>选择左侧资料查看详情</h2>
+        <p>StarMind 会优先展示作者、来源、逐字稿和本地文本。原始链接会作为单独按钮提供，不会直接跳走。</p>
+      </div>
+    {% endif %}
+  </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll("[data-expand-list]").forEach((list) => {
+    const items = Array.from(list.querySelectorAll("[data-expand-item]"));
+    const button = list.parentElement.querySelector("[data-expand-button]");
+    let visible = 5;
+    const render = () => {
+      items.forEach((item, index) => {
+        item.hidden = index >= visible;
+      });
+      if (button) {
+        button.hidden = visible >= items.length;
+        const next = Math.min(visible + 5, items.length);
+        button.textContent = `显示更多（${next}/${items.length}）`;
+      }
+    };
+    if (button) {
+      button.addEventListener("click", () => {
+        visible += 5;
+        render();
+      });
+    }
+    render();
+  });
+</script>
+{% endblock %}

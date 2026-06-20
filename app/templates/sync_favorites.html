@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% set title = "同步收藏夹" %}
+
+{% block content %}
+<section class="feature-page">
+  <div class="feature-intro glass-card">
+    <h1>同步收藏夹</h1>
+    <p>这是 StarMind 的第一入口。先连接抖音收藏夹，让真实收藏进入待处理和原始资料。</p>
+    {% if scan %}<div class="notice ok">同步已完成。</div>{% endif %}
+    {% if created %}<div class="notice ok">收藏夹配置已创建。</div>{% endif %}
+  </div>
+  <div class="feature-form-card glass-card">
+    <h2>抖音收藏夹</h2>
+    <a class="btn primary full" href="/ui/source-setup/douyin">打开抖音接入</a>
+    <a class="btn secondary full" href="/ui/connectors">管理连接来源</a>
+  </div>
+</section>
+{% endblock %}

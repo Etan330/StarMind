@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "模型设置" %}
+
+{% block content %}
+{{ ui.page_header("模型设置", "保存多套模型方案，并按任务快速切换。") }}
+
+{% if status %}
+  <div class="notice ok">已保存：{{ status }}</div>
+{% endif %}
+{% if test %}
+  <div class="notice {{ 'ok' if test == 'success' else 'bad' }}">连接测试：{{ "成功" if test == "success" else "失败" }}</div>
+{% endif %}
+
+{% include "_model_settings_panel.html" %}
+{% endblock %}

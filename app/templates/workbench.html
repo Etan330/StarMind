@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "收藏消化台" %}
+
+{% block content %}
+<div class="page-actions">
+  {{ ui.page_header("收藏消化台", "只保留让收藏夹重新发挥价值的内容。") }}
+  <div class="button-row">
+    <a class="btn primary" href="/ui/sync">同步收藏夹</a>
+    <button class="btn secondary" id="save-layout" type="button">保存排序</button>
+    <button class="btn ghost" id="reset-layout" type="button">恢复默认</button>
+  </div>
+</div>
+
+<section class="digest-workbench" id="workbench-app">
+  <div class="digest-board" id="workbench-grid" data-layout='{{ layout | tojson }}' data-modules='{{ modules | tojson }}' data-stats='{{ workbench_stats | tojson }}'></div>
+  <aside class="glass-card digest-side">
+    <h2>今天只做一件事</h2>
+    <p>从待确认里选几条真正有价值的收藏，把它们推进知识库。</p>
+    <div class="digest-actions">
+      <a class="btn primary full" href="/ui/pending">处理待确认</a>
+      <a class="btn secondary full" href="/ui/wiki">查看知识库</a>
+    </div>
+  </aside>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/workbench.js"></script>
+{% endblock %}

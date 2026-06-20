@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% set title = "博主蒸馏" %}
+
+{% block content %}
+<section class="feature-page">
+  <div class="feature-intro glass-card">
+    <h1>博主蒸馏</h1>
+    <p>输入一个主页链接，把该作者的内容沉淀到一个新的分类中。</p>
+    {% if created %}<div class="notice ok">蒸馏任务已创建。</div>{% endif %}
+  </div>
+  <div class="feature-form-card glass-card">
+    <h2>创建蒸馏任务</h2>
+    <form class="feature-form" method="post" action="/distill/profile">
+      <input type="hidden" name="next" value="/ui/distill?created=distill-profile">
+      <select name="platform">
+        <option>抖音</option>
+        <option>Reddit</option>
+        <option>YouTube</option>
+        <option>Bilibili</option>
+        <option>GitHub</option>
+        <option>其他</option>
+      </select>
+      <input name="target_name" placeholder="博主 / 作者名称">
+      <input name="profile_url" placeholder="主页链接" required>
+      <input name="category" placeholder="新分类名称">
+      <button class="btn primary full" type="submit">创建任务</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

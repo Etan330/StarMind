@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "知识激活" %}
+
+{% block content %}
+{{ ui.page_header("知识激活", "定期把沉淀的资料重新推到你面前，避免知识库继续吃灰。") }}
+
+{% if saved == "run" %}
+  <div class="notice ok">已完成一次本地试运行，规则状态已更新。</div>
+{% elif saved %}
+  <div class="notice ok">激活规则已保存。</div>
+{% endif %}
+
+<section class="activation-guide glass-card">
+  <div>
+    <span>1</span>
+    <strong>选择触发方式</strong>
+    <p>按天、按周、打开首页或提问时触发。</p>
+  </div>
+  <div>
+    <span>2</span>
+    <strong>限定内容范围</strong>
+    <p>指定最近收藏、某个主题、SOP 或方法论。</p>
+  </div>
+  <div>
+    <span>3</span>
+    <strong>保存并试运行</strong>
+    <p>先本地保存规则，再手动跑一次确认效果。</p>
+  </div>
+</section>
+
+<section class="activation-toolbar">
+  <button class="btn primary" type="button" data-open-modal="#activation-new">新增激活规则</button>
+  <a class="btn secondary" href="/ui/wiki">查看知识库</a>
+</section>
+
+<section class="activation-grid refined-activation-grid">
+  {% for rule in rules %}
+    <article class="glass-card activation-rule">
+      <div class="rule-head">
+        <strong>{{ rule.name }}</strong>
+        {{ ui.status_chip(rule.status or "未启用", "success" if rule.status == "已启用" else "primary") }}
+      </div>
+      <dl class="meta-list">
+        <dt>触发</dt><dd>{{ rule.trigger }}</dd>
+        <dt>频率</dt><dd>{{ rule.cadence or "按需" }}{% if rule.run_time %} · {{ rule.run_time }}{% endif %}</dd>
+        <dt>内容</dt><dd>{{ rule.focus }}</dd>
+        <dt>推送</dt><dd>{{ rule.delivery or "首页提醒" }} · {{ rule.limit or 3 }} 条</dd>
+        {% if rule.last_run_at %}<dt>上次运行</dt><dd>{{ rule.last_run_at }}</dd>{% endif %}
+      </dl>
+      <div class="activation-card-actions">
+        <button class="btn secondary" type="button" data-open-modal="#activation-{{ rule.id }}">配置</button>
+        <form method="post" action="/activation/rules/{{ rule.id }}/run">
+          <button class="btn primary" type="submit">立即试运行</button>
+        </form>
+      </div>
+    </article>
+
+    <div class="modal-shell" id="activation-{{ rule.id }}" hidden>
+      <section class="modal-card activation-modal">
+        <button class="modal-close" type="button" data-close-modal>×</button>
+        <h2>配置：{{ rule.name }}</h2>
+        <form class="settings-form" method="post" action="/activation/rules">
+          <input type="hidden" name="rule_id" value="{{ rule.id }}">
+          <label class="form-field">规则名称<input name="name" value="{{ rule.name }}" required></label>
+          <label class="form-field">触发条件<input name="trigger" value="{{ rule.trigger }}" placeholder="比如：每天第一次打开首页"></label>
+          <label class="form-field">频率
+            <select name="cadence">
+              {% for item in ["每天", "每周", "每月", "提问时", "按需"] %}
+                <option value="{{ item }}" {{ "selected" if rule.cadence == item else "" }}>{{ item }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="form-field">运行时间<input name="run_time" value="{{ rule.run_time or '' }}" placeholder="比如：09:30"></label>
+          <label class="form-field">模型方案
+            <select name="model_profile_id">
+              <option value="">使用当前默认方案</option>
+              {% for profile in model_profiles %}
+                <option value="{{ profile.id }}" {{ "selected" if rule.model_profile_id == profile.id else "" }}>{{ profile.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="form-field">每次推送数量<input name="limit" type="number" min="1" max="20" value="{{ rule.limit or 3 }}"></label>
+          <label class="form-field">推送位置
+            <select name="delivery">
+              {% for item in ["首页提醒", "待处理", "知识库侧栏"] %}
+                <option value="{{ item }}" {{ "selected" if rule.delivery == item else "" }}>{{ item }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="form-field wide">推送内容<textarea name="focus" required>{{ rule.focus }}</textarea></label>
+          <button class="btn primary full" type="submit">保存规则</button>
+        </form>
+      </section>
+    </div>
+  {% endfor %}
+</section>
+
+<div class="modal-shell" id="activation-new" hidden>
+  <section class="modal-card activation-modal">
+    <button class="modal-close" type="button" data-close-modal>×</button>
+    <h2>新增激活规则</h2>
+    <form class="settings-form" method="post" action="/activation/rules">
+      <label class="form-field">规则名称<input name="name" placeholder="比如：每周产品灵感回顾" required></label>
+      <label class="form-field">触发条件<input name="trigger" placeholder="比如：每周一上午"></label>
+      <label class="form-field">频率
+        <select name="cadence">
+          <option>每周</option>
+          <option>每天</option>
+          <option>每月</option>
+          <option>提问时</option>
+          <option>按需</option>
+        </select>
+      </label>
+      <label class="form-field">运行时间<input name="run_time" placeholder="比如：09:30"></label>
+      <label class="form-field">模型方案
+        <select name="model_profile_id">
+          <option value="">使用当前默认方案</option>
+          {% for profile in model_profiles %}
+            <option value="{{ profile.id }}">{{ profile.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="form-field">每次推送数量<input name="limit" type="number" min="1" max="20" value="3"></label>
+      <label class="form-field">推送位置
+        <select name="delivery">
+          <option>首页提醒</option>
+          <option>待处理</option>
+          <option>知识库侧栏</option>
+        </select>
+      </label>
+      <label class="form-field wide">推送内容<textarea name="focus" placeholder="比如：推送最近 7 天收藏中关于产品设计的 5 条资料" required></textarea></label>
+      <button class="btn primary full" type="submit">保存规则</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% set title = "新建知识页面" %}
+
+{% block content %}
+<section class="feature-page">
+  <div class="feature-intro glass-card">
+    <h1>新建知识页面</h1>
+    <p>把已经确认有价值的内容整理成知识页面、方法论、SOP 或 iDA Agent Skill。</p>
+  </div>
+  <div class="feature-form-card glass-card">
+    <h2>页面内容</h2>
+    <form class="feature-form" method="post" action="/wiki/pages">
+      <input name="title" placeholder="页面标题" required>
+      <select name="page_type">
+        <option value="knowledge">知识页面</option>
+        <option value="methodology">方法论</option>
+        <option value="sop">SOP</option>
+        <option value="skill">Skill</option>
+      </select>
+      <textarea name="content" placeholder="先写一个草稿，后续可以继续迭代。"></textarea>
+      <button class="btn primary full" type="submit">保存页面</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,94 @@
+{% set current_provider = providers.get(settings.default_provider) %}
+<section class="model-settings-layout unified-model-settings {{ 'has-profiles' if model_profiles else 'no-profiles' }}">
+  <article class="glass-card model-profile-create model-config-primary">
+    <div class="section-kicker">模型配置</div>
+    <h2>保存一个可直接调用的模型方案</h2>
+    <p class="panel-subtitle">选择厂商和模型，粘贴 API Key，保存后会自动成为首页提问框里的可选方案。</p>
+    <form class="settings-form" method="post" action="/settings/model-profiles">
+      <input type="hidden" name="activate" value="on">
+      <label class="form-field">配置名称
+        <input name="name" placeholder="比如：DeepSeek 日常问答">
+      </label>
+      <label class="form-field">模型厂商</label>
+      <div class="provider-picker" data-provider-picker data-provider-configs='{{ providers | tojson }}'>
+        <select name="provider" aria-label="模型厂商">
+          {% for provider_id, provider in providers.items() %}
+            {% if not provider.hidden %}
+              <option value="{{ provider_id }}" {{ "selected" if settings.default_provider == provider_id else "" }}>
+                {{ provider.display_name }}
+              </option>
+            {% endif %}
+          {% endfor %}
+        </select>
+        <div class="provider-picker-face">
+          <strong data-provider-name>{{ current_provider.display_name if current_provider else settings.default_provider }}</strong>
+          <span data-provider-url>{{ current_provider.base_url if current_provider else "" }}</span>
+          <small data-provider-key>{{ current_provider.api_key_label if current_provider else "API Key" }}</small>
+        </div>
+      </div>
+
+      <label class="form-field model-choice-field">模型
+        <select name="model" data-model-input data-current-model="{{ settings.default_model }}" aria-label="模型">
+          <option value="{{ settings.default_model }}" selected>{{ settings.default_model }}</option>
+        </select>
+      </label>
+      <label class="form-field">API Key
+        <input name="api_key" type="password" autocomplete="off" placeholder="{{ '已保存在本地，留空则继续使用原 Key' if settings.has_api_key else '粘贴 API Key' }}">
+      </label>
+      <label class="form-field">适用场景
+        <input name="use_case" placeholder="比如：知识库问答、长文总结、代码审查">
+      </label>
+      <div class="settings-actions three">
+        <button class="btn primary" type="submit">保存并启用</button>
+        <button class="btn secondary" type="submit" formaction="/settings/model/test">测试连接</button>
+        <button class="btn danger" type="submit" formaction="/settings/model/clear-key">清除 Key</button>
+      </div>
+    </form>
+  </article>
+
+  <aside class="model-side-stack">
+    <article class="glass-card model-current-card">
+      <div class="section-kicker">当前使用</div>
+      <div class="current-model-head">
+        <div>
+          <h2>{{ current_provider.display_name if current_provider else settings.default_provider }}</h2>
+          <p>{{ settings.default_model }}</p>
+        </div>
+        <span class="status-chip {{ 'success' if settings.has_api_key else 'warning' }}">
+          {{ "Key 已保存" if settings.has_api_key else "等待 API Key" }}
+        </span>
+      </div>
+      <p class="panel-subtitle">首页提问会默认使用这个模型方案；你也可以在提问框里切换其他已保存配置。</p>
+    </article>
+
+    <article class="glass-card model-profile-card">
+      <div class="section-kicker">提问时可直接切换</div>
+      <h2>已保存配置</h2>
+      {% if model_profiles %}
+        <div class="model-profile-list">
+          {% for profile in model_profiles %}
+            {% set provider_meta = providers.get(profile.provider) %}
+            {% set is_active = profile.id == active_profile_id %}
+            <article class="model-profile {{ 'active' if is_active else '' }}">
+              <div>
+                <strong>{{ profile.name }}</strong>
+                <span>{{ provider_meta.display_name if provider_meta else profile.provider }} · {{ profile.model }}</span>
+                {% if profile.use_case %}<small>{{ profile.use_case }}</small>{% endif %}
+              </div>
+              <form method="post" action="/settings/model-profiles/{{ profile.id }}/activate">
+                <button class="btn {{ 'primary' if is_active else 'secondary' }} profile-switch" type="submit">
+                  {{ "使用中" if is_active else "切换" }}
+                </button>
+              </form>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state compact-empty">
+          <strong>还没有保存方案</strong>
+          <p>保存上面的配置后，这里会出现可切换的模型方案。</p>
+        </div>
+      {% endif %}
+    </article>
+  </aside>
+</section>

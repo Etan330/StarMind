@@ -1,0 +1,17 @@
+from __future__ import annotations
+
+PENDING_CLASSIFICATION = "pending_classification"
+CLASSIFIED_KNOWLEDGE = "classified_knowledge"
+CLASSIFIED_UNCERTAIN = "classified_uncertain"
+ARCHIVED_RECOVERABLE = "archived_recoverable"
+INGESTED = "ingested"
+SKIPPED = "skipped"
+RECYCLED = "recycled"
+ARCHIVED = "archived"
+PURGED = "purged"
+
+KNOWLEDGE_CONFIDENCE = 0.75
+UNCERTAIN_CONFIDENCE = 0.45
+
+REVIEWABLE_STATUSES = {PENDING_CLASSIFICATION, CLASSIFIED_UNCERTAIN}
+RECYCLE_STATUSES = {ARCHIVED_RECOVERABLE, ARCHIVED, RECYCLED}

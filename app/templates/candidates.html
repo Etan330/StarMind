@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% set title = "StarMind Candidate Pool" %}
+
+{% block content %}
+<header class="page-header">
+  <div>
+    <p class="eyebrow">Pre-classification intake</p>
+    <h1>Candidate Pool</h1>
+  </div>
+  <a class="button" href="/ui/connectors">Open Connectors</a>
+</header>
+
+<section class="table-panel">
+  <div class="section-heading">
+    <h2>Scanned Items</h2>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Title</th>
+        <th>Platform</th>
+        <th>Canonical URL</th>
+        <th>Status</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for candidate in candidates %}
+      <tr>
+        <td>{{ candidate.title }}</td>
+        <td>{{ candidate.platform }}</td>
+        <td class="url-cell">{{ candidate.canonical_url }}</td>
+        <td><span class="pill">{{ candidate.status }}</span></td>
+        <td>{{ candidate.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty">No candidates yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}
+
+{% block rail %}
+<section class="rail-section">
+  <h2>Next Route</h2>
+  <p class="muted">Phase 4 will classify these rows into Raw Sources, Review Queue, or Recycle Bin.</p>
+</section>
+{% endblock %}
+

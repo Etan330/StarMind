@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% set title = "记录想法" %}
+
+{% block content %}
+<section class="feature-page">
+  <div class="feature-intro glass-card">
+    <h1>记录想法</h1>
+    <p>把突然冒出来的 idea 放进 StarMind，后续再整理成页面、SOP 或专项 Agent。</p>
+    {% if created %}<div class="notice ok">想法已保存。</div>{% endif %}
+  </div>
+  <div class="feature-form-card glass-card">
+    <h2>写入知识库待处理</h2>
+    <form class="feature-form" method="post" action="/manual/idea">
+      <input type="hidden" name="next" value="/ui/idea?created=manual-idea">
+      <input name="title" placeholder="一句话标题" required>
+      <textarea name="content" placeholder="写下你的想法" required></textarea>
+      <input name="tags" placeholder="标签，可选">
+      <button class="btn primary full" type="submit">保存想法</button>
+    </form>
+  </div>
+</section>
+{% endblock %}

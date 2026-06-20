@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% set title = "导入链接" %}
+
+{% block content %}
+<section class="feature-page">
+  <div class="feature-intro glass-card">
+    <h1>导入链接</h1>
+    <p>这个入口只处理不在收藏夹里的单个链接。</p>
+    {% if created %}<div class="notice ok">链接已加入待处理。</div>{% endif %}
+  </div>
+  <div class="feature-form-card glass-card">
+    <h2>粘贴一个链接</h2>
+    <form class="feature-form" method="post" action="/passive/link">
+      <input type="hidden" name="next" value="/ui/import-link?created=passive-link">
+      <input name="url" placeholder="https://example.com/article" required>
+      <input name="title" placeholder="标题，可选">
+      <button class="btn primary full" type="submit">加入待处理</button>
+    </form>
+    <a class="btn secondary full" href="/ui/pending">查看待处理</a>
+  </div>
+</section>
+{% endblock %}

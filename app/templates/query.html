@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "向知识库提问" %}
+
+{% block content %}
+{{ ui.page_header("向知识库提问", "直接提问，StarMind 会优先基于你的知识库与原始资料回答。") }}
+<section class="query-layout">
+  <div class="chat-panel glass-card">
+    <div class="user-bubble">帮我总结最近收藏里关于 AI Agent 的核心方法论。</div>
+    <div class="assistant-answer">
+      <span class="answer-orb">✦</span>
+      <div class="answer-card">
+        <p>根据你的收藏内容，我总结了 AI Agent 的核心方法论：</p>
+        <h3>核心定义</h3>
+        <p>AI Agent 是围绕目标、规划、工具调用和反馈迭代构建的智能执行系统。</p>
+        <h3>关键能力</h3>
+        <p>目标拆解、工具连接、上下文管理、执行监控和结果评估。</p>
+        <h3>落地建议</h3>
+        <p>先从单点场景验证价值，再沉淀 SOP，并持续用知识健康检查优化结构。</p>
+      </div>
+    </div>
+    <div class="query-actions"><button class="btn secondary">写成页面</button><button class="btn secondary">生成 SOP</button></div>
+    <div class="chat-input">问点什么，比如：帮我整理最近收藏的核心观点 <button>➤</button></div>
+  </div>
+  <aside class="glass-card citation-panel">
+    <h2>引用来源</h2>
+    <h3>知识库页面</h3>
+    {% for page in pages %}
+      <p>{{ page.title }}</p>
+    {% else %}
+      <p>AI Agent 方法论</p>
+    {% endfor %}
+    <h3>原始资料</h3>
+    {% for source in sources %}
+      <p>{{ source.title }}</p>
+    {% else %}
+      <p>OpenAI Function Calling 最佳实践</p>
+    {% endfor %}
+  </aside>
+</section>
+{% endblock %}

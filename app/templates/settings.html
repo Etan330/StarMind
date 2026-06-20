@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "设置" %}
+
+{% block content %}
+{{ ui.page_header("设置", "连接模型、保存常用方案，并确认本地数据隔离。") }}
+
+{% if status %}<div class="notice ok">已保存：{{ status }}</div>{% endif %}
+{% if test %}<div class="notice {{ 'ok' if test == 'success' else 'bad' }}">连接测试：{{ "成功" if test == "success" else "失败" }}</div>{% endif %}
+
+{% include "_model_settings_panel.html" %}
+
+<section class="settings-support-grid">
+  <div class="glass-card support-card">
+    <h2>数据隔离</h2>
+    <dl class="meta-list">
+      <dt>原始资料</dt><dd>local_data/raw_sources/</dd>
+      <dt>知识库</dt><dd>local_data/wiki/</dd>
+      <dt>SOP</dt><dd>local_data/sop/</dd>
+      <dt>配置</dt><dd>local_data/config/</dd>
+    </dl>
+  </div>
+  <div class="glass-card support-card">
+    <h2>知识激活</h2>
+    <p>把沉淀的内容重新推到用户面前，避免知识库继续吃灰。</p>
+    <a class="btn secondary full" href="/ui/activation">查看激活规则</a>
+  </div>
+  <div class="glass-card support-card">
+    <h2>自定义模型接口</h2>
+    <form class="settings-form custom-provider-form" method="post" action="/settings/providers/custom">
+      <label class="form-field">显示名称<input name="display_name" placeholder="本地模型网关"></label>
+      <label class="form-field">Base URL<input name="base_url" placeholder="http://localhost:11434/v1"></label>
+      <label class="form-field">首个模型<input name="model" placeholder="local-model"></label>
+      <label class="form-field">Key 名称<input name="api_key_label" value="API Key"></label>
+      <button class="btn secondary" type="submit">添加接口</button>
+    </form>
+  </div>
+</section>
+{% endblock %}
