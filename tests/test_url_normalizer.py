@@ -1,3 +1,4 @@
+from app.api.routes import douyin_profile_base_url, douyin_profile_vid_fallback
 from app.services.url_normalizer import normalize_url
 
 
@@ -31,3 +32,21 @@ def test_douyin_normalization_extracts_video_id():
     assert normalized.platform == "douyin"
     assert normalized.external_item_id == "7380000112233"
     assert normalized.canonical_url == "https://www.douyin.com/video/7380000112233"
+
+
+def test_douyin_jingxuan_modal_id_normalizes_to_video_url():
+    normalized = normalize_url("https://www.douyin.com/jingxuan?modal_id=7648123596673550565")
+
+    assert normalized.platform == "douyin"
+    assert normalized.external_item_id == "7648123596673550565"
+    assert normalized.canonical_url == "https://www.douyin.com/video/7648123596673550565"
+
+
+def test_douyin_profile_helpers_strip_modal_query_and_build_vid_fallback():
+    profile_url = "https://www.douyin.com/user/abc?from_tab_name=main&vid=7648123596673550565"
+
+    assert douyin_profile_base_url(profile_url) == "https://www.douyin.com/user/abc"
+    fallback = douyin_profile_vid_fallback(profile_url, "李厂长来了")
+    assert fallback is not None
+    assert fallback.raw_url == "https://www.douyin.com/video/7648123596673550565"
+    assert fallback.author == "李厂长来了"
