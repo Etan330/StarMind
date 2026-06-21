@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "处理状态" %}
+
+{% block content %}
+{{ ui.page_header("正在蒸馏这条信息", "StarMind 会保存来源证据、生成可审核结果，并在你确认后沉淀到知识库。", task.primary_action) }}
+
+{% if created == "passive-link" %}
+  <div class="notice ok">链接任务已创建。下一步先保存来源证据。</div>
+{% elif created == "manual-idea" %}
+  <div class="notice ok">想法已保存。下一步先保存来源证据。</div>
+{% elif created == "raw-source" %}
+  <div class="notice ok">来源证据已保存。原始输入不会被 AI 覆盖，下一步生成可审核草稿。</div>
+{% endif %}
+
+<section class="task-v2-grid">
+  <article class="glass-card task-step-card">
+    <div class="panel-title-row">
+      <div>
+        <h2>处理路径</h2>
+        <p>{{ task.summary }}</p>
+      </div>
+      {{ ui.status_chip(candidate.status, "warning" if candidate.status in ["pending_classification", "classified_uncertain"] else "success" if candidate.status == "ingested" else "neutral") }}
+    </div>
+    <ol class="activation-stepper">
+      <li class="{{ 'done' if raw_source else 'current' }}">
+        <span>1</span>
+        <div><strong>保存来源证据</strong><p>{% if raw_source %}来源证据 #{{ raw_source.id }} 已保留。{% else %}把输入变成可追溯的原始材料。{% endif %}</p></div>
+      </li>
+      <li class="{{ 'done' if task.has_page and task.latest_page.status == 'active' else 'current' if task.has_page else 'todo' }}">
+        <span>2</span>
+        <div><strong>审核结果</strong><p>{% if task.latest_page %}{{ task.latest_page.title }} · {{ task.latest_page.status }}{% else %}生成带来源的蒸馏草稿。{% endif %}</p></div>
+      </li>
+      <li class="{{ 'current' if task.is_reviewed else 'todo' }}">
+        <span>3</span>
+        <div><strong>问一次</strong><p>保存后基于页面发起一个真实问题，完成首次复用。</p></div>
+      </li>
+    </ol>
+  </article>
+
+  <aside class="glass-card task-next-card">
+    <h2>下一步</h2>
+    <div class="action-stack">
+      {% if not raw_source %}
+        <button class="btn primary full" type="button" data-open-modal="#raw-source-confirm-modal">保存来源证据</button>
+        <form method="post" action="/candidates/{{ candidate.id }}/recycle">
+          <button class="btn danger full" type="submit">放入回收站</button>
+        </form>
+      {% elif raw_source and not task.latest_page %}
+        <button class="btn primary full" type="button" data-open-modal="#agent-confirm-modal">生成可审核结果</button>
+        <a class="btn secondary full" href="/ui/sources?source_id={{ raw_source.id }}">查看来源证据</a>
+      {% elif task.latest_page and task.latest_page.status == "needs_review" %}
+        <a class="btn primary full" href="/ui/review/{{ task.latest_page.page_id }}">审核 AI 草稿</a>
+        <a class="btn secondary full" href="/ui/sources?source_id={{ raw_source.id }}">查看来源证据</a>
+      {% elif task.latest_page %}
+        <form method="get" action="/ui/wiki">
+          <input type="hidden" name="page_id" value="{{ task.latest_page.page_id }}">
+          <input type="hidden" name="q" value="{{ task.latest_page.title }} 的核心观点是什么？">
+          <button class="btn primary full" type="submit">基于页面提问</button>
+        </form>
+        <a class="btn secondary full" href="/ui/wiki?page_id={{ task.latest_page.page_id }}">打开知识页</a>
+      {% else %}
+        <a class="btn primary full" href="/ui/history">回到历史记录</a>
+      {% endif %}
+    </div>
+  </aside>
+
+  <aside class="glass-card task-input-card">
+    <h2>输入与边界</h2>
+    <dl class="meta-list">
+      <dt>标题</dt><dd>{{ candidate.title }}</dd>
+      <dt>来源</dt><dd>{{ candidate.source_type }} · {{ candidate.platform }}</dd>
+      <dt>URL</dt><dd><a href="{{ candidate.canonical_url }}" target="_blank" rel="noreferrer">{{ candidate.canonical_url }}</a></dd>
+      <dt>创建时间</dt><dd>{{ candidate.created_at.strftime("%Y/%m/%d %H:%M") }}</dd>
+      <dt>分类审计</dt>
+      <dd>
+        {% if classification %}
+          {{ classification.label }} · {{ (classification.confidence * 100) | round(0) }}%
+          <br><small>{{ classification.reason }}</small>
+        {% else %}
+          尚未分类。直接保存时会写入人工确认审计。
+        {% endif %}
+      </dd>
+    </dl>
+    <div class="v1-callout">来源证据是不可被 AI 覆盖的证据层；知识页面是派生结果，必须经过人工确认。</div>
+  </aside>
+</section>
+
+{% if not raw_source %}
+  <div class="modal-shell" id="raw-source-confirm-modal" hidden>
+    <section class="modal-card v2-confirm-modal">
+      <button class="modal-close" type="button" data-close-modal aria-label="关闭">×</button>
+      <h2>保存来源证据</h2>
+      <p>系统会保留原始标题、链接和可见文本。若这条内容尚未经过模型分类，会写入人工确认审计。</p>
+      <div class="v1-callout">这一步只保存证据层，不会自动生成或发布知识页面。</div>
+      <div class="button-row">
+        <form method="post" action="/candidates/{{ candidate.id }}/confirm">
+          <button class="btn primary" type="submit" data-busy-text="正在保存来源证据...">确认保存</button>
+        </form>
+        <button class="btn secondary" type="button" data-close-modal>取消</button>
+      </div>
+    </section>
+  </div>
+{% elif raw_source and not task.latest_page %}
+  <div class="modal-shell" id="agent-confirm-modal" hidden>
+    <section class="modal-card v2-confirm-modal">
+      <button class="modal-close" type="button" data-close-modal aria-label="关闭">×</button>
+      <h2>开始生成可审核结果？</h2>
+      <p>StarMind 将基于已保存的来源证据生成草稿。草稿不会自动进入知识库，必须在结果确认页由你审核保存。</p>
+      <dl class="meta-list">
+        <dt>来源证据</dt><dd>#{{ raw_source.id }} · {{ raw_source.title }}</dd>
+        <dt>生成类型</dt><dd>知识页</dd>
+      </dl>
+      <div class="button-row">
+        <form method="post" action="/agent/raw-sources/{{ raw_source.id }}/create-page">
+          <input type="hidden" name="page_type" value="knowledge">
+          <button class="btn primary" type="submit" data-busy-text="正在生成草稿...">确认执行</button>
+        </form>
+        <button class="btn secondary" type="button" data-close-modal>取消</button>
+      </div>
+    </section>
+  </div>
+{% endif %}
+{% endblock %}

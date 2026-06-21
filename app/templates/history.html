@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "历史记录" %}
+
+{% block content %}
+{{ ui.page_header("历史记录", "继续未完成处理、复用已确认结果，或回看最近沉淀内容。") }}
+
+<section class="history-v2-layout">
+  <article class="glass-card history-task-center">
+    <div class="panel-title-row">
+      <div>
+        <h2>任务</h2>
+        <p>按最近导入排序，显示每条内容当前应继续的步骤。</p>
+      </div>
+      <a class="btn primary" href="/">输入新信息</a>
+    </div>
+    <div class="task-card-list">
+      {% for card in task_cards %}
+        <article class="task-history-card">
+          <div>
+            <strong>{{ card.candidate.title }}</strong>
+            <span>{{ card.candidate.source_type }} · {{ card.candidate.status }} · {{ card.candidate.created_at.strftime("%Y/%m/%d %H:%M") }}</span>
+            <p>{{ card.summary }}</p>
+          </div>
+          <div class="task-history-actions">
+            {{ ui.status_chip(card.primary_action, "warning" if card.current_step in ["save-source", "review-result"] else "success" if card.current_step == "ask-page" else "primary") }}
+            <a class="btn secondary" href="/ui/task/candidate/{{ card.candidate.id }}">继续</a>
+            {% if card.latest_page and card.latest_page.status == "active" %}
+              <a class="btn secondary" href="/ui/wiki?page_id={{ card.latest_page.page_id }}&q={{ card.latest_page.title }} 的核心观点是什么？">复用</a>
+            {% endif %}
+          </div>
+        </article>
+      {% else %}
+        {{ ui.empty_state("还没有任务历史", "导入一个链接后，这里会显示可继续和可复用的任务。") }}
+      {% endfor %}
+    </div>
+  </article>
+
+  <aside class="history-side">
+    <section class="glass-card">
+      <h2>最近知识页面</h2>
+      <div class="compact-list">
+        {% for page in pages %}
+          <a class="source-ref-link" href="{{ '/ui/review/' ~ page.page_id if page.status == 'needs_review' else '/ui/wiki?page_id=' ~ page.page_id }}">
+            <strong>{{ page.title }}</strong>
+            <span>{{ page.page_type }} · {{ page.status }} · {{ page.last_updated_at.strftime("%Y/%m/%d") }}</span>
+          </a>
+        {% else %}
+          <p>暂无知识页面。</p>
+        {% endfor %}
+      </div>
+    </section>
+    <section class="glass-card">
+      <h2>同步日志</h2>
+      <div class="compact-list">
+        {% for log in logs[:10] %}
+          <div class="log-line">
+            <strong>{{ log.level }}</strong>
+            <span>{{ log.message }}</span>
+            <small>{{ log.created_at.strftime("%Y/%m/%d %H:%M") }}</small>
+          </div>
+        {% else %}
+          <p>暂无同步日志。</p>
+        {% endfor %}
+      </div>
+    </section>
+  </aside>
+</section>
+{% endblock %}

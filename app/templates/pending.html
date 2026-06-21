@@ -16,7 +16,7 @@
 {% elif created == "recycled" %}
   <div class="notice ok">已放入回收站。</div>
 {% elif created == "processed" %}
-  <div class="notice ok">已生成原始资料，可继续沉淀为知识库、方法论或 SOP。</div>
+  <div class="notice ok">已保存来源证据，可继续沉淀为知识库、方法论或 SOP。</div>
 {% elif created == "batch-processed" %}
   <div class="notice ok">已批量处理待确认内容。</div>
 {% elif created == "knowledge-page" %}
@@ -30,7 +30,7 @@
 {% elif created == "duplicate-link" %}
   <div class="notice">这个链接已经存在，StarMind 没有重复加入。</div>
 {% elif created == "classified" %}
-  <div class="notice ok">Agent 已筛选 {{ request.query_params.get('count', '0') }} 条内容：高置信知识进入原始资料，不确定内容留在待确认。</div>
+  <div class="notice ok">AI 已筛选 {{ request.query_params.get('count', '0') }} 条内容：高置信内容进入来源证据，不确定内容留在待确认。</div>
 {% elif created == "restored" %}
   <div class="notice ok">已从回收站恢复。</div>
 {% endif %}
@@ -48,11 +48,11 @@
     <div class="pending-card-head">
       <div>
         <h2>内容分拣</h2>
-        <p>先让 Agent 自动筛选，用户只处理不确定内容。</p>
+        <p>先让 AI 自动筛选，你只处理不确定内容。</p>
       </div>
       <form method="post" action="/agent/classify-pending">
         <input type="hidden" name="limit" value="20">
-        <button class="btn secondary small" type="submit" data-busy-text="正在筛选...">让 Agent 先筛一遍</button>
+        <button class="btn secondary small" type="submit" data-busy-text="正在筛选...">让 AI 先筛一遍</button>
       </form>
     </div>
     <div class="pending-tabs" data-pending-tabs>
@@ -62,18 +62,32 @@
     </div>
     <div class="item-list" data-tab-panel="pending" {{ "hidden" if default_tab != "pending" else "" }}>
       {% for candidate in pending_candidates %}
+        {% set classification = classification_map.get(candidate.id) %}
         <article class="content-item {{ 'active' if loop.first else '' }}"
           data-preview-type="candidate"
           data-preview-id="{{ candidate.id }}"
           data-item-title="{{ candidate.title | e }}"
           data-item-meta="{{ candidate.platform }} · {{ candidate.created_at.strftime('%Y/%m/%d') }}"
           data-item-url="{{ candidate.canonical_url | e }}"
-          data-item-status="待确认">
+          data-item-status="待确认"
+          data-item-reason="{{ classification.reason | e if classification else '尚未执行分类，或分类结果仍待生成。' }}">
           <div class="source-avatar">{{ candidate.platform[:2] | upper }}</div>
           <div>
             <strong>{{ candidate.title }}</strong>
             <p>{{ candidate.platform }} · {{ candidate.created_at.strftime("%Y/%m/%d") }}</p>
             <small>{{ candidate.canonical_url[:96] }}{% if candidate.canonical_url|length > 96 %}...{% endif %}</small>
+            {% if classification %}
+              <div class="classification-line">
+                {{ ui.status_chip(classification.label, "warning" if classification.label == "uncertain" else "success" if classification.label == "knowledge" else "danger") }}
+                <span>置信度 {{ (classification.confidence * 100) | round(0) }}%</span>
+                <span>{{ classification.reason }}</span>
+              </div>
+            {% else %}
+              <div class="classification-line">
+                {{ ui.status_chip(candidate.status, "warning") }}
+                <span>等待 AI 分类或人工确认。</span>
+              </div>
+            {% endif %}
           </div>
           <span class="status-chip warning">待确认</span>
         </article>
@@ -96,10 +110,10 @@
             <p>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</p>
             <small>{{ source.canonical_url[:96] }}{% if source.canonical_url|length > 96 %}...{% endif %}</small>
           </div>
-          <span class="status-chip success">已入库</span>
+          <span class="status-chip success">待沉淀</span>
         </article>
       {% else %}
-        {{ ui.empty_state("暂无待沉淀资料", "确认入库后会出现在这里，再继续生成知识库、方法论、SOP 或 Skill。") }}
+        {{ ui.empty_state("暂无待沉淀资料", "确认后会出现在这里，再继续生成知识库、方法论、SOP 或 Skill。") }}
       {% endfor %}
     </div>
     <div class="item-list" data-tab-panel="recycled" {{ "hidden" if default_tab != "recycled" else "" }}>
@@ -132,18 +146,30 @@
     </div>
     <h2 data-preview-title>{{ selected_candidate.title if selected_candidate else initial_source.title if initial_source else "选择一条内容查看预览" }}</h2>
     <p data-preview-meta>{{ selected_candidate.platform ~ " · " ~ selected_candidate.created_at.strftime("%Y/%m/%d") if selected_candidate else initial_source.platform ~ " · " ~ initial_source.created_at.strftime("%Y/%m/%d") if initial_source else "StarMind 会在这里展示摘要、提取片段和来源信息。" }}</p>
-    <div class="quote-box" data-preview-url>{{ selected_candidate.canonical_url if selected_candidate else initial_source.canonical_url if initial_source else "流程：待确认 → 确认入库 → 待沉淀 → 知识库 / 方法论 / SOP / Skill。" }}</div>
+    {% if selected_candidate %}
+      {% set initial_classification = classification_map.get(selected_candidate.id) %}
+    {% else %}
+      {% set initial_classification = none %}
+    {% endif %}
+    <div class="quote-box" data-preview-url>
+      {{ selected_candidate.canonical_url if selected_candidate else initial_source.canonical_url if initial_source else "流程：待确认 → 保存来源证据 → 生成草稿 → 结果审核 → 知识库。" }}
+      {% if initial_classification %}
+        <hr>
+        <strong>分类原因</strong><br>{{ initial_classification.reason }}<br>
+        <small>{{ initial_classification.label }} · {{ (initial_classification.confidence * 100) | round(0) }}%</small>
+      {% endif %}
+    </div>
     <div class="action-stack">
       <div data-actions-candidate {{ "" if selected_candidate else "hidden" }}>
-        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/confirm" data-candidate-action="confirm"><button class="btn primary full" type="submit">确认入库</button></form>
+        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/confirm" data-candidate-action="confirm"><button class="btn primary full" type="submit">确认并保存来源证据</button></form>
         <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/skip" data-candidate-action="skip"><button class="btn secondary full" type="submit">暂时跳过</button></form>
-        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/recycle" data-candidate-action="recycle"><button class="btn danger full" type="submit">放入回收站</button></form>
+        <form method="post" action="/candidates/{{ selected_candidate.id if selected_candidate else 0 }}/recycle" data-candidate-action="recycle" data-confirm-message="内容不会被删除，你可以稍后从回收站恢复。确认放入回收站？"><button class="btn danger full" type="submit">放入回收站</button></form>
       </div>
       <div data-actions-source {{ "hidden" if selected_candidate or not initial_source else "" }}>
         <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="page">
           <input type="hidden" name="page_type" value="knowledge">
           <input type="hidden" name="force" value="1">
-          <button class="btn primary full" type="submit" data-busy-text="正在生成知识页...">沉淀到知识库</button>
+          <button class="btn primary full" type="submit" data-busy-text="正在生成知识页...">生成知识页草稿</button>
         </form>
         <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="methodology">
           <input type="hidden" name="page_type" value="methodology">
@@ -155,11 +181,7 @@
           <input type="hidden" name="force" value="1">
           <button class="btn secondary full" type="submit" data-busy-text="正在生成 SOP...">生成 SOP</button>
         </form>
-        <form method="post" action="/agent/raw-sources/{{ initial_source.id if initial_source else 0 }}/create-page" data-source-action="skill">
-          <input type="hidden" name="page_type" value="skill">
-          <input type="hidden" name="force" value="1">
-          <button class="btn secondary full" type="submit" data-busy-text="正在生成 Skill...">生成 Skill</button>
-        </form>
+        <div class="v1-callout">生成后会进入结果确认页。你确认保存前，它只是 AI 草稿。</div>
       </div>
       <div data-actions-recycled hidden>
         <form method="post" action="/recycle/0/restore" data-recycled-action="review">

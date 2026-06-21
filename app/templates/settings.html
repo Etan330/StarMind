@@ -19,11 +19,12 @@
       <dt>SOP</dt><dd>local_data/sop/</dd>
       <dt>配置</dt><dd>local_data/config/</dd>
     </dl>
+    <div class="v1-callout v1-warning">API Key 保存在本地配置目录中，界面不会明文回显。不要提交 `local_data/`。</div>
   </div>
   <div class="glass-card support-card">
-    <h2>知识激活</h2>
-    <p>把沉淀的内容重新推到用户面前，避免知识库继续吃灰。</p>
-    <a class="btn secondary full" href="/ui/activation">查看激活规则</a>
+    <h2>当前边界</h2>
+    <p>当前版本聚焦首页输入、四种入口、结果审核、历史复用和本地事件日志。稳定多平台同步、云端协作和严格页面级追问属于后续版本。</p>
+    <a class="btn secondary full" href="/ui/guide">查看主路径</a>
   </div>
   <div class="glass-card support-card">
     <h2>自定义模型接口</h2>
@@ -34,6 +35,26 @@
       <label class="form-field">Key 名称<input name="api_key_label" value="API Key"></label>
       <button class="btn secondary" type="submit">添加接口</button>
     </form>
+  </div>
+  <div class="glass-card support-card">
+    <h2>本地事件日志</h2>
+    <div class="event-count-grid">
+      {% for name, count in event_counts.items() %}
+        <div><strong>{{ count }}</strong><span>{{ name }}</span></div>
+      {% else %}
+        <p>暂无事件记录。</p>
+      {% endfor %}
+    </div>
+    <div class="compact-list">
+      {% for event in recent_events %}
+        <div class="source-ref-link">
+          <strong>{{ event.event_name }}</strong>
+          <span>{{ event.created_at.strftime("%Y/%m/%d %H:%M:%S") }}</span>
+        </div>
+      {% endfor %}
+    </div>
+    <a class="btn secondary full" href="/settings/events/export">导出 JSON</a>
+    <div class="v1-callout">这是临时 tracking adapter，当前只写本地 SQLite，后续可替换为真实分析系统。</div>
   </div>
 </section>
 {% endblock %}

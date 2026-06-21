@@ -3,7 +3,7 @@
 {% set title = "连接来源" %}
 
 {% block content %}
-{{ ui.page_header("连接来源", "这里只管理收藏夹和平台数据源，按常用程度与知识价值排序。") }}
+{{ ui.page_header("连接来源", "V1 只把抖音本地浏览器同步作为实验能力；单链接导入是稳定兜底路径。") }}
 
 {% if scan %}
   <div class="notice ok">同步已完成：{{ scan }}</div>
@@ -12,47 +12,62 @@
   <div class="notice ok">连接来源已创建：{{ created }}</div>
 {% endif %}
 
-<section class="source-list">
-  {% for preset in platform_presets %}
-    {% set connector = connectors_by_platform.get(preset.platform) %}
-    {% set connection = source_connections.get(preset.platform) %}
-    {% set status = "需接入采集" if connection and connection.status == "configured_only" else "已配置" if connection else "已连接" if connector else preset.status %}
-    <article class="source-row glass-card">
-      <div class="source-logo">
-        {% if preset.logo_url %}
-          <img src="{{ preset.logo_url }}" alt="{{ preset.name }} logo">
-        {% else %}
-          <span>✦</span>
-        {% endif %}
-      </div>
-      <div class="source-main">
-        <div class="source-title-line">
-          <h2>{{ preset.name }}</h2>
-          {{ ui.status_chip(status, "success" if status in ["已连接", "已配置"] else "warning" if status in ["开发中", "需接入采集"] else "neutral") }}
-          <span class="source-fit">{{ preset.fit }}</span>
-        </div>
-        <p>{{ preset.reason }}</p>
-        <small>接入方式：{{ preset.auth_hint }}</small>
-      </div>
-      <div class="source-action">
-        {% if connector and connector.connector_type == "browser_douyin" %}
-          <a class="btn primary" href="/ui/source-setup/{{ preset.platform }}">继续同步</a>
-        {% elif connection and connection.status == "configured_only" %}
-          <a class="btn secondary" href="/ui/source-setup/{{ preset.platform }}">查看接入状态</a>
-        {% else %}
-          <a class="btn secondary" href="/ui/source-setup/{{ preset.platform }}">{{ preset.action }}</a>
-        {% endif %}
-      </div>
-    </article>
-  {% endfor %}
+{% set douyin = platform_presets | selectattr("platform", "equalto", "douyin") | list | first %}
+{% set douyin_connector = connectors_by_platform.get("douyin") %}
+{% set douyin_connection = source_connections.get("douyin") %}
+
+<section class="v1-page-grid">
+  <article class="glass-card connector-primary-card">
+    <div class="source-title-line">
+      <h2>抖音实验同步</h2>
+      {{ ui.status_chip("V1 实验性", "warning") }}
+    </div>
+    <p>StarMind 只读取你本地浏览器当前页面可见的视频链接，不绕过登录，不承诺全量稳定同步。失败时请改用单链接导入。</p>
+    <dl class="meta-list">
+      <dt>接入方式</dt><dd>本地浏览器会话</dd>
+      <dt>当前状态</dt><dd>{{ douyin_connector.status if douyin_connector else douyin.status }}</dd>
+      <dt>最近顶部链接</dt><dd><code>{{ douyin_connector.last_top_url if douyin_connector else "—" }}</code></dd>
+      <dt>最近边界链接</dt><dd><code>{{ douyin_connector.last_boundary_url if douyin_connector else "—" }}</code></dd>
+    </dl>
+    <div class="button-row">
+      <a class="btn primary" href="/ui/source-setup/douyin">打开同步页</a>
+      <a class="btn secondary" href="/ui/create?mode=link">改用导入链接</a>
+    </div>
+  </article>
+
+  <aside class="glass-card">
+    <h2>V1 来源边界</h2>
+    <div class="v1-callout">稳定主入口是单链接导入。抖音同步是加速入口，不作为最小上线唯一依赖。</div>
+    <div class="v1-callout v1-warning">不会读取或展示 Cookie、浏览器会话文件、API Key。</div>
+  </aside>
 </section>
 
-<section class="glass-card platform-decision-card">
+<section class="glass-card v1-section">
   <details>
-    <summary>暂不放进第一批的平台</summary>
-    <div class="platform-exclusion-list">
-      {% for item in platform_exclusions %}
-        <div><strong>{{ item.name }}</strong><span>{{ item.reason }}</span></div>
+    <summary>后续平台 Backlog</summary>
+    <div class="source-list backlog-source-list">
+      {% for preset in platform_presets if preset.platform != "douyin" %}
+        {% set connection = source_connections.get(preset.platform) %}
+        <article class="source-row">
+          <div class="source-logo">
+            {% if preset.logo_url %}
+              <img src="{{ preset.logo_url }}" alt="{{ preset.name }} logo">
+            {% else %}
+              <span>{{ preset.name[:1] }}</span>
+            {% endif %}
+          </div>
+          <div class="source-main">
+            <div class="source-title-line">
+              <h2>{{ preset.name }}</h2>
+              {{ ui.status_chip("后续版本" if not connection else "仅保存配置", "neutral") }}
+            </div>
+            <p>{{ preset.reason }}</p>
+            <small>接入方式设想：{{ preset.auth_hint }}</small>
+          </div>
+          <div class="source-action">
+            <a class="btn secondary" href="/ui/source-setup/{{ preset.platform }}">查看说明</a>
+          </div>
+        </article>
       {% endfor %}
     </div>
   </details>
@@ -60,23 +75,23 @@
 
 <section class="glass-card advanced-card">
   <details>
-    <summary>高级信息：边界链接同步</summary>
+    <summary>高级信息：同步账本和边界链接</summary>
     <div class="advanced-grid">
       {% for connector in connectors %}
         <div class="advanced-item">
           <span>{{ connector.name }}</span>
-          <code>last_top_url：{{ connector.last_top_url or "—" }}</code><br>
-          <code>last_boundary_url：{{ connector.last_boundary_url or "—" }}</code><br>
-          <code>scan_mode：{{ connector.scan_mode or "boundary_url" }}</code>
+          <code>last_top_url: {{ connector.last_top_url or "—" }}</code><br>
+          <code>last_boundary_url: {{ connector.last_boundary_url or "—" }}</code><br>
+          <code>scan_mode: {{ connector.scan_mode or "boundary_url" }}</code>
         </div>
       {% else %}
         <div class="advanced-item">
           <span>暂无连接来源</span>
-          <code>连接抖音、小红书或其他平台后，这里会显示边界链接。</code>
+          <code>导入或同步后会显示边界信息。</code>
         </div>
       {% endfor %}
       <div class="advanced-item">
-        <span>Sync Ledger</span>
+        <span>最近 Ledger</span>
         {% for item in recent_ledger %}
           <code>{{ item.platform }} · {{ item.canonical_url }}</code><br>
         {% else %}

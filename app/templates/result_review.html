@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "结果确认" %}
+
+{% block content %}
+{{ ui.page_header("结果确认", "先看摘要、质量边界和来源，再决定是否保存到知识库。", page.status) }}
+
+{% if validation_error == "missing-source" %}
+  <div class="notice bad">无来源引用，不能保存到知识库。请返回来源证据重新生成或补齐来源。</div>
+{% elif validation_error == "empty-body" %}
+  <div class="notice bad">正文为空，不能保存。请编辑草稿或重新生成。</div>
+{% elif saved == "review-confirmed" %}
+  <div class="notice ok">结果已确认保存。现在可以基于这篇页面提问，完成复用。</div>
+{% elif saved %}
+  <div class="notice ok">草稿已生成，等待你审核。来源证据没有被覆盖。</div>
+{% endif %}
+
+<section class="review-v2-layout">
+  <article class="glass-card review-summary-card">
+    <div class="panel-title-row">
+      <div>
+        <span class="section-kicker">AI 生成，待你确认</span>
+        <h2>{{ page.title }}</h2>
+        <p>{{ summary or "当前草稿没有可用摘要，请检查正文。" }}</p>
+      </div>
+      {{ ui.status_chip(quality_label, "success" if quality.quality_level == "ready" else "warning" if quality.quality_level in ["needs_source_check", "asr_pending", "metadata_only", "fallback"] else "danger") }}
+    </div>
+    <div class="result-preview-grid">
+      <section>
+        <h3>生成状态</h3>
+        <p>{{ generation_status_label }}</p>
+        <span>{{ page.updated_by }}</span>
+      </section>
+      <section>
+        <h3>文本状态</h3>
+        <p>{{ transcript_status_label }}</p>
+        <span>{{ quality.body_length }} 字符</span>
+      </section>
+      <section>
+        <h3>来源引用</h3>
+        <p>{{ quality.source_refs_count }} 个</p>
+        <span>保存前必须保留来源。</span>
+      </section>
+    </div>
+    {% if quality.warnings %}
+      <div class="quality-warning-list">
+        {% for warning in quality.warnings %}
+          <div class="v1-callout v1-warning">{{ warning }}</div>
+        {% endfor %}
+        <div class="v1-callout">{{ quality.suggested_action }}</div>
+      </div>
+    {% endif %}
+  </article>
+
+  <article class="glass-card review-key-points-card">
+    <div class="panel-title-row">
+      <h2>关键要点</h2>
+      <button class="btn secondary small" type="button">复制要点</button>
+    </div>
+    <ol class="key-point-list">
+      {% for point in key_points %}
+        <li>{{ point }}</li>
+      {% else %}
+        <li>当前草稿还没有提炼出稳定要点，请编辑或重新生成。</li>
+      {% endfor %}
+    </ol>
+  </article>
+
+  <aside class="review-side">
+    <section class="glass-card">
+      <h2>来源证据</h2>
+      <div class="compact-list">
+        {% for ref in refs %}
+          {% set source = source_map.get(ref.raw_source_id) %}
+          <a class="source-ref-link" href="{{ ref.url }}" target="_blank" rel="noreferrer">
+            <strong>{{ source.title if source else "来源证据" }}</strong>
+            <span>{{ ref.url }}</span>
+          </a>
+        {% else %}
+          <div class="v1-callout v1-error">没有来源引用，确认保存已禁用。</div>
+        {% endfor %}
+      </div>
+    </section>
+    {% if page.status == "active" or saved == "review-confirmed" %}
+      <section class="glass-card">
+        <h2>下一步问题</h2>
+        <div class="compact-list">
+          {% for item in suggested_questions %}
+            <form method="get" action="/ui/wiki" class="inline-query-form">
+              <input type="hidden" name="page_id" value="{{ page.page_id }}">
+              <input type="hidden" name="q" value="{{ item.question }}">
+              <button class="source-ref-link query-button" type="submit">
+                <strong>{{ item.question }}</strong>
+                <span>基于已确认页面提问</span>
+              </button>
+            </form>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+  </aside>
+</section>
+
+<form method="post" action="/wiki/pages/{{ page.page_id }}/confirm" class="review-editor-shell" data-confirm-message="确认保存这版结果？保存后页面会进入知识库，但仍保留来源证据。">
+  <section class="glass-card review-editor-card">
+    <div class="agent-output-head">
+      <strong>完整结果（可编辑）</strong>
+      <span>Page: {{ page.page_type }}</span>
+      <span>ID: {{ page.page_id }}</span>
+      <span>Status: {{ page.status }}</span>
+    </div>
+    <textarea name="markdown" class="review-editor" required>{{ markdown }}</textarea>
+    <div class="button-row sticky-review-actions">
+      <button class="btn primary" type="submit" {{ "disabled" if not refs else "" }} data-busy-text="正在保存...">确认保存到知识库</button>
+      <a class="btn secondary" href="/ui/wiki?page_id={{ page.page_id }}">先查看知识库页面</a>
+      {% if refs and source_map.get(refs[0].raw_source_id) %}
+        <a class="btn secondary" href="/ui/sources?source_id={{ refs[0].raw_source_id }}">打开来源证据</a>
+      {% endif %}
+    </div>
+  </section>
+  <section class="glass-card review-preview-card">
+    <h2>预览</h2>
+    <div class="markdown-body review-preview">{{ markdown_html | safe }}</div>
+  </section>
+</form>
+{% endblock %}

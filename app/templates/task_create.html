@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "输入确认" %}
+
+{% block content %}
+<header class="flow-header">
+  <a class="breadcrumb" href="/">首页</a>
+  <span>输入确认</span>
+  <h1>
+    {% if mode == "creator" %}蒸馏博主{% elif mode == "idea" %}记录 Idea{% elif mode == "favorites" %}同步收藏夹{% else %}确认你的输入与处理方式{% endif %}
+  </h1>
+  <p>StarMind 会先保存来源证据并生成可审核草稿。所有结果都需要你确认后才会进入知识库。</p>
+</header>
+
+{% if duplicate %}
+  <div class="notice duplicate-notice">
+    <strong>这个链接已经存在，StarMind 没有重复创建。</strong>
+    <div class="button-row">
+      {% if existing_candidate_id %}<a class="btn secondary" href="/ui/task/candidate/{{ existing_candidate_id }}">继续已有任务</a>{% endif %}
+      {% if existing_source_id %}<a class="btn secondary" href="/ui/sources?source_id={{ existing_source_id }}">查看来源证据</a>{% endif %}
+      {% if existing_page_id %}<a class="btn secondary" href="/ui/wiki?page_id={{ existing_page_id }}">打开知识页</a>{% endif %}
+    </div>
+    {% if existing_url %}<small>{{ existing_url }}</small>{% endif %}
+  </div>
+{% endif %}
+
+{% if created == "distill-profile" %}
+  <div class="notice ok">博主蒸馏请求已保存。当前为实验流程，结果完整度取决于公开可访问内容。</div>
+{% endif %}
+
+<section class="confirmation-layout">
+  <article class="confirmation-main">
+    <section class="input-summary">
+      <span class="section-kicker">输入内容</span>
+      <div class="input-summary-body">
+        <span class="mode-badge">{{ v3_input.input_type }}</span>
+        <strong>{{ v3_input.title }}</strong>
+        {% if prefill %}
+          <p>{{ prefill }}</p>
+        {% else %}
+          <p>{{ v3_input.input_hint }}</p>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="process-plan">
+      <div class="panel-title-row">
+        <div>
+          <span class="section-kicker">处理计划</span>
+          <h2>我们将按这个顺序处理</h2>
+        </div>
+        <span class="status-chip primary">需要确认</span>
+      </div>
+      <ol class="process-steps">
+        <li><strong>保存来源证据</strong><span>保留链接、标题、可见文本或你的原始想法。</span></li>
+        <li><strong>提炼摘要</strong><span>生成结构化摘要，避免只保存一条链接。</span></li>
+        <li><strong>提炼关键观点</strong><span>抽取可复用结论、行动线索和判断边界。</span></li>
+        <li><strong>收集来源证据</strong><span>把引用和出处放在结果旁边，便于核对。</span></li>
+        <li><strong>生成追问问题</strong><span>帮助你继续理解、复盘或转成 SOP。</span></li>
+      </ol>
+    </section>
+
+    {% if mode == "link" %}
+      <form class="mode-form" method="post" action="/passive/link">
+        <input type="hidden" name="process_now" value="1">
+        <label>链接
+          <input name="url" value="{{ prefill }}" placeholder="https://example.com/article" required>
+        </label>
+        <label>标题
+          <input name="title" value="{{ v3_input.title if prefill else '' }}" placeholder="可选，留空时使用链接">
+        </label>
+        <label>标签
+          <input name="tags" placeholder="可选，例如：AI, 写作, 产品">
+        </label>
+        <div class="button-row sticky-actions">
+          <a class="btn secondary" href="/">修改输入</a>
+          <button class="btn primary" type="submit" data-busy-text="正在创建任务...">确认并开始蒸馏</button>
+        </div>
+      </form>
+    {% elif mode == "favorites" %}
+      <div class="mode-form">
+        <div class="notice">同步收藏夹当前使用本地浏览器可见内容，不会绕过登录、验证码或平台限制。</div>
+        <div class="button-row">
+          <form method="post" action="/douyin/browser/open">
+            <button class="btn secondary" type="submit">打开本地浏览器</button>
+          </form>
+          <form method="post" action="/douyin/favorites/extract">
+            <input type="hidden" name="collection_limit" value="10">
+            <input type="hidden" name="process_first_ten" value="on">
+            <button class="btn primary" type="submit" data-busy-text="正在同步可见收藏...">同步前 10 条可见收藏</button>
+          </form>
+        </div>
+        <a class="btn ghost" href="/ui/source-setup/douyin">查看同步诊断</a>
+      </div>
+    {% elif mode == "creator" %}
+      <form class="mode-form" method="post" action="/distill/profile">
+        <input type="hidden" name="next" value="/ui/create?mode=creator&created=distill-profile">
+        <label>博主主页或账号
+          <input name="profile_url" value="{{ prefill }}" placeholder="https://space.bilibili.com/34931212 或公众号名称" required>
+        </label>
+        <label>平台
+          <select name="platform">
+            <option>Bilibili</option>
+            <option>微信公众号</option>
+            <option>抖音</option>
+            <option>小红书</option>
+            <option>其他公开主页</option>
+          </select>
+        </label>
+        <label>聚焦主题
+          <input name="category" placeholder="例如：AI 工具评测、生产力方法论、科技趋势">
+        </label>
+        <div class="notice warning">当前为实验能力，StarMind 只处理你提供且公开可访问的内容，不会自动登录或绕过访问限制。</div>
+        <div class="button-row sticky-actions">
+          <a class="btn secondary" href="/">修改输入</a>
+          <button class="btn primary" type="submit" data-busy-text="正在保存蒸馏请求...">开始蒸馏博主</button>
+        </div>
+      </form>
+    {% else %}
+      <form class="mode-form" method="post" action="/manual/idea">
+        {% if "Skill" in prefill or "skill" in prefill %}
+          <input type="hidden" name="process_now" value="1">
+          <input type="hidden" name="page_type" value="skill">
+        {% endif %}
+        <label>标题
+          <input name="title" value="{{ v3_input.title if prefill else '' }}" placeholder="一句话描述这个想法" required>
+        </label>
+        <label>你的想法
+          <textarea name="content" rows="8" placeholder="写下上下文、问题、观点或待整理材料" required>{{ prefill }}</textarea>
+        </label>
+        <label>标签
+          <input name="tags" placeholder="可选，例如：想法, 产品, SOP">
+        </label>
+        <div class="button-row sticky-actions">
+          <a class="btn secondary" href="/">修改输入</a>
+          <button class="btn primary" type="submit" data-busy-text="正在保存想法...">整理这个想法</button>
+        </div>
+      </form>
+    {% endif %}
+  </article>
+
+  <aside class="trust-panel">
+    <h2>你可以放心</h2>
+    <ul class="trust-list">
+      <li><strong>数据只在本地</strong><span>内容保存在你的设备上，不会默认上传或分享。</span></li>
+      <li><strong>来源完整保留</strong><span>原始链接、标题与引用证据会随结果保留。</span></li>
+      <li><strong>AI 输出需确认</strong><span>生成结果只是草稿，必须由你确认后才会沉淀。</span></li>
+    </ul>
+    <div class="side-note">{{ v3_input.output_hint }}</div>
+  </aside>
+</section>
+{% endblock %}

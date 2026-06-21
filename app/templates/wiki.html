@@ -4,13 +4,13 @@
 
 {% block content %}
 <div class="page-actions">
-  {{ ui.page_header("我的知识库", "这里存放 StarMind 为你沉淀好的知识页面、方法论、SOP 与可调用 Skills。") }}
-  <div class="button-row"><a class="btn primary" href="/ui/wiki/new">＋ 新建页面</a><a class="btn secondary" href="/ui/sources">查看原始资料</a></div>
+  {{ ui.page_header("我的知识库", "这里展示已确认的知识页面、方法论和 SOP。AI 草稿需要人工确认，且必须保留来源证据。") }}
+  <div class="button-row"><a class="btn primary" href="/">输入新信息</a><a class="btn secondary" href="/ui/sources">查看来源证据</a></div>
 </div>
-{% if created == "agent" %}
-  <div class="notice ok">专项 Sub-Agent 已加入工作军团。</div>
+{% if created == "review-confirmed" %}
+  <div class="notice ok">草稿已确认保存到知识库。</div>
 {% endif %}
-<div class="soft-notice">原始资料永久保留；知识页面、方法论、SOP 与 Skills 可持续迭代。</div>
+<div class="soft-notice">来源证据会被保留；知识页面是派生结果，可以重新生成或编辑，但不能失去来源。</div>
 
 <section class="wiki-layout">
   <aside class="glass-card wiki-tree">
@@ -34,7 +34,7 @@
       {% for page in pages[:12] %}
         <a class="wiki-page-link {{ 'active' if selected_page and selected_page.page_id == page.page_id else '' }}" href="/ui/wiki?section={{ active_section.id }}&page_id={{ page.page_id }}">
           <span>{{ page.title }}</span>
-          <small>{{ page.last_updated_at.strftime("%Y/%m/%d") }}</small>
+          <small>{{ page.status }} · {{ page.last_updated_at.strftime("%Y/%m/%d") }}</small>
         </a>
       {% else %}
         <p class="tree-empty">这里还没有页面。</p>
@@ -48,17 +48,51 @@
         {% for tag in selected_tags %}
           <span class="status-chip primary">{{ tag }}</span>
         {% endfor %}
+        {{ ui.status_chip(selected_page.status, "warning" if selected_page.status == "needs_review" else "success") }}
       </div>
+      {% if selected_page.status == "needs_review" %}
+        <div class="v1-callout v1-warning">这篇页面仍是 AI 草稿，需要在结果确认页审核后再作为最终知识使用。<a href="/ui/review/{{ selected_page.page_id }}">去审核</a></div>
+      {% endif %}
+      {% if not selected_refs %}
+        <div class="v1-callout v1-error">此页面没有来源引用，不能标记为可信 AI 生成结果。</div>
+      {% endif %}
+      <form class="wiki-inline-query" method="get" action="/ui/wiki">
+        <input type="hidden" name="page_id" value="{{ selected_page.page_id }}">
+        <input name="q" value="{{ wiki_question or '' }}" placeholder="基于这篇页面提问，例如：核心观点是什么？">
+        <button class="btn primary" type="submit">基于此页提问</button>
+      </form>
+      {% if wiki_question %}
+        <section class="agent-output-card">
+          <div class="agent-output-head">
+            <strong>基于此页追问</strong>
+            {% if wiki_answer %}
+              <span>Run: {{ wiki_answer.run_id }}</span>
+              <span>{{ wiki_answer.provider }} / {{ wiki_answer.model }}</span>
+            {% endif %}
+          </div>
+          <p class="query-question">{{ wiki_question }}</p>
+          <div class="markdown-body compact">{{ wiki_answer_html | safe if wiki_answer else "正在等待 Agent 返回。" }}</div>
+          <div class="source-chip-row">
+            {% if wiki_answer and wiki_answer.sources %}
+              {% for source in wiki_answer.sources %}
+                <span class="status-chip primary">{{ source.title }}</span>
+              {% endfor %}
+            {% else %}
+              <span class="status-chip warning">没有找到相关本地资料</span>
+            {% endif %}
+          </div>
+        </section>
+      {% endif %}
       <div class="markdown-body wiki-markdown">{{ selected_markdown_html | safe }}</div>
     {% else %}
       <div class="wiki-overview">
         <span class="section-kicker">{{ active_section.name }}</span>
         <h2>从二级目录选择一篇页面开始阅读</h2>
         {% if pages %}
-          <p>当前一级目录下有 {{ pages | length }} 条沉淀页面。点击二级目录中的标题后，会在这里打开全文；原始视频、链接和逐字稿请到“原始资料”里查看。</p>
+          <p>当前一级目录下有 {{ pages | length }} 条沉淀页面。点击二级目录中的标题后，会在这里打开全文；原始视频、链接和逐字稿请到“来源证据”里查看。</p>
         {% else %}
-          <p>当前分类还没有页面。你可以在“待处理”里选择原始资料，生成知识库页面、方法论、SOP 或 Skill。</p>
-          <a class="btn primary" href="/ui/pending">去待处理沉淀资料</a>
+          <p>当前分类还没有页面。你可以回到首页输入一条信息，生成知识页、方法论或 SOP 草稿。</p>
+          <a class="btn primary" href="/">回到首页输入</a>
         {% endif %}
       </div>
     {% endif %}
@@ -68,6 +102,7 @@
       <h2>页面信息</h2>
       <dl class="meta-list">
         <dt>页面类型</dt><dd>{{ selected_page.page_type if selected_page else "—" }}</dd>
+        <dt>状态</dt><dd>{{ selected_page.status if selected_page else "—" }}</dd>
         <dt>更新时间</dt><dd>{{ selected_page.last_updated_at.strftime("%Y/%m/%d %H:%M") if selected_page else "—" }}</dd>
         <dt>标签</dt><dd>{% for tag in selected_tags %}<span class="status-chip primary">{{ tag }}</span> {% else %}—{% endfor %}</dd>
       </dl>
@@ -77,36 +112,18 @@
       <div class="compact-list">
         {% for ref in selected_refs %}
           {% set source = source_map.get(ref.raw_source_id) %}
-          <a class="source-ref-link" href="{{ ref.url }}" target="_blank" rel="noreferrer">
-            <strong>{{ source.title if source else "原始资料" }}</strong>
+          <a class="source-ref-link" href="{{ '/ui/sources?source_id=' ~ ref.raw_source_id if source else ref.url }}" target="{{ '_self' if source else '_blank' }}" rel="noreferrer">
+            <strong>{{ source.title if source else "来源证据" }}</strong>
             <span>{{ ref.url }}</span>
           </a>
         {% else %}
-          <p>暂无引用来源</p>
+          <p>暂无引用来源。请返回来源证据重新生成或手动补齐来源。</p>
         {% endfor %}
       </div>
     </section>
-    <section class="glass-card agent-legion-card">
-      <h2>工作军团</h2>
-      <div class="agent-list">
-        {% for agent in agent_legion[:2] %}
-          <div>
-            <strong>{{ agent.name }}</strong>
-            <span>{{ agent.focus }}</span>
-          </div>
-        {% endfor %}
-      </div>
-      <form class="agent-form" method="post" action="/knowledge/agents">
-        <input name="name" placeholder="专项 Agent 名称" required>
-        <input name="focus" placeholder="负责什么专项工作" required>
-        <select name="cadence">
-          <option>每周</option>
-          <option>每两周</option>
-          <option>每月</option>
-          <option>按需</option>
-        </select>
-        <button class="btn secondary full" type="submit">加入工作军团</button>
-      </form>
+    <section class="glass-card">
+      <h2>当前边界</h2>
+      <p>这里支持基于页面继续提问，但不会把追问自动写回页面。严格页面级检索、知识图谱和团队同步属于后续版本。</p>
     </section>
   </aside>
 </section>

@@ -3,135 +3,139 @@
 {% set title = "StarMind 首页" %}
 
 {% block content %}
-<section class="home-product home-chatgpt">
-  <div class="home-focus">
-    <div class="home-heading" data-tour-order="1" data-tour-title="先理解 StarMind" data-tour-body="StarMind 的目标是把收藏夹、链接和临时想法变成可提问、可复用、可迭代的知识库。">
-      <span class="hero-eyebrow">{{ home_copy.eyebrow }}</span>
-      <h1>{{ home_copy.title }}</h1>
-      <p>{{ home_copy.subtitle }}</p>
+<section class="home-workspace">
+  <header class="home-hero">
+    <span class="hero-mark" aria-hidden="true">S</span>
+    <h1>{{ home_copy.title }}</h1>
+    <p>{{ home_copy.subtitle }}</p>
+  </header>
+
+  {% if input_error == "empty" %}
+    <div class="notice bad centered-notice">先粘贴一个链接、输入博主主页，或写下一个想法。同步收藏夹可以直接选择对应入口。</div>
+  {% endif %}
+  {% if created == "passive-link" %}
+    <div class="notice ok centered-notice">链接已进入蒸馏流程。你可以在历史中查看处理进度。</div>
+  {% elif created == "manual-idea" %}
+    <div class="notice ok centered-notice">想法已保存，下一步可以整理成可复用内容。</div>
+  {% endif %}
+
+  <form class="v3-composer" method="post" action="/ui/v3/input" data-v3-composer>
+    <input type="hidden" name="entry_mode" value="{{ entry_mode }}" data-v3-entry-input>
+    <textarea
+      name="content"
+      rows="4"
+      maxlength="3000"
+      placeholder="粘贴链接、博主主页，或写下一个想法..."
+      data-v3-main-input
+    ></textarea>
+    <div class="composer-footer">
+      <div class="composer-tools" aria-label="输入辅助">
+        <button type="button" data-v3-entry-shortcut="link">粘贴链接</button>
+        <button type="button" data-v3-entry-shortcut="creator">输入博主</button>
+        <button type="button" data-v3-entry-shortcut="idea">写想法</button>
+      </div>
+      <span class="char-count"><span data-v3-char-count>0</span>/3000</span>
+      <button class="btn primary composer-submit" type="submit" data-busy-text="正在准备确认...">开始蒸馏</button>
     </div>
-    {% if created == "passive-link" %}
-      <div class="notice ok">链接已加入待处理。</div>
-    {% elif created == "manual-idea" %}
-      <div class="notice ok">想法已加入待处理。</div>
-    {% elif created == "distill-profile" %}
-      <div class="notice ok">博主蒸馏任务已创建。</div>
-    {% elif created == "duplicate-link" %}
-      <div class="notice">这个链接已经存在，StarMind 没有重复加入。</div>
-    {% endif %}
-    {% if scan %}
-      <div class="notice ok">收藏夹同步已完成。</div>
-    {% endif %}
-    {% if question %}
-      <article class="home-answer">
-        <strong>StarMind 回答</strong>
-        <div class="markdown-body compact">{{ agent_response_html | safe if agent_response else "正在等待 Agent 返回。" }}</div>
-        {% if agent_response %}
-          <small>Run：{{ agent_response.run_id }} · {{ agent_response.provider }} / {{ agent_response.model }}</small>
-        {% endif %}
-        <div class="topic-cloud">
-          {% if agent_response and agent_response.sources %}
-            {% for source in agent_response.sources %}
-              <span class="status-chip primary">{{ source.title }}</span>
-            {% endfor %}
+  </form>
+
+  <section class="entry-grid" aria-label="四种开始方式">
+    {% for item in v3_entries %}
+      <button class="entry-card {{ 'active' if item.mode == entry_mode else '' }}" type="button" data-v3-entry="{{ item.mode }}" data-v3-entry-label="{{ item.label }}">
+        <span class="entry-icon" aria-hidden="true">
+          {% if item.mode == "favorites" %}
+            <svg viewBox="0 0 24 24"><path d="M6 4h12v16l-6-3-6 3z"></path></svg>
+          {% elif item.mode == "link" %}
+            <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg>
+          {% elif item.mode == "creator" %}
+            <svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path><path d="M4 21a8 8 0 0 1 16 0"></path></svg>
           {% else %}
-            <span class="status-chip primary">暂无引用来源</span>
+            <svg viewBox="0 0 24 24"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M8 14a6 6 0 1 1 8 0c-.7.7-1 1.4-1 2H9c0-.6-.3-1.3-1-2z"></path></svg>
           {% endif %}
-        </div>
-      </article>
-    {% endif %}
-    <form class="home-composer product-composer" method="get" action="/" data-tour-order="7" data-tour-title="直接向知识库提问" data-tour-body="同步和沉淀完成后，你可以像使用 ChatGPT 一样提问；StarMind 会优先基于你的本地资料和知识库回答。">
-      <div class="composer-head">
-        <span>{{ home_copy.ask }}</span>
-        {% if model_profiles %}
-          <select name="model_profile">
-            {% for profile in model_profiles %}
-              <option value="{{ profile.id }}" {{ "selected" if profile.id == selected_model_profile_id or (not selected_model_profile_id and profile.id == active_profile_id) else "" }}>{{ profile.name }}</option>
-            {% endfor %}
-          </select>
-        {% else %}
-          <a href="/ui/settings" class="composer-model-pill">{{ settings.default_model }}</a>
-        {% endif %}
-      </div>
-      <div class="composer-body">
-        <input name="q" value="{{ question or '' }}" placeholder="{{ home_copy.ask_placeholder }}">
-        <button class="btn primary" type="submit">{{ home_copy.send }}</button>
-      </div>
-    </form>
-    <div class="feature-actions product-actions" data-tour-order="3" data-tour-title="录入信息的四个入口" data-tour-body="先用同步收藏夹获取主要资料；不在收藏夹里的链接、博主主页和临时想法，也可以从这里进入。">
-      <button class="feature-action primary" type="button" data-open-modal="#sync-modal"><span>01</span><strong>{{ home_copy.sync }}</strong></button>
-      <button class="feature-action" type="button" data-open-modal="#link-modal" data-tour-title="不在收藏夹里的内容" data-tour-body="如果某个链接没有被收藏，也可以单独导入，不要和连接来源混在一起。"><span>02</span><strong>{{ home_copy.link }}</strong></button>
-      <button class="feature-action" type="button" data-open-modal="#distill-modal"><span>03</span><strong>{{ home_copy.distill }}</strong></button>
-      <button class="feature-action" type="button" data-open-modal="#idea-modal"><span>04</span><strong>{{ home_copy.idea }}</strong></button>
+        </span>
+        <strong>{{ item.label }}</strong>
+        <span>{{ item.description }}</span>
+      </button>
+    {% endfor %}
+  </section>
+
+  <section class="onboarding-strip" data-v3-onboarding>
+    <div>
+      <strong>新用户可以这样开始</strong>
+      <span>输入一条信息 -> StarMind 提炼摘要、观点和来源 -> 你确认后保存并继续追问。</span>
     </div>
-  </div>
+    <button class="btn ghost small" type="button" data-v3-onboarding-dismiss>我知道了</button>
+  </section>
+
+  <section class="home-preview">
+    <div class="preview-head">
+      <div>
+        <span class="section-kicker">示例预览</span>
+        <h2>输入后你会得到什么</h2>
+      </div>
+      <a href="/ui/demo?demo_id={{ home_preview.demo_id }}" data-v3-demo-link>查看完整示例</a>
+    </div>
+    <div class="preview-grid">
+      <section>
+        <span>{{ home_preview.input_label }}</span>
+        <strong>{{ home_preview.input_title }}</strong>
+        <p>{{ home_preview.input_url }}</p>
+      </section>
+      <section>
+        <span>摘要</span>
+        <p>{{ home_preview.summary }}</p>
+      </section>
+      <section>
+        <span>关键观点</span>
+        <ul>
+          {% for point in home_preview.key_points %}
+            <li>{{ point }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+      <section>
+        <span>来源证据</span>
+        <ul>
+          {% for evidence in home_preview.source_evidence %}
+            <li>{{ evidence }}</li>
+          {% endfor %}
+        </ul>
+      </section>
+    </div>
+    <div class="question-row">
+      {% for question in home_preview.questions %}
+        <a href="/ui/demo?demo_id={{ home_preview.demo_id }}">{{ question }}</a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <footer class="trust-line">
+    <span>资料保存在本机</span>
+    <span>结论附带来源证据</span>
+    <span>AI 输出需要你确认后才会进入知识库</span>
+  </footer>
 </section>
 
-<div class="modal-shell" id="sync-modal" hidden>
-  <section class="modal-card">
-    <button class="modal-close" type="button" data-close-modal>×</button>
-    <h2>同步收藏夹</h2>
-    <p>连接抖音收藏夹，或进入连接来源管理其他平台。</p>
-    <form class="feature-form" method="post" action="/douyin/browser/open">
-      <button class="btn primary full" type="submit">打开抖音收藏页</button>
-    </form>
-    <a class="btn secondary full" href="/ui/source-setup/douyin">设置抖音同步数量</a>
-    <a class="btn secondary full" href="/ui/connectors">管理连接来源</a>
-  </section>
-</div>
-
-<div class="modal-shell" id="link-modal" hidden>
-  <section class="modal-card">
-    <button class="modal-close" type="button" data-close-modal>×</button>
-    <h2>导入一个链接</h2>
-    <p>这个入口只处理不在收藏夹里的单个链接。</p>
-    <form class="feature-form" method="post" action="/passive/link">
-      <input type="hidden" name="next" value="/?created=passive-link">
-      <input name="url" placeholder="https://example.com/article" required>
-      <input name="title" placeholder="标题，可选">
-      <button class="btn primary full" type="submit">加入待处理</button>
-    </form>
-  </section>
-</div>
-
-<div class="modal-shell" id="distill-modal" hidden>
-  <section class="modal-card">
-    <button class="modal-close" type="button" data-close-modal>×</button>
-    <h2>博主蒸馏</h2>
-    <p>输入一个主页链接，把该作者的内容沉淀到一个新的分类中。</p>
-    <form class="feature-form" method="post" action="/distill/profile">
-      <input type="hidden" name="next" value="/?created=distill-profile">
-      <select name="platform">
-        <option>抖音</option>
-        <option>TikTok</option>
-        <option>小红书</option>
-        <option>Reddit</option>
-        <option>YouTube</option>
-        <option>Bilibili</option>
-        <option>知乎</option>
-        <option>Twitter / X</option>
-        <option>其他</option>
-      </select>
-      <input name="target_name" placeholder="博主 / 作者名称">
-      <input name="profile_url" placeholder="主页链接" required>
-      <input name="category" placeholder="新分类名称">
-      <button class="btn primary full" type="submit">创建任务</button>
-    </form>
-  </section>
-</div>
-
-<div class="modal-shell" id="idea-modal" hidden>
-  <section class="modal-card">
-    <button class="modal-close" type="button" data-close-modal>×</button>
-    <h2>记录想法</h2>
-    <p>把突然冒出来的 idea 放进 StarMind，后续再整理成页面、SOP 或专项 Agent。</p>
-    <form class="feature-form" method="post" action="/manual/idea">
-      <input type="hidden" name="next" value="/?created=manual-idea">
-      <input name="title" placeholder="一句话标题" required>
-      <textarea name="content" placeholder="写下你的想法" required></textarea>
-      <input name="tags" placeholder="标签，可选">
-      <button class="btn primary full" type="submit">保存想法</button>
-    </form>
-  </section>
-</div>
+<section class="returning-panel">
+  <div class="panel-title-row">
+    <div>
+      <span class="section-kicker">回访入口</span>
+      <h2>继续沉淀最近内容</h2>
+    </div>
+    <a class="btn secondary small" href="/ui/history">查看历史</a>
+  </div>
+  <div class="task-card-row">
+    {% for card in task_cards[:3] %}
+      <a class="task-mini-card" href="/ui/task/candidate/{{ card.candidate.id }}">
+        <strong>{{ card.candidate.title }}</strong>
+        <span>{{ card.primary_action }}</span>
+      </a>
+    {% else %}
+      <div class="empty-state wide">
+        <strong>还没有沉淀内容</strong>
+        <p>先从上方输入一条链接、博主主页或想法开始。</p>
+      </div>
+    {% endfor %}
+  </div>
+</section>
 {% endblock %}

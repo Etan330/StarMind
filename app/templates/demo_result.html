@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "示例结果" %}
+
+{% block content %}
+<div class="page-actions">
+  {{ ui.page_header("示例结果", "这是只读示例，用来说明一条信息被蒸馏后会得到什么。", demo.quality_level) }}
+  <div class="button-row">
+    <a class="btn primary" href="/ui/create?mode=link&source=demo_cta">用我的链接开始</a>
+    <a class="btn secondary" href="/">返回首页</a>
+  </div>
+</div>
+
+<section class="demo-layout">
+  <article class="glass-card demo-reader">
+    <div class="demo-head">
+      <span class="section-kicker">输入 -> 结果</span>
+      <h2>{{ demo.title }}</h2>
+      <p>{{ demo.wiki.summary }}</p>
+    </div>
+    <div class="aha-highlight">
+      <strong>这就是 V3 的 Aha Moment</strong>
+      <span>StarMind 不只是保存链接，而是把信息提炼成摘要、关键观点、来源证据和可以继续追问的问题。</span>
+    </div>
+    <div class="result-preview-grid">
+      <section>
+        <h3>输入</h3>
+        <p>{{ demo.raw.title }}</p>
+        <span>{{ demo.source_url }}</span>
+      </section>
+      <section>
+        <h3>关键观点</h3>
+        <p>{{ demo.wiki.bullets[0] }}</p>
+        <span>{{ demo.wiki.source_refs_count }} 条来源证据</span>
+      </section>
+      <section>
+        <h3>可追问</h3>
+        <p>{{ demo.query.question }}</p>
+        <span>保存后可基于页面继续提问</span>
+      </section>
+    </div>
+    <div class="markdown-body wiki-markdown">{{ markdown_html | safe }}</div>
+  </article>
+
+  <aside class="demo-side">
+    <section class="glass-card">
+      <h2>来源证据</h2>
+      <div class="compact-list">
+        {% for source in demo.query.sources %}
+          <a class="source-ref-link" href="https://{{ source }}" target="_blank" rel="noreferrer">
+            <strong>{{ source }}</strong>
+            <span>{{ demo.source_url if loop.first else "示例来源" }}</span>
+          </a>
+        {% endfor %}
+      </div>
+    </section>
+    <section class="glass-card">
+      <h2>示例问题</h2>
+      <div class="compact-list">
+        {% for question in [demo.query.question, "如何把这个方法用到我当前工作里？", "下一步可以沉淀成什么 SOP？"] %}
+          <div class="source-ref-link">
+            <strong>{{ question }}</strong>
+            <span>正式页面保存后可以直接点击提问。</span>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+    <section class="glass-card">
+      <h2>Mock 说明</h2>
+      <p>示例来自本地 `demo_service`，不会写入真实任务、来源证据或知识页面表。</p>
+    </section>
+  </aside>
+</section>
+{% endblock %}

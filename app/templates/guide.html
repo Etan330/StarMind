@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "帮助" %}
+
+{% block content %}
+{{ ui.page_header("StarMind 的工作方式", "先输入信息，再由 AI 蒸馏成有来源、可确认、可继续追问的知识。") }}
+
+<section class="guide-grid">
+  <article class="glass-card">
+    <h2>主路径</h2>
+    <ol class="v1-step-list">
+      <li><strong>导入 / 同步</strong><span>导入单链接、同步抖音可见收藏或记录想法。</span></li>
+      <li><strong>AI 分拣</strong><span>高置信内容进入来源证据，不确定内容由你确认，非知识进入可恢复回收站。</span></li>
+      <li><strong>来源证据</strong><span>原始证据保存在本地，AI 不删除也不覆盖。</span></li>
+      <li><strong>结果确认</strong><span>生成的知识草稿需要你审核、编辑、确认。</span></li>
+      <li><strong>本地追问</strong><span>基于本地知识页面和来源证据回答，并展示来源。</span></li>
+    </ol>
+    <a class="btn primary" href="/">回到首页输入</a>
+  </article>
+
+  <article class="glass-card">
+    <h2>来源证据与知识页面的区别</h2>
+    <p>来源证据保留原始链接、页面文本、逐字稿状态和本地文件。知识页面是派生结果，可以被重新生成或编辑，但必须保留来源引用。</p>
+    <div class="v1-callout">如果视频没有 ASR，页面会显示 `audio_asr_pending` 或待补全说明，这是当前已知限制。</div>
+  </article>
+
+  <article class="glass-card">
+    <h2>常见失败恢复</h2>
+    <ul class="quality-list">
+      <li>模型不可用：去设置保存并测试 API Key；导入仍可继续。</li>
+      <li>抖音没有识别到卡片：确认已登录并停留在收藏/喜欢列表。</li>
+      <li>分类失败：内容会保留在待确认，不会被删除。</li>
+      <li>生成失败：可使用兜底模板或配置模型后重新生成。</li>
+    </ul>
+  </article>
+</section>
+{% endblock %}

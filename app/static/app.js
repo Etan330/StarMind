@@ -183,8 +183,124 @@
     activate(initialButton?.dataset.tabTarget || "pending")
   })
 
+  document.querySelectorAll("[data-create-tabs]").forEach((tabs) => {
+    const buttons = Array.from(tabs.querySelectorAll("[data-tab-target]"))
+    const container = tabs.closest(".create-task-panel") || document
+    const panels = Array.from(container.querySelectorAll("[data-tab-panel]"))
+    const activate = (target) => {
+      buttons.forEach((button) => {
+        const active = button.dataset.tabTarget === target
+        button.classList.toggle("active", active)
+        button.setAttribute("aria-selected", active ? "true" : "false")
+      })
+      panels.forEach((panel) => {
+        panel.hidden = panel.dataset.tabPanel !== target
+      })
+    }
+    tabs.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-tab-target]")
+      if (!button) return
+      activate(button.dataset.tabTarget)
+    })
+    const initialButton = buttons.find((button) => button.classList.contains("active")) || buttons[0]
+    activate(initialButton?.dataset.tabTarget || "link")
+  })
+
+  const v3Placeholders = {
+    favorites: "可以先不输入，直接确认本地可见收藏夹同步",
+    link: "粘贴一篇文章、视频或网页链接...",
+    creator: "粘贴博主主页，或输入账号名称...",
+    idea: "写下一个想法、问题、灵感或待整理材料...",
+  }
+
+  const v3Track = (eventName, payload = {}) => {
+    const body = new URLSearchParams({ event_name: eventName })
+    Object.entries(payload).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) body.set(key, String(value))
+    })
+    window.fetch("/events/v3", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      keepalive: true,
+    }).catch(() => {})
+  }
+
+  document.querySelectorAll("[data-v3-composer]").forEach((composer) => {
+    const input = composer.querySelector("[data-v3-main-input]")
+    const modeInput = composer.querySelector("[data-v3-entry-input]")
+    const count = composer.querySelector("[data-v3-char-count]")
+    const entryCards = Array.from(document.querySelectorAll("[data-v3-entry]"))
+
+    const setMode = (mode, label = "") => {
+      if (!modeInput) return
+      modeInput.value = mode
+      if (input && v3Placeholders[mode]) input.placeholder = v3Placeholders[mode]
+      entryCards.forEach((card) => {
+        const active = card.dataset.v3Entry === mode
+        card.classList.toggle("active", active)
+        card.setAttribute("aria-pressed", active ? "true" : "false")
+      })
+      v3Track("v3_entry_clicked", {
+        entry_mode: mode,
+        entry: label || mode,
+        viewport: window.innerWidth < 640 ? "mobile" : "desktop",
+      })
+    }
+
+    const updateCount = () => {
+      if (count && input) count.textContent = String(input.value.length)
+    }
+
+    entryCards.forEach((card) => {
+      card.addEventListener("click", () => {
+        setMode(card.dataset.v3Entry, card.dataset.v3EntryLabel)
+        input?.focus()
+      })
+    })
+
+    composer.querySelectorAll("[data-v3-entry-shortcut]").forEach((button) => {
+      button.addEventListener("click", () => {
+        setMode(button.dataset.v3EntryShortcut, button.textContent.trim())
+        input?.focus()
+      })
+    })
+
+    input?.addEventListener("focus", () => {
+      if (input.dataset.v3FocusTracked === "true") return
+      input.dataset.v3FocusTracked = "true"
+      v3Track("v3_primary_input_focused", {
+        entry_mode: modeInput?.value || "link",
+        viewport: window.innerWidth < 640 ? "mobile" : "desktop",
+      })
+    })
+    input?.addEventListener("input", updateCount)
+
+    const initialMode = modeInput?.value || "link"
+    if (v3Placeholders[initialMode] && input) input.placeholder = v3Placeholders[initialMode]
+    updateCount()
+  })
+
+  document.querySelectorAll("[data-v3-onboarding-dismiss]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const strip = button.closest("[data-v3-onboarding]")
+      if (strip) strip.hidden = true
+      v3Track("v3_onboarding_completed", { viewport: window.innerWidth < 640 ? "mobile" : "desktop" })
+    })
+  })
+
+  document.querySelectorAll("[data-v3-demo-link]").forEach((link) => {
+    link.addEventListener("click", () => {
+      v3Track("v3_demo_used", { demo_id: new URL(link.href).searchParams.get("demo_id") || "second-brain" })
+    })
+  })
+
   document.querySelectorAll("form").forEach((form) => {
-    form.addEventListener("submit", () => {
+    form.addEventListener("submit", (event) => {
+      if (form.dataset.confirmMessage && !window.confirm(form.dataset.confirmMessage)) {
+        event.preventDefault()
+        return
+      }
       const button = form.querySelector("button[type='submit']")
       if (!button || button.dataset.busyApplied === "true") return
       button.dataset.busyApplied = "true"

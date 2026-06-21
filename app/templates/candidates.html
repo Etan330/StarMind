@@ -1,27 +1,27 @@
 {% extends "base.html" %}
-{% set title = "StarMind Candidate Pool" %}
+{% set title = "待确认内容" %}
 
 {% block content %}
 <header class="page-header">
   <div>
-    <p class="eyebrow">Pre-classification intake</p>
-    <h1>Candidate Pool</h1>
+    <p class="eyebrow">兼容入口</p>
+    <h1>待确认内容</h1>
   </div>
-  <a class="button" href="/ui/connectors">Open Connectors</a>
+  <a class="btn secondary" href="/ui/pending">打开待处理页</a>
 </header>
 
 <section class="table-panel">
   <div class="section-heading">
-    <h2>Scanned Items</h2>
+    <h2>已扫描内容</h2>
   </div>
   <table>
     <thead>
       <tr>
-        <th>Title</th>
-        <th>Platform</th>
-        <th>Canonical URL</th>
-        <th>Status</th>
-        <th>Created</th>
+        <th>标题</th>
+        <th>平台</th>
+        <th>标准链接</th>
+        <th>状态</th>
+        <th>创建时间</th>
       </tr>
     </thead>
     <tbody>
@@ -34,7 +34,7 @@
         <td>{{ candidate.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="empty">No candidates yet.</td></tr>
+      <tr><td colspan="5" class="empty">暂无待确认内容。</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -43,8 +43,7 @@
 
 {% block rail %}
 <section class="rail-section">
-  <h2>Next Route</h2>
-  <p class="muted">Phase 4 will classify these rows into Raw Sources, Review Queue, or Recycle Bin.</p>
+  <h2>下一步</h2>
+  <p class="muted">请前往待处理页确认内容、保存来源证据或放入回收站。</p>
 </section>
 {% endblock %}
-

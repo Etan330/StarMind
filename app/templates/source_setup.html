@@ -14,9 +14,11 @@
       <div class="notice ok">抖音浏览器窗口已打开。请登录并进入收藏页。</div>
     {% elif saved and saved.startswith("extracted-") %}
       <div class="notice ok">已提取 {{ saved.replace("extracted-", "") }} 条新视频链接到待处理。</div>
-    {% elif saved and saved.startswith("classified-") %}
+    {% elif saved and saved.startswith("processed-") %}
       {% set parts = saved.split("-") %}
-      <div class="notice ok">已提取 {{ parts[1] }} 条新视频链接，并让 Agent 筛选了 {{ parts[2] }} 条。高置信知识会进入原始资料，不确定内容会留在待处理。</div>
+      <div class="notice ok">已提取 {{ parts[1] }} 条新视频链接，并生成 {{ parts[2] }} 条原始资料和知识页。</div>
+    {% elif saved == "transcript-failed" %}
+      <div class="notice bad">抖音视频转写失败，StarMind 没有生成占位原始资料。请稍后重试或检查 yt-dlp / ASR 环境。</div>
     {% elif saved == "page-not-ready" %}
       <div class="notice bad">没有识别到收藏页的视频卡片。请确认抖音窗口已登录，并停留在收藏 / 喜欢列表页面后再提取。</div>
     {% elif saved == "browser-missing" %}
