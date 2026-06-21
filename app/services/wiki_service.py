@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.config import LOCAL_DATA_DIR
 from app.llm import get_provider_runtime
-from app.models import RawSource, WikiPage
+from app.models import RawSource, WikiLog, WikiPage
 
 
 class WikiMaintenanceService:
@@ -36,6 +36,8 @@ class WikiMaintenanceService:
             existing.title = title
             existing.tags_json = json.dumps([raw_source.platform, self._page_type_label(page_type)], ensure_ascii=False)
             existing.updated_by = "agent"
+            existing.status = "needs_review"
+            self._write_log("update_page", existing, raw_source, f"Regenerated {page_type} draft from Raw Source {raw_source.id}.")
             self.db.commit()
             self.db.refresh(existing)
             return existing
@@ -51,9 +53,12 @@ class WikiMaintenanceService:
             markdown_path=str(path),
             source_refs_json=json.dumps([{"raw_source_id": raw_source.id, "url": raw_source.canonical_url}], ensure_ascii=False),
             tags_json=json.dumps([raw_source.platform, self._page_type_label(page_type)], ensure_ascii=False),
+            status="needs_review",
             updated_by="agent",
         )
         self.db.add(page)
+        self.db.flush()
+        self._write_log("create_page", page, raw_source, f"Created {page_type} draft from Raw Source {raw_source.id}.")
         self.db.commit()
         self.db.refresh(page)
         return page
@@ -195,6 +200,18 @@ class WikiMaintenanceService:
                 lines[0] = f"# {title}"
                 path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.db.commit()
+
+    def _write_log(self, operation: str, page: WikiPage, raw_source: RawSource, summary: str) -> None:
+        self.db.add(
+            WikiLog(
+                operation=operation,
+                target_type="wiki_page",
+                target_id=page.page_id,
+                raw_source_id=raw_source.id,
+                affected_pages_json=json.dumps([{"page_id": page.page_id, "page_type": page.page_type}], ensure_ascii=False),
+                summary=summary,
+            )
+        )
 
     def _read_text(self, path_value: str | None) -> str:
         if not path_value:

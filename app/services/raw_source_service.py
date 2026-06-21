@@ -23,7 +23,7 @@ class RawSourceService:
         existing = self.db.query(RawSource).filter(RawSource.canonical_url == candidate.canonical_url).first()
         metadata = json.loads(candidate.metadata_json or "{}")
         if existing:
-            self._refresh_existing_source(existing, candidate, metadata)
+            self._link_existing_source(existing, candidate)
             return existing
 
         base_dir = LOCAL_DATA_DIR / "raw_sources" / candidate.platform / str(candidate.id)
@@ -66,31 +66,20 @@ class RawSourceService:
         self.db.refresh(raw_source)
         return raw_source
 
-    def _refresh_existing_source(self, raw_source: RawSource, candidate: CandidateItem, metadata: dict[str, Any]) -> None:
-        base_dir = LOCAL_DATA_DIR / "raw_sources" / candidate.platform / str(candidate.id)
-        base_dir.mkdir(parents=True, exist_ok=True)
-        transcript = self._build_transcript(candidate, metadata)
-        raw_text = self._build_raw_text(candidate, metadata, transcript)
-        metadata_path = base_dir / "metadata.json"
-        transcript_path = base_dir / "transcript.md"
-        raw_path = base_dir / "raw.md"
-        clean_path = base_dir / "clean.md"
-        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-        transcript_path.write_text(transcript, encoding="utf-8")
-        raw_path.write_text(raw_text, encoding="utf-8")
-        clean_path.write_text(transcript, encoding="utf-8")
-        raw_source.title = candidate.title
-        raw_source.author = candidate.author
-        raw_source.raw_content_path = str(raw_path)
-        raw_source.clean_text_path = str(clean_path)
-        raw_source.transcript_path = str(transcript_path)
-        raw_source.metadata_json = json.dumps({**metadata, "transcript_status": self._transcript_status(metadata)}, ensure_ascii=False)
+    def _link_existing_source(self, raw_source: RawSource, candidate: CandidateItem) -> None:
+        raw_source.candidate_id = raw_source.candidate_id or candidate.id
         candidate.status = INGESTED
+        ledger = self.db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+        if ledger:
+            ledger.raw_source_id = raw_source.id
+            ledger.classification_label = "knowledge"
         self.db.commit()
         self.db.refresh(raw_source)
 
     def _transcript_status(self, metadata: dict[str, Any]) -> str:
         if metadata.get("transcript"):
+            return "provided"
+        if metadata.get("content"):
             return "provided"
         if metadata.get("page_text") or metadata.get("description") or metadata.get("caption"):
             return "page_text_draft"
@@ -98,11 +87,15 @@ class RawSourceService:
 
     def _build_transcript(self, candidate: CandidateItem, metadata: dict[str, Any]) -> str:
         transcript = str(metadata.get("transcript") or "").strip()
+        user_content = str(metadata.get("content") or "").strip()
         page_text = str(metadata.get("page_text") or metadata.get("description") or metadata.get("caption") or "").strip()
         now = datetime.now().isoformat(timespec="seconds")
         if transcript:
             body = transcript
             status = "平台或导入流程已提供逐字稿。"
+        elif user_content:
+            body = user_content
+            status = "用户已提供原始正文。"
         elif page_text:
             body = page_text
             status = "当前使用页面可见文本生成逐字稿草稿，后续可接入音频 ASR 补全。"

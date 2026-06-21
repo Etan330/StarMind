@@ -4,10 +4,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -46,9 +47,30 @@ from app.llm import (
     test_active_connection,
     test_model_connection,
 )
-from app.models import CandidateItem, Connector, RawSource, RecycleBinItem, ScanLog, SyncLedgerItem, WikiPage
-from app.services import ClassifierService, RawSourceService, RecycleService, SyncService, WikiMaintenanceService, normalize_url
+from app.models import CandidateItem, Connector, KnowledgeClassification, RawSource, RecycleBinItem, ScanLog, SyncLedgerItem, WikiPage
+from app.services import (
+    ClassifierService,
+    RawSourceService,
+    RecycleService,
+    SyncService,
+    TrackingService,
+    V3_ENTRY_MODES,
+    WikiMaintenanceService,
+    classify_v3_input,
+    compute_page_quality,
+    generation_label,
+    get_demo_result,
+    get_v3_home_preview,
+    list_demo_results,
+    markdown_key_points,
+    markdown_summary,
+    quality_label,
+    suggested_questions,
+    transcript_label,
+    normalize_url,
+)
 from app.services.markdown_renderer import render_markdown
+from app.services.douyin_transcript_service import DouyinTranscriptError, DouyinTranscriptService
 from app.services.statuses import (
     ARCHIVED_RECOVERABLE,
     CLASSIFIED_KNOWLEDGE,
@@ -66,6 +88,13 @@ router = APIRouter()
 templates = Jinja2Templates(directory=str(PROJECT_ROOT / "app" / "templates"))
 BROWSER_SESSIONS: dict[str, dict[str, Any]] = {}
 
+V3_UI_EVENT_NAMES = {
+    "v3_primary_input_focused",
+    "v3_entry_clicked",
+    "v3_onboarding_completed",
+    "v3_demo_used",
+}
+
 WORKBENCH_MODULES: list[dict[str, str]] = [
     {"id": "today_sync", "name": "今天要消化", "description": "把新同步的收藏先处理掉"},
     {"id": "pending_items", "name": "待确认收藏", "description": "少量需要你判断的边界内容"},
@@ -76,34 +105,39 @@ WORKBENCH_MODULES: list[dict[str, str]] = [
 NAV_LABELS = {
     "zh": {
         "home": "首页",
+        "create": "创建任务",
         "workbench": "工作台",
         "connectors": "连接来源",
         "pending": "待处理",
         "sources": "原始资料",
         "wiki": "知识库",
+        "history": "历史记录",
         "activation": "激活",
         "settings": "设置",
+        "guide": "帮助",
     },
     "en": {
         "home": "Home",
+        "create": "Create Task",
         "workbench": "Workbench",
         "connectors": "Sources",
         "pending": "Review",
         "sources": "Raw Data",
         "wiki": "Knowledge",
+        "history": "History",
         "activation": "Recall",
         "settings": "Settings",
+        "guide": "Guide",
     },
 }
 
 HOME_COPY = {
     "zh": {
-        "title": "把你的收藏，变成可持续生长的知识库",
-        "subtitle": "StarMind 读取收藏、链接和临时想法，沉淀为原始资料、知识页面与可调用的个人方法论。",
-        "eyebrow": "本地优先的知识 Agent",
-        "sync": "同步收藏夹",
+        "title": "输入信息，沉淀成可追问的知识。",
+        "subtitle": "同步收藏夹、粘贴链接、输入博主或记录灵感，StarMind 会帮你提炼摘要、关键观点、来源证据和下一步问题。",
+        "eyebrow": "AI 信息蒸馏工作台",
+        "sync": "同步抖音收藏",
         "link": "导入链接",
-        "distill": "博主蒸馏",
         "idea": "记录想法",
         "ask": "向知识库提问",
         "ask_placeholder": "问问你的知识库，比如：最近收藏里关于 Agent 的核心观点是什么？",
@@ -117,12 +151,11 @@ HOME_COPY = {
         "console_signal_note": "主动提醒可用内容",
     },
     "en": {
-        "title": "Turn saved content into a living knowledge base",
-        "subtitle": "StarMind ingests saves, links, and ideas, then turns them into raw records, knowledge pages, and reusable personal methods.",
-        "eyebrow": "Local-first knowledge agent",
-        "sync": "Sync saves",
+        "title": "Input information. Distill it into queryable knowledge.",
+        "subtitle": "Sync saves, paste links, enter a creator profile, or capture an idea. StarMind extracts summaries, key points, source evidence, and follow-up questions.",
+        "eyebrow": "AI information distillation workspace",
+        "sync": "Sync Douyin",
         "link": "Import link",
-        "distill": "Distill creator",
         "idea": "Capture idea",
         "ask": "Ask your knowledge base",
         "ask_placeholder": "Ask something like: what are the key Agent ideas in my recent saves?",
@@ -463,9 +496,22 @@ WIKI_SECTIONS = [
     {"id": "knowledge", "name": "知识主题", "page_type": "knowledge"},
     {"id": "methodology", "name": "方法论", "page_type": "methodology"},
     {"id": "sop", "name": "SOP", "page_type": "sop"},
-    {"id": "skills", "name": "Skills", "page_type": "skill"},
-    {"id": "index", "name": "索引", "page_type": "index"},
 ]
+
+
+def latest_classifications(db: Session, candidate_ids: list[int]) -> dict[int, KnowledgeClassification]:
+    if not candidate_ids:
+        return {}
+    rows = (
+        db.query(KnowledgeClassification)
+        .filter(KnowledgeClassification.candidate_id.in_(candidate_ids))
+        .order_by(KnowledgeClassification.created_at.desc())
+        .all()
+    )
+    latest: dict[int, KnowledgeClassification] = {}
+    for row in rows:
+        latest.setdefault(row.candidate_id, row)
+    return latest
 
 
 def read_wiki_markdown(page: WikiPage | None) -> str:
@@ -501,6 +547,116 @@ def safe_json(raw_value: str | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def track_event(
+    db: Session,
+    event_name: str,
+    properties: dict[str, Any] | None = None,
+    *,
+    candidate_id: int | None = None,
+    raw_source_id: int | None = None,
+    page_id: str | None = None,
+) -> None:
+    TrackingService(db).track(
+        event_name,
+        properties,
+        candidate_id=candidate_id,
+        raw_source_id=raw_source_id,
+        page_id=page_id,
+    )
+
+
+def pages_for_raw_source(db: Session, raw_source_id: int | None) -> list[WikiPage]:
+    if raw_source_id is None:
+        return []
+    pages: list[WikiPage] = []
+    for page in db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).all():
+        refs = page_json_list(page.source_refs_json)
+        if any(int(ref.get("raw_source_id") or 0) == raw_source_id for ref in refs):
+            pages.append(page)
+    return pages
+
+
+def existing_context_for_ledger(db: Session, ledger: SyncLedgerItem) -> dict[str, Any]:
+    candidate = db.get(CandidateItem, ledger.candidate_id) if ledger.candidate_id else None
+    raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first() if candidate else None
+    pages = pages_for_raw_source(db, raw_source.id if raw_source else None)
+    latest_page = pages[0] if pages else None
+    return {
+        "candidate": candidate,
+        "raw_source": raw_source,
+        "latest_page": latest_page,
+        "candidate_url": f"/ui/task/candidate/{candidate.id}" if candidate else "",
+        "source_url": f"/ui/sources?source_id={raw_source.id}" if raw_source else "",
+        "page_url": f"/ui/review/{latest_page.page_id}" if latest_page and latest_page.status == "needs_review" else (
+            f"/ui/wiki?page_id={latest_page.page_id}" if latest_page else ""
+        ),
+    }
+
+
+def duplicate_query_params(existing_context: dict[str, Any]) -> str:
+    candidate = existing_context.get("candidate")
+    raw_source = existing_context.get("raw_source")
+    latest_page = existing_context.get("latest_page")
+    params = {
+        "duplicate": "link",
+        "existing_candidate_id": candidate.id if candidate else "",
+        "existing_source_id": raw_source.id if raw_source else "",
+        "existing_page_id": latest_page.page_id if latest_page else "",
+        "existing_url": existing_context.get("candidate").canonical_url if candidate else "",
+    }
+    return urlencode({key: value for key, value in params.items() if value})
+
+
+def task_view_model(db: Session, candidate: CandidateItem, raw_source: RawSource | None, pages: list[WikiPage]) -> dict[str, Any]:
+    latest_page = pages[0] if pages else None
+    is_reviewed = bool(latest_page and latest_page.status == "active")
+    if not raw_source:
+        current_step = "save-source"
+        primary_action = "保存来源证据"
+        summary = "先把输入保存成可追溯的来源证据。"
+    elif not latest_page:
+        current_step = "generate-page"
+        primary_action = "生成可审核结果"
+        summary = "来源证据已保留，下一步生成带来源的蒸馏草稿。"
+    elif latest_page.status == "needs_review":
+        current_step = "review-result"
+        primary_action = "审核 AI 草稿"
+        summary = "AI 已生成草稿，必须由你确认后才进入知识库。"
+    else:
+        current_step = "ask-page"
+        primary_action = "基于页面提问"
+        summary = "页面已保存，下一步通过提问完成首次复用。"
+    return {
+        "current_step": current_step,
+        "primary_action": primary_action,
+        "summary": summary,
+        "latest_page": latest_page,
+        "has_raw_source": raw_source is not None,
+        "has_page": latest_page is not None,
+        "is_reviewed": is_reviewed,
+    }
+
+
+def task_cards_for_history(db: Session, candidates: list[CandidateItem], classifications: dict[int, KnowledgeClassification]) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    for candidate in candidates:
+        raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
+        pages = pages_for_raw_source(db, raw_source.id if raw_source else None)
+        view = task_view_model(db, candidate, raw_source, pages)
+        cards.append(
+            {
+                "candidate": candidate,
+                "classification": classifications.get(candidate.id),
+                "raw_source": raw_source,
+                "latest_page": view["latest_page"],
+                "current_step": view["current_step"],
+                "primary_action": view["primary_action"],
+                "summary": view["summary"],
+            }
+        )
+    return cards
 
 
 def read_local_text(path_value: str | None) -> str:
@@ -613,6 +769,7 @@ def build_douyin_items(raw_items: Any, limit: int | None = 10, source: str = "do
         if not href:
             continue
         page_text = str(raw_item.get("pageText") or raw_item.get("page_text") or raw_item.get("description") or "").strip()
+        transcript = str(raw_item.get("transcript") or "").strip()
         title = clean_douyin_title(str(raw_item.get("title") or raw_item.get("desc") or "").strip(), page_text, href)
         content_type = str(raw_item.get("kind") or raw_item.get("content_type") or "video").strip()
         connector_items.append(
@@ -625,12 +782,61 @@ def build_douyin_items(raw_items: Any, limit: int | None = 10, source: str = "do
                 metadata={
                     "source": source,
                     "page_text": page_text,
+                    "transcript": transcript,
                     "douyin_page_url": raw_item.get("pageUrl") or raw_item.get("douyin_page_url"),
                     "extractor": source,
                 },
             )
         )
     return connector_items
+
+
+def enrich_douyin_items_with_report(
+    items: list[ConnectorItem],
+    service: DouyinTranscriptService,
+    *,
+    limit: int | None = None,
+    require_transcript: bool = True,
+) -> tuple[list[ConnectorItem], list[dict[str, str]]]:
+    if not hasattr(service, "enrich_item"):
+        return service.enrich_items(items, limit=limit, require_transcript=require_transcript), []
+    enriched: list[ConnectorItem] = []
+    failures: list[dict[str, str]] = []
+    for item in items[: limit or len(items)]:
+        try:
+            enriched_item = service.enrich_item(item, require_transcript=require_transcript)
+        except DouyinTranscriptError as exc:
+            failures.append({"url": item.raw_url, "title": item.title, "error": str(exc)})
+            continue
+        if require_transcript and not str((enriched_item.metadata or {}).get("transcript") or "").strip():
+            failures.append({"url": item.raw_url, "title": item.title, "error": "ASR returned an empty transcript"})
+            continue
+        enriched.append(enriched_item)
+    return enriched, failures
+
+
+def douyin_profile_base_url(profile_url: str) -> str:
+    parsed = urlparse(profile_url)
+    if "douyin.com" not in parsed.netloc.lower() or not parsed.path.startswith("/user/"):
+        return profile_url
+    return urlunparse((parsed.scheme or "https", parsed.netloc, parsed.path.rstrip("/"), "", "", ""))
+
+
+def douyin_profile_vid_fallback(profile_url: str, target_name: str) -> ConnectorItem | None:
+    parsed = urlparse(profile_url)
+    if "douyin.com" not in parsed.netloc.lower():
+        return None
+    vid = (parse_qs(parsed.query).get("vid") or parse_qs(parsed.query).get("modal_id") or [""])[0].strip()
+    if not vid:
+        return None
+    return ConnectorItem(
+        raw_url=f"https://www.douyin.com/video/{vid}",
+        title=f"{target_name} 主页视频 {vid}",
+        author=target_name,
+        platform="douyin",
+        content_type="video",
+        metadata={"source": "douyin_creator_profile_vid_fallback", "profile_url": profile_url},
+    )
 
 
 def clean_douyin_title(raw_title: str, page_text: str, href: str) -> str:
@@ -700,8 +906,42 @@ async def save_ui_language(request: Request):
     return {"status": "saved", "language": language}
 
 
+@router.post("/events/v3")
+async def v3_ui_event(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    event_name = str(data.get("event_name") or data.get("event") or "").strip()
+    if event_name not in V3_UI_EVENT_NAMES:
+        raise HTTPException(status_code=400, detail="unsupported V3 event")
+    track_event(
+        db,
+        event_name,
+        {
+            "entry_mode": data.get("entry_mode") or "",
+            "entry": data.get("entry") or "",
+            "input_type": data.get("input_type") or "",
+            "length_bucket": data.get("length_bucket") or "",
+            "demo_id": data.get("demo_id") or "",
+            "viewport": data.get("viewport") or "",
+        },
+    )
+    return JSONResponse({"status": "tracked", "event_name": event_name})
+
+
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, db: Session = Depends(get_db)):
+    track_event(db, "page_viewed", {"page": "home"})
+    has_history = db.query(CandidateItem).count() > 0 or db.query(WikiPage).count() > 0
+    track_event(
+        db,
+        "v3_home_viewed",
+        {
+            "visitor_state": "returning" if has_history else "new",
+            "has_history": has_history,
+            "pending_count": db.query(CandidateItem).filter(CandidateItem.status.in_(REVIEWABLE_STATUSES)).count(),
+        },
+    )
+    home_preview = get_v3_home_preview()
+    track_event(db, "v3_demo_preview_viewed", {"demo_id": home_preview["demo_id"]})
     connectors = db.query(Connector).order_by(Connector.created_at.desc()).all()
     settings = get_model_settings()
     profiles = get_model_profiles()
@@ -716,6 +956,9 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             model=selected_profile.get("model") if selected_profile else None,
             model_profile_name=selected_profile.get("name") if selected_profile else None,
         )
+        track_event(db, "query_submitted", {"page": "home", "has_sources": bool(agent_response.sources)})
+    recent_candidates = db.query(CandidateItem).order_by(CandidateItem.created_at.desc()).limit(6).all()
+    classifications = latest_classifications(db, [candidate.id for candidate in recent_candidates])
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -738,8 +981,242 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             selected_model_profile_id=selected_profile_id,
             pages=db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(3).all(),
             sources=db.query(RawSource).order_by(RawSource.created_at.desc()).limit(3).all(),
+            task_cards=task_cards_for_history(db, recent_candidates, classifications),
+            demo=get_demo_result(),
+            demo_results=list_demo_results(),
+            home_preview=home_preview,
+            v3_entries=list(V3_ENTRY_MODES.values()),
+            input_error=request.query_params.get("input_error"),
+            entry_mode=request.query_params.get("entry_mode") or "link",
+            has_history=has_history,
         ),
     )
+
+
+@router.post("/ui/v3/input")
+async def v3_home_input(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    route = classify_v3_input(str(data.get("content") or ""), str(data.get("entry_mode") or "link"))
+    if route.is_empty:
+        track_event(
+            db,
+            "v3_task_create_failed",
+            {"reason": "empty_input", "entry_mode": route.entry_mode, "input_type": route.input_type},
+        )
+        return RedirectResponse(f"/?input_error=empty&entry_mode={route.entry_mode}", status_code=303)
+    track_event(
+        db,
+        "v3_primary_input_submitted",
+        {
+            "entry_mode": route.entry_mode,
+            "mode": route.mode,
+            "input_type": route.input_type,
+            "length_bucket": route.length_bucket,
+            "from_home": True,
+        },
+    )
+    params = {
+        "mode": route.mode,
+        "entry_mode": route.entry_mode,
+        "input_type": route.input_type,
+        "source": "home_input",
+    }
+    if route.content:
+        params["prefill"] = route.content[:1600]
+    return RedirectResponse(f"/ui/create?{urlencode(params)}", status_code=303)
+
+
+@router.get("/ui/create", response_class=HTMLResponse)
+def create_task_page(request: Request, db: Session = Depends(get_db)):
+    source = request.query_params.get("source")
+    if source == "home_cta":
+        track_event(db, "homepage_cta_clicked", {"cta": "create_task", "source": "home"})
+    track_event(db, "page_viewed", {"page": "task_create", "source": source or ""})
+    mode = request.query_params.get("mode") or "link"
+    prefill = request.query_params.get("prefill") or ""
+    v3_input = classify_v3_input(prefill, mode)
+    return templates.TemplateResponse(
+        request,
+        "task_create.html",
+        template_context(
+            request,
+            "create",
+            db,
+            mode=v3_input.mode,
+            entry_mode=request.query_params.get("entry_mode") or v3_input.entry_mode,
+            input_type=request.query_params.get("input_type") or v3_input.input_type,
+            prefill=prefill,
+            v3_input=v3_input,
+            v3_entries=list(V3_ENTRY_MODES.values()),
+            created=request.query_params.get("created"),
+            duplicate=request.query_params.get("duplicate"),
+            existing_candidate_id=request.query_params.get("existing_candidate_id"),
+            existing_source_id=request.query_params.get("existing_source_id"),
+            existing_page_id=request.query_params.get("existing_page_id"),
+            existing_url=request.query_params.get("existing_url"),
+            demo_results=list_demo_results(),
+        ),
+    )
+
+
+@router.get("/ui/demo", response_class=HTMLResponse)
+def demo_result_page(request: Request, db: Session = Depends(get_db)):
+    demo_id = request.query_params.get("demo_id") or "second-brain"
+    demo = get_demo_result(demo_id)
+    if demo is None:
+        raise HTTPException(status_code=404, detail="Demo result not found")
+    track_event(db, "demo_viewed", {"demo_id": demo_id, "demo_type": demo.get("demo_type", "")})
+    demo_wiki = demo.get("wiki", {})
+    demo_markdown = "\n\n".join(
+        [
+            f"# {demo_wiki.get('title') or demo.get('title')}",
+            str(demo_wiki.get("summary") or ""),
+            "## 关键要点",
+            "\n".join(f"- {item}" for item in demo_wiki.get("bullets", [])),
+        ]
+    )
+    return templates.TemplateResponse(
+        request,
+        "demo_result.html",
+        template_context(
+            request,
+            "home",
+            db,
+            demo=demo,
+            demo_results=list_demo_results(),
+            markdown_html=render_markdown(demo_markdown),
+        ),
+    )
+
+
+@router.get("/ui/task/candidate/{candidate_id}", response_class=HTMLResponse)
+def candidate_task_detail(candidate_id: int, request: Request, db: Session = Depends(get_db)):
+    candidate = db.get(CandidateItem, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    track_event(db, "page_viewed", {"page": "task_detail"}, candidate_id=candidate.id)
+    raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
+    pages = pages_for_raw_source(db, raw_source.id if raw_source else None)
+    latest = latest_classifications(db, [candidate.id]).get(candidate.id)
+    return templates.TemplateResponse(
+        request,
+        "task_detail.html",
+        template_context(
+            request,
+            "history",
+            db,
+            candidate=candidate,
+            classification=latest,
+            raw_source=raw_source,
+            pages=pages,
+            task=task_view_model(db, candidate, raw_source, pages),
+            created=request.query_params.get("created"),
+        ),
+    )
+
+
+@router.get("/ui/review/{page_id}", response_class=HTMLResponse)
+def review_page(page_id: str, request: Request, db: Session = Depends(get_db)):
+    page = db.query(WikiPage).filter(WikiPage.page_id == page_id).first()
+    if page is None:
+        raise HTTPException(status_code=404, detail="Wiki page not found")
+    track_event(db, "page_viewed", {"page": "result_review"}, page_id=page.page_id)
+    track_event(db, "result_viewed", {"status": page.status, "page_type": page.page_type}, page_id=page.page_id)
+    refs = page_json_list(page.source_refs_json)
+    source_map = {source.id: source for source in db.query(RawSource).all()}
+    markdown = read_wiki_markdown(page)
+    quality = compute_page_quality(page, markdown, source_map)
+    track_event(
+        db,
+        "v3_result_viewed",
+        {
+            "quality_level": quality.quality_level,
+            "source_count": quality.source_refs_count,
+            "page_type": page.page_type,
+        },
+        page_id=page.page_id,
+    )
+    return templates.TemplateResponse(
+        request,
+        "result_review.html",
+        template_context(
+            request,
+            "wiki",
+            db,
+            page=page,
+            markdown=markdown,
+            markdown_html=render_markdown(markdown),
+            summary=markdown_summary(markdown),
+            key_points=markdown_key_points(markdown),
+            quality=quality,
+            quality_label=quality_label(quality.quality_level),
+            generation_status_label=generation_label(quality.generation_status),
+            transcript_status_label=transcript_label(quality.transcript_status),
+            suggested_questions=suggested_questions(page.title),
+            refs=refs,
+            source_map=source_map,
+            validation_error=request.query_params.get("error"),
+            saved=request.query_params.get("saved"),
+        ),
+    )
+
+
+@router.post("/wiki/pages/{page_id}/confirm")
+async def confirm_review_page(page_id: str, request: Request, db: Session = Depends(get_db)):
+    page = db.query(WikiPage).filter(WikiPage.page_id == page_id).first()
+    if page is None:
+        raise HTTPException(status_code=404, detail="Wiki page not found")
+    data = await request_data(request)
+    markdown = str(data.get("markdown") or "").strip()
+    refs = page_json_list(page.source_refs_json)
+    if not refs:
+        if wants_html(request):
+            return RedirectResponse(f"/ui/review/{page_id}?error=missing-source", status_code=303)
+        raise HTTPException(status_code=400, detail="source_refs required")
+    if not markdown:
+        if wants_html(request):
+            return RedirectResponse(f"/ui/review/{page_id}?error=empty-body", status_code=303)
+        raise HTTPException(status_code=400, detail="markdown required")
+    path = Path(page.markdown_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(markdown, encoding="utf-8")
+    page.status = "active"
+    page.updated_by = "user_reviewed"
+    db.commit()
+    track_event(db, "result_confirmed", {"page_type": page.page_type}, page_id=page.page_id)
+    track_event(db, "v3_result_confirmed", {"page_type": page.page_type}, page_id=page.page_id)
+    track_event(db, "v3_result_saved", {"page_type": page.page_type}, page_id=page.page_id)
+    if wants_html(request):
+        return RedirectResponse(f"/ui/review/{page.page_id}?saved=review-confirmed", status_code=303)
+    return {"status": "confirmed", "page_id": page.page_id}
+
+
+@router.get("/ui/history", response_class=HTMLResponse)
+def history_page(request: Request, db: Session = Depends(get_db)):
+    track_event(db, "history_opened", {"page": "history"})
+    candidates = db.query(CandidateItem).order_by(CandidateItem.created_at.desc()).limit(50).all()
+    logs = db.query(ScanLog).order_by(ScanLog.created_at.desc()).limit(50).all()
+    pages = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(30).all()
+    classifications = latest_classifications(db, [candidate.id for candidate in candidates])
+    return templates.TemplateResponse(
+        request,
+        "history.html",
+        template_context(
+            request,
+            "history",
+            db,
+            candidates=candidates,
+            logs=logs,
+            pages=pages,
+            classifications=classifications,
+            task_cards=task_cards_for_history(db, candidates, classifications),
+        ),
+    )
+
+
+@router.get("/ui/guide", response_class=HTMLResponse)
+def guide_page(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "guide.html", template_context(request, "guide", db))
 
 
 @router.get("/ui/sync", response_class=HTMLResponse)
@@ -1140,13 +1617,27 @@ async def extract_douyin_favorites(request: Request, db: Session = Depends(get_d
         if wants_html(request):
             return RedirectResponse("/ui/source-setup/douyin?saved=browser-missing", status_code=303)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    transcript_failures: list[dict[str, str]] = []
+    if truthy(data.get("transcribe"), True):
+        cookies_file = await douyin_browser_collector.export_cookies() if hasattr(douyin_browser_collector, "export_cookies") else None
+        items, transcript_failures = enrich_douyin_items_with_report(
+            items,
+            DouyinTranscriptService(cookies_file=cookies_file),
+            limit=limit,
+            require_transcript=truthy(data.get("require_transcript"), True),
+        )
+        if not items:
+            if wants_html(request):
+                return RedirectResponse("/ui/source-setup/douyin?saved=transcript-failed", status_code=303)
+            raise HTTPException(status_code=422, detail={"message": "抖音收藏转写失败：没有成功生成逐字稿的条目", "failures": transcript_failures})
     connector = ensure_connector(db, "douyin", "抖音收藏夹", "browser_douyin")
     result = await SyncService(db).import_items(connector, items, "douyin_visible")
+    track_event(db, "v3_task_created", {"input_type": "favorites", "source_count": result.new_count, "mode": "favorites"})
     candidate_ids = result.candidate_ids or candidate_ids_for_items(db, items)
-    routed = await classify_and_route_candidates(db, candidate_ids, limit=10) if should_process else []
+    routed = await process_candidate_ids(db, candidate_ids, limit=10) if should_process else []
     if wants_html(request):
-        return RedirectResponse(f"/ui/source-setup/douyin?saved=classified-{result.new_count}-{len(routed)}", status_code=303)
-    return {**result.as_dict(), "classified": routed}
+        return RedirectResponse(f"/ui/source-setup/douyin?saved=processed-{result.new_count}-{len(routed)}", status_code=303)
+    return {**result.as_dict(), "processed": routed, "transcript_failures": transcript_failures, "transcript_failure_count": len(transcript_failures)}
 
 
 @router.post("/douyin/favorites/import-items")
@@ -1156,11 +1647,29 @@ async def import_douyin_favorite_items(request: Request, db: Session = Depends(g
     items = build_douyin_items(data.get("items"), limit=limit)
     if not items:
         raise HTTPException(status_code=400, detail="items is required")
+    transcript_failures: list[dict[str, str]] = []
+    if truthy(data.get("transcribe"), True):
+        items, transcript_failures = enrich_douyin_items_with_report(
+            items,
+            DouyinTranscriptService(),
+            limit=limit,
+            require_transcript=truthy(data.get("require_transcript"), True),
+        )
+        if not items:
+            raise HTTPException(status_code=422, detail={"message": "抖音收藏转写失败：没有成功生成逐字稿的条目", "failures": transcript_failures})
     connector = ensure_connector(db, "douyin", "抖音收藏夹", "browser_douyin")
     result = await SyncService(db).import_items(connector, items, "douyin_computer_use")
+    track_event(db, "v3_task_created", {"input_type": "favorites", "source_count": result.new_count, "mode": "favorites"})
     candidate_ids = result.candidate_ids or candidate_ids_for_items(db, items)
-    routed = await classify_and_route_candidates(db, candidate_ids, limit=10) if truthy(data.get("process_first_ten"), True) else []
-    return {**result.as_dict(), "candidate_ids": candidate_ids, "classified": routed, "classified_count": len(routed)}
+    processed = await process_candidate_ids(db, candidate_ids, limit=10) if truthy(data.get("process_first_ten"), True) else []
+    return {
+        **result.as_dict(),
+        "candidate_ids": candidate_ids,
+        "processed": processed,
+        "processed_count": len(processed),
+        "transcript_failures": transcript_failures,
+        "transcript_failure_count": len(transcript_failures),
+    }
 
 
 @router.get("/connectors/{connector_id}/logs")
@@ -1181,6 +1690,7 @@ def connector_logs(connector_id: int, db: Session = Depends(get_db)) -> list[dic
 @router.post("/manual/idea")
 async def manual_idea(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
+    track_event(db, "task_create_submitted", {"task_type": "manual_idea"})
     title = str(data.get("title") or "未命名想法").strip() or "未命名想法"
     content = str(data.get("content") or "").strip()
     tags = str(data.get("tags") or "").strip()
@@ -1214,13 +1724,38 @@ async def manual_idea(request: Request, db: Session = Depends(get_db)):
     )
     db.commit()
     db.refresh(candidate)
+    track_event(db, "task_created", {"task_type": "manual_idea"}, candidate_id=candidate.id)
+    track_event(db, "v3_task_created", {"input_type": "idea", "duplicate": False}, candidate_id=candidate.id)
+    if truthy(data.get("process_now"), False):
+        page_type = str(data.get("page_type") or "knowledge").strip()
+        if page_type not in WikiMaintenanceService.SUPPORTED_PAGE_TYPES:
+            page_type = "knowledge"
+        raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+        page = await WikiMaintenanceService(db).create_page_from_raw_source(raw_source.id, page_type=page_type)
+        track_event(
+            db,
+            "v3_processing_completed",
+            {"current_step": "idea_processed", "page_type": page_type},
+            candidate_id=candidate.id,
+            raw_source_id=raw_source.id,
+            page_id=page.page_id,
+        )
+        if wants_html(request):
+            return RedirectResponse(f"/ui/review/{page.page_id}?saved=manual-idea", status_code=303)
+        return {
+            "status": "created",
+            "candidate": candidate_to_dict(candidate),
+            "raw_source_id": raw_source.id,
+            "wiki_page_id": page.page_id,
+            "page_type": page.page_type,
+        }
     if wants_html(request):
-        return RedirectResponse(html_redirect_target(data, "/ui/pending?created=manual-idea"), status_code=303)
+        return RedirectResponse(f"/ui/task/candidate/{candidate.id}?created=manual-idea", status_code=303)
     return {"status": "created", "candidate": candidate_to_dict(candidate)}
 
 
 @router.post("/distill/profile")
-async def distill_profile(request: Request):
+async def distill_profile(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
     platform = str(data.get("platform") or "社交媒体").strip()
     profile_url = str(data.get("profile_url") or "").strip()
@@ -1243,9 +1778,55 @@ async def distill_profile(request: Request):
         },
     )
     write_json(DISTILL_REQUESTS_PATH, payload)
+    track_event(db, "v3_task_created", {"input_type": "profile", "mode": "creator", "duplicate": False})
+    imported: dict[str, Any] | None = None
+    if "抖音" in platform or "douyin.com/user" in profile_url:
+        limit = parse_collection_limit(data, 5)
+        transcript_failures: list[dict[str, str]] = []
+        try:
+            await douyin_browser_collector.open(douyin_profile_base_url(profile_url))
+            items = await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=False)
+            if truthy(data.get("transcribe"), True):
+                cookies_file = await douyin_browser_collector.export_cookies() if hasattr(douyin_browser_collector, "export_cookies") else None
+                items, transcript_failures = enrich_douyin_items_with_report(
+                    items,
+                    DouyinTranscriptService(cookies_file=cookies_file),
+                    limit=limit,
+                    require_transcript=truthy(data.get("require_transcript"), True),
+                )
+                if not items:
+                    fallback_item = douyin_profile_vid_fallback(profile_url, target_name)
+                    if fallback_item:
+                        fallback_items, fallback_failures = enrich_douyin_items_with_report(
+                            [fallback_item],
+                            DouyinTranscriptService(cookies_file=cookies_file),
+                            limit=1,
+                            require_transcript=truthy(data.get("require_transcript"), True),
+                        )
+                        transcript_failures.extend(fallback_failures)
+                        items = fallback_items
+                    if not items:
+                        raise DouyinTranscriptError(json.dumps(transcript_failures, ensure_ascii=False))
+        except (BrowserDependencyMissing, DouyinPageNotReady, DouyinTranscriptError) as exc:
+            if wants_html(request):
+                return RedirectResponse(html_redirect_target(data, "/ui/distill?created=distill-profile-failed"), status_code=303)
+            raise HTTPException(status_code=422, detail=f"抖音博主蒸馏失败：{exc}") from exc
+        connector = ensure_connector(db, "douyin", "抖音博主主页", "browser_douyin_creator")
+        result = await SyncService(db).import_items(connector, items, "douyin_creator")
+        candidate_ids = result.candidate_ids or candidate_ids_for_items(db, items)
+        processed = await process_candidate_ids(db, candidate_ids, limit=limit or 5)
+        imported = {
+            **result.as_dict(),
+            "candidate_ids": candidate_ids,
+            "processed": processed,
+            "processed_count": len(processed),
+            "transcript_failures": transcript_failures,
+            "transcript_failure_count": len(transcript_failures),
+        }
+        track_event(db, "v3_processing_completed", {"current_step": "creator_profile_import", "source_count": result.new_count})
     if wants_html(request):
         return RedirectResponse(html_redirect_target(data, "/ui/distill?created=distill-profile"), status_code=303)
-    return {"status": "created", "request": payload["requests"][0]}
+    return {"status": "created", "request": payload["requests"][0], "imported": imported}
 
 
 @router.get("/ui/candidates", response_class=HTMLResponse)
@@ -1265,6 +1846,7 @@ def pending_page(request: Request, db: Session = Depends(get_db)):
     recycle_items = db.query(RecycleBinItem).filter(RecycleBinItem.status.in_(RECYCLE_STATUSES)).order_by(RecycleBinItem.archived_at.desc()).all()
     selected = pending_candidates[0] if pending_candidates else None
     selected_source = raw_sources[0] if raw_sources else None
+    classification_map = latest_classifications(db, [candidate.id for candidate in pending_candidates])
     return templates.TemplateResponse(
         request,
         "pending.html",
@@ -1277,6 +1859,7 @@ def pending_page(request: Request, db: Session = Depends(get_db)):
             raw_sources=raw_sources,
             selected_candidate=selected,
             selected_source=selected_source,
+            classification_map=classification_map,
             created=request.query_params.get("created"),
             recycle_items=recycle_items,
         ),
@@ -1316,7 +1899,8 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/ui/wiki", response_class=HTMLResponse)
-def wiki_page(request: Request, db: Session = Depends(get_db)):
+async def wiki_page(request: Request, db: Session = Depends(get_db)):
+    track_event(db, "page_viewed", {"page": "wiki"})
     section_id = request.query_params.get("section") or "knowledge"
     active_section = next((item for item in WIKI_SECTIONS if item["id"] == section_id), WIKI_SECTIONS[0])
     all_pages = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).all()
@@ -1328,6 +1912,8 @@ def wiki_page(request: Request, db: Session = Depends(get_db)):
         pages = query.all()
     page_id = request.query_params.get("page_id")
     selected_page = next((page for page in all_pages if page.page_id == page_id), None) if page_id else None
+    if selected_page is None and pages:
+        selected_page = pages[0]
     selected_refs = page_json_list(selected_page.source_refs_json if selected_page else "[]")
     selected_tags = page_tags(selected_page.tags_json if selected_page else "[]")
     source_map = {source.id: source for source in db.query(RawSource).all()}
@@ -1339,6 +1925,21 @@ def wiki_page(request: Request, db: Session = Depends(get_db)):
         "index": len(all_pages),
     }
     selected_markdown = read_wiki_markdown(selected_page)
+    wiki_question = request.query_params.get("q") or ""
+    wiki_answer = None
+    wiki_answer_html = ""
+    if wiki_question and selected_page:
+        track_event(db, "previous_task_reused", {"reuse_type": "page_question"}, page_id=selected_page.page_id)
+        track_event(db, "v3_followup_question_clicked", {"question_type": "page_question"}, page_id=selected_page.page_id)
+        contextual_question = f"请优先基于知识页《{selected_page.title}》和它的来源回答：{wiki_question}"
+        wiki_answer = await AgentRunner(db).answer_question(contextual_question)
+        wiki_answer_html = render_markdown(wiki_answer.answer)
+        track_event(
+            db,
+            "query_answer_viewed",
+            {"source": "suggested_question", "has_sources": bool(wiki_answer.sources)},
+            page_id=selected_page.page_id,
+        )
     return templates.TemplateResponse(
         request,
         "wiki.html",
@@ -1360,6 +1961,9 @@ def wiki_page(request: Request, db: Session = Depends(get_db)):
             agent_legion=get_agent_legion()["agents"],
             activation_rules=get_activation_rules()["rules"],
             created=request.query_params.get("created"),
+            wiki_question=wiki_question,
+            wiki_answer=wiki_answer,
+            wiki_answer_html=wiki_answer_html,
         ),
     )
 
@@ -1500,8 +2104,10 @@ def query_page(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/ui/settings", response_class=HTMLResponse)
 def settings_page(request: Request, db: Session = Depends(get_db)):
+    track_event(db, "page_viewed", {"page": "settings"})
     settings = get_model_settings()
     profiles = get_model_profiles()
+    tracking = TrackingService(db)
     return templates.TemplateResponse(
         request,
         "settings.html",
@@ -1515,8 +2121,27 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             active_profile_id=get_active_profile_id(settings, profiles),
             status=request.query_params.get("status"),
             test=request.query_params.get("test"),
+            event_counts=tracking.counts(),
+            recent_events=tracking.recent(10),
         ),
     )
+
+
+@router.get("/settings/events/export")
+def export_product_events(db: Session = Depends(get_db)) -> JSONResponse:
+    events = [
+        {
+            "id": event.id,
+            "event_name": event.event_name,
+            "properties": safe_json(event.properties_json),
+            "candidate_id": event.candidate_id,
+            "raw_source_id": event.raw_source_id,
+            "page_id": event.page_id,
+            "created_at": iso(event.created_at),
+        }
+        for event in TrackingService(db).recent(500)
+    ]
+    return JSONResponse({"events": events, "temporary_adapter": True})
 
 
 @router.get("/candidates")
@@ -1537,30 +2162,20 @@ async def confirm_candidate(candidate_id: int, request: Request, db: Session = D
     candidate = db.get(CandidateItem, candidate_id)
     if candidate is None:
         raise HTTPException(status_code=404, detail="Candidate not found")
-    existing = db.query(RawSource).filter(RawSource.canonical_url == candidate.canonical_url).first()
-    if existing is None:
-        raw_source = RawSource(
-            candidate_id=candidate.id,
-            platform=candidate.platform,
-            source_url=candidate.raw_url,
-            canonical_url=candidate.canonical_url,
-            external_item_id=candidate.external_item_id,
-            source_type=candidate.source_type,
-            title=candidate.title,
-            author=candidate.author,
-            metadata_json=candidate.metadata_json,
-        )
-        db.add(raw_source)
-        db.flush()
-        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
-        if ledger:
-            ledger.raw_source_id = raw_source.id
-            ledger.classification_label = "knowledge"
-    candidate.status = INGESTED
-    db.commit()
+    audit = ClassifierService(db).ensure_manual_skip_audit(candidate)
+    raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+    track_event(
+        db,
+        "task_processing_started",
+        {"step": "raw_source_created", "classification_label": audit.label},
+        candidate_id=candidate.id,
+        raw_source_id=raw_source.id,
+    )
+    track_event(db, "task_created", {"task_type": candidate.source_type, "object": "raw_source"}, candidate_id=candidate.id, raw_source_id=raw_source.id)
+    track_event(db, "v3_processing_started", {"current_step": "source_saved"}, candidate_id=candidate.id, raw_source_id=raw_source.id)
     if wants_html(request):
-        return RedirectResponse("/ui/pending?created=confirmed", status_code=303)
-    return {"status": "confirmed", "candidate_id": candidate_id}
+        return RedirectResponse(f"/ui/task/candidate/{candidate.id}?created=raw-source", status_code=303)
+    return {"status": "confirmed", "candidate_id": candidate_id, "raw_source_id": raw_source.id, "classification_audit_id": audit.id}
 
 
 @router.post("/agent/process-candidate/{candidate_id}")
@@ -1571,7 +2186,7 @@ async def process_candidate(candidate_id: int, request: Request, db: Session = D
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if wants_html(request):
-        return RedirectResponse("/ui/pending?created=processed", status_code=303)
+        return RedirectResponse(f"/ui/review/{page.page_id}?saved=processed", status_code=303)
     return {"status": "processed", "raw_source_id": raw_source.id, "wiki_page_id": page.page_id}
 
 
@@ -1599,13 +2214,30 @@ async def create_page_from_raw_source(raw_source_id: int, request: Request, db: 
     force = truthy(data.get("force"), False)
     if page_type not in {"knowledge", "methodology", "sop", "skill"}:
         raise HTTPException(status_code=400, detail="Unsupported page_type")
+    track_event(db, "task_processing_started", {"step": "page_generation", "page_type": page_type}, raw_source_id=raw_source_id)
+    track_event(db, "v3_processing_started", {"current_step": "page_generation", "page_type": page_type}, raw_source_id=raw_source_id)
     try:
         page = await WikiMaintenanceService(db).create_page_from_raw_source(raw_source_id, page_type=page_type, force=force)
     except ValueError as exc:
+        track_event(db, "task_processing_failed", {"step": "page_generation", "reason": str(exc)}, raw_source_id=raw_source_id)
+        track_event(db, "v3_task_create_failed", {"reason": "page_generation_failed"}, raw_source_id=raw_source_id)
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    track_event(
+        db,
+        "task_processing_completed",
+        {"step": "page_generation", "page_type": page_type},
+        raw_source_id=raw_source_id,
+        page_id=page.page_id,
+    )
+    track_event(
+        db,
+        "v3_processing_completed",
+        {"current_step": "page_generation", "page_type": page_type},
+        raw_source_id=raw_source_id,
+        page_id=page.page_id,
+    )
     if wants_html(request):
-        section_id = "skills" if page_type == "skill" else page_type
-        return RedirectResponse(f"/ui/wiki?section={section_id}&page_id={page.page_id}&created={page_type}-page", status_code=303)
+        return RedirectResponse(f"/ui/review/{page.page_id}?saved={page_type}-page", status_code=303)
     return {"status": "created", "raw_source_id": raw_source_id, "wiki_page_id": page.page_id, "page_type": page_type}
 
 
@@ -1690,31 +2322,82 @@ async def passive_link(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
     raw_url = str(data.get("url") or data.get("raw_url") or "").strip()
     title = str(data.get("title") or raw_url or "Untitled passive link")
+    tags = str(data.get("tags") or "").strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="url is required")
+    track_event(db, "task_create_submitted", {"task_type": "passive_link"})
     normalized = normalize_url(raw_url, str(data.get("platform") or "") or None)
-    existing = (
-        db.query(SyncLedgerItem)
-        .filter(
-            or_(
-                (SyncLedgerItem.platform == normalized.platform) & (SyncLedgerItem.external_item_id == normalized.external_item_id),
-                SyncLedgerItem.canonical_url == normalized.canonical_url,
+
+    def find_existing_ledger():
+        return (
+            db.query(SyncLedgerItem)
+            .filter(
+                or_(
+                    (SyncLedgerItem.platform == normalized.platform) & (SyncLedgerItem.external_item_id == normalized.external_item_id),
+                    SyncLedgerItem.canonical_url == normalized.canonical_url,
+                )
             )
+            .first()
         )
-        .first()
-    )
-    if existing:
+
+    def duplicate_payload(existing: SyncLedgerItem):
+        existing_context = existing_context_for_ledger(db, existing)
+        track_event(db, "duplicate_detected", {"task_type": "passive_link"}, candidate_id=existing.candidate_id)
+        track_event(db, "v3_task_created", {"input_type": "link", "duplicate": True}, candidate_id=existing.candidate_id)
         if wants_html(request):
-            return RedirectResponse(html_redirect_target(data, "/ui/pending?created=duplicate-link"), status_code=303)
-        return {"status": "duplicate", "canonical_url": normalized.canonical_url, "ledger_id": existing.id}
+            return RedirectResponse(f"/ui/create?{duplicate_query_params(existing_context)}", status_code=303)
+        return {
+            "status": "duplicate",
+            "canonical_url": normalized.canonical_url,
+            "ledger_id": existing.id,
+            "existing": {
+                "candidate_id": existing_context["candidate"].id if existing_context["candidate"] else None,
+                "raw_source_id": existing_context["raw_source"].id if existing_context["raw_source"] else None,
+                "page_id": existing_context["latest_page"].page_id if existing_context["latest_page"] else None,
+            },
+        }
+
+    existing = find_existing_ledger()
+    if existing:
+        return duplicate_payload(existing)
+
+    candidate_title = title
+    candidate_author = None
+    candidate_content_type = None
+    candidate_metadata = {"source": "passive_link", "tags": tags}
+    if normalized.platform == "douyin" and truthy(data.get("transcribe"), True):
+        try:
+            enriched = DouyinTranscriptService().enrich_item(
+                ConnectorItem(
+                    raw_url=normalized.canonical_url,
+                    title=title,
+                    author=None,
+                    platform=normalized.platform,
+                    content_type="video",
+                    metadata={"source": "passive_link", "tags": tags},
+                ),
+                require_transcript=truthy(data.get("require_transcript"), True),
+            )
+        except DouyinTranscriptError as exc:
+            raise HTTPException(status_code=422, detail=f"抖音链接转写失败：{exc}") from exc
+        normalized = normalize_url(enriched.raw_url, normalized.platform)
+        existing = find_existing_ledger()
+        if existing:
+            return duplicate_payload(existing)
+        candidate_title = enriched.title
+        candidate_author = enriched.author
+        candidate_content_type = enriched.content_type
+        candidate_metadata = enriched.metadata
     candidate = CandidateItem(
         source_type="passive_link",
         platform=normalized.platform,
         external_item_id=normalized.external_item_id,
         canonical_url=normalized.canonical_url,
         raw_url=raw_url,
-        title=title,
-        metadata_json=json.dumps({"source": "passive_link"}, ensure_ascii=False),
+        title=candidate_title,
+        author=candidate_author,
+        content_type=candidate_content_type,
+        metadata_json=json.dumps(candidate_metadata, ensure_ascii=False),
         status=PENDING_CLASSIFICATION,
     )
     db.add(candidate)
@@ -1732,8 +2415,33 @@ async def passive_link(request: Request, db: Session = Depends(get_db)):
     )
     db.commit()
     db.refresh(candidate)
+    track_event(db, "task_created", {"task_type": "passive_link"}, candidate_id=candidate.id)
+    track_event(db, "v3_task_created", {"input_type": "link", "duplicate": False}, candidate_id=candidate.id)
+    if truthy(data.get("process_now"), False):
+        page_type = str(data.get("page_type") or "knowledge").strip()
+        if page_type not in WikiMaintenanceService.SUPPORTED_PAGE_TYPES:
+            page_type = "knowledge"
+        raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+        page = await WikiMaintenanceService(db).create_page_from_raw_source(raw_source.id, page_type=page_type)
+        track_event(
+            db,
+            "v3_processing_completed",
+            {"current_step": "link_processed", "page_type": page_type},
+            candidate_id=candidate.id,
+            raw_source_id=raw_source.id,
+            page_id=page.page_id,
+        )
+        if wants_html(request):
+            return RedirectResponse(f"/ui/review/{page.page_id}?saved=passive-link", status_code=303)
+        return {
+            "status": "created",
+            "candidate": candidate_to_dict(candidate),
+            "raw_source_id": raw_source.id,
+            "wiki_page_id": page.page_id,
+            "page_type": page.page_type,
+        }
     if wants_html(request):
-        return RedirectResponse(html_redirect_target(data, "/ui/pending?created=passive-link"), status_code=303)
+        return RedirectResponse(f"/ui/task/candidate/{candidate.id}?created=passive-link", status_code=303)
     return {"status": "created", "candidate": candidate_to_dict(candidate)}
 
 

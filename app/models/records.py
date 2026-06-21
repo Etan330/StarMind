@@ -166,6 +166,23 @@ class WikiLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
+class ProductEvent(Base):
+    __tablename__ = "product_events"
+    __table_args__ = (
+        Index("ix_product_event_name", "event_name"),
+        Index("ix_product_event_created_at", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    event_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    properties_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidate_items.id"), nullable=True)
+    raw_source_id: Mapped[int | None] = mapped_column(ForeignKey("raw_sources.id"), nullable=True)
+    page_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 class Revision(Base):
     __tablename__ = "revisions"
 

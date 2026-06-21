@@ -64,6 +64,32 @@ class ClassifierService:
             results.append(await self.classify_candidate(candidate.id))
         return results
 
+    def latest_for_candidate(self, candidate_id: int) -> KnowledgeClassification | None:
+        return (
+            self.db.query(KnowledgeClassification)
+            .filter(KnowledgeClassification.candidate_id == candidate_id)
+            .order_by(KnowledgeClassification.created_at.desc())
+            .first()
+        )
+
+    def ensure_manual_skip_audit(self, candidate: CandidateItem) -> KnowledgeClassification:
+        existing = self.latest_for_candidate(candidate.id)
+        if existing is not None:
+            return existing
+        audit = KnowledgeClassification(
+            candidate_id=candidate.id,
+            is_knowledge=True,
+            label="skipped",
+            confidence=0.0,
+            knowledge_type_json="[]",
+            reason="用户直接确认保存为原始资料，跳过模型分类；系统已记录人工确认审计。",
+            decision="manual_confirmed_without_classification",
+        )
+        self.db.add(audit)
+        self.db.commit()
+        self.db.refresh(audit)
+        return audit
+
     async def _classify_payload(self, candidate: CandidateItem) -> dict[str, Any]:
         metadata = self._metadata(candidate)
         prompt = self._prompt()

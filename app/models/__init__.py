@@ -2,6 +2,7 @@ from app.models.records import (
     CandidateItem,
     Connector,
     KnowledgeClassification,
+    ProductEvent,
     RawSource,
     RecycleBinItem,
     Revision,
@@ -15,6 +16,7 @@ __all__ = [
     "CandidateItem",
     "Connector",
     "KnowledgeClassification",
+    "ProductEvent",
     "RawSource",
     "RecycleBinItem",
     "Revision",
@@ -23,4 +25,3 @@ __all__ = [
     "WikiLog",
     "WikiPage",
 ]
-

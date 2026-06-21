@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from app.config import BROWSER_DATA_DIR
@@ -55,7 +56,7 @@ class DouyinBrowserCollector:
         await self._page.goto(url, wait_until="domcontentloaded")
         return BrowserState(opened=True, current_url=self._page.url, message="浏览器已打开，请登录抖音并进入收藏页。")
 
-    async def extract_visible_video_links(self, limit: int | None = 10) -> list[ConnectorItem]:
+    async def extract_visible_video_links(self, limit: int | None = 10, require_collection_page: bool = True) -> list[ConnectorItem]:
         if self._page is None:
             await self.open()
         assert self._page is not None
@@ -188,7 +189,7 @@ class DouyinBrowserCollector:
         )
         self._last_diagnostics = {key: value for key, value in payload.items() if key != "items"}
         items = payload.get("items", [])
-        if not payload.get("looksLikeCollectionPage"):
+        if require_collection_page and not payload.get("looksLikeCollectionPage"):
             raise DouyinPageNotReady("当前页面不像收藏夹页面。请先在打开的抖音窗口进入收藏/喜欢列表，再提取链接。")
         if not items:
             raise DouyinPageNotReady("当前抖音页面没有识别到可导入的视频卡片。请确认浏览器已经登录，并停留在收藏/喜欢列表页面。")
@@ -210,6 +211,31 @@ class DouyinBrowserCollector:
 
     def diagnostics(self) -> dict[str, Any]:
         return dict(self._last_diagnostics)
+
+    async def export_cookies(self, output_path: Path | None = None) -> Path:
+        if self._context is None:
+            await self.open()
+        assert self._context is not None
+        cookies = await self._context.cookies(["https://www.douyin.com", "https://douyin.com"])
+        output_path = output_path or BROWSER_DATA_DIR / "douyin_cookies.txt"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        lines = ["# Netscape HTTP Cookie File", "# Generated from StarMind Douyin browser session"]
+        for cookie in cookies:
+            domain = str(cookie.get("domain") or "")
+            if "douyin.com" not in domain:
+                continue
+            include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
+            path = str(cookie.get("path") or "/")
+            secure = "TRUE" if cookie.get("secure") else "FALSE"
+            expires = int(cookie.get("expires") or 0)
+            if expires < 0:
+                expires = 0
+            name = str(cookie.get("name") or "").replace("\t", " ").replace("\n", " ")
+            value = str(cookie.get("value") or "").replace("\t", " ").replace("\n", " ")
+            if name:
+                lines.append("\t".join([domain, include_subdomains, path, secure, str(expires), name, value]))
+        output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return output_path
 
     async def close(self) -> None:
         if self._context is not None:

@@ -66,7 +66,7 @@ def normalize_url(raw_url: str, platform: str | None = None) -> NormalizedURL:
         canonical = f"https://github.com/{repo_id}" if repo_id else _generic_canonical(scheme, netloc, path, query_pairs)
         external_id = repo_id or _hash_id(canonical)
     elif inferred_platform == "douyin":
-        douyin_id = _douyin_id(path)
+        douyin_id = _douyin_id(parsed)
         canonical = f"https://www.douyin.com/video/{douyin_id}" if douyin_id else _generic_canonical(scheme, netloc, path, query_pairs)
         external_id = douyin_id or _hash_id(canonical)
     else:
@@ -111,8 +111,11 @@ def _github_repo_id(path: str) -> str | None:
     return f"{parts[0]}/{parts[1]}"
 
 
-def _douyin_id(path: str) -> str | None:
-    match = re.search(r"/(?:video|note)/([A-Za-z0-9_-]+)", path)
+def _douyin_id(parsed) -> str | None:
+    query = dict(parse_qsl(parsed.query))
+    if query.get("modal_id"):
+        return query["modal_id"]
+    match = re.search(r"/(?:video|note)/([A-Za-z0-9_-]+)", parsed.path)
     return match.group(1) if match else None
 
 
