@@ -71,6 +71,14 @@ DEFAULT_PROVIDERS: dict[str, Any] = {
         "api_key_label": "DeepSeek API Key",
         "adapter_status": "ready",
     },
+    "baidu_internal": {
+        "display_name": "百度内部",
+        "api_style": "openai_compatible",
+        "base_url": "https://oneapi-comate.baidu-int.com/",
+        "models": ["gpt-5.5"],
+        "api_key_label": "百度内部 API Key",
+        "adapter_status": "ready",
+    },
     "openai": {
         "display_name": "OpenAI / ChatGPT",
         "api_style": "openai_compatible",

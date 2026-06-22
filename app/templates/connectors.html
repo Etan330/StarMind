@@ -3,7 +3,7 @@
 {% set title = "连接来源" %}
 
 {% block content %}
-{{ ui.page_header("连接来源", "V1 只把抖音本地浏览器同步作为实验能力；单链接导入是稳定兜底路径。") }}
+{{ ui.page_header("连接来源", "收藏夹同步已有独立管理页；这里保留同步账本、边界链接和来源配置诊断。") }}
 
 {% if scan %}
   <div class="notice ok">同步已完成：{{ scan }}</div>
@@ -18,11 +18,11 @@
 
 <section class="v1-page-grid">
   <article class="glass-card connector-primary-card">
-    <div class="source-title-line">
-      <h2>抖音实验同步</h2>
-      {{ ui.status_chip("V1 实验性", "warning") }}
+    <div class="panel-title-row">
+      <h2>收藏夹同步入口</h2>
+      {{ ui.status_chip("独立页面", "success") }}
     </div>
-    <p>StarMind 只读取你本地浏览器当前页面可见的视频链接，不绕过登录，不承诺全量稳定同步。失败时请改用单链接导入。</p>
+    <p>前往同步收藏夹页面查看可管理的平台；抖音已经跑通本地浏览器登录、收藏页提取和入库处理，其它平台会明确标注待接入状态。</p>
     <dl class="meta-list">
       <dt>接入方式</dt><dd>本地浏览器会话</dd>
       <dt>当前状态</dt><dd>{{ douyin_connector.status if douyin_connector else douyin.status }}</dd>
@@ -30,7 +30,7 @@
       <dt>最近边界链接</dt><dd><code>{{ douyin_connector.last_boundary_url if douyin_connector else "—" }}</code></dd>
     </dl>
     <div class="button-row">
-      <a class="btn primary" href="/ui/source-setup/douyin">打开同步页</a>
+      <a class="btn primary" href="/ui/sync">打开同步页</a>
       <a class="btn secondary" href="/ui/create?mode=link">改用导入链接</a>
     </div>
   </article>

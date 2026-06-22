@@ -7,6 +7,7 @@ from app.llm.registry import (
     get_providers,
     save_model_settings,
     save_provider_api_key,
+    save_provider_base_url,
     test_active_connection,
     test_model_connection,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "get_providers",
     "save_model_settings",
     "save_provider_api_key",
+    "save_provider_base_url",
     "test_active_connection",
     "test_model_connection",
 ]

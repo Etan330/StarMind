@@ -22,10 +22,15 @@
         </select>
         <div class="provider-picker-face">
           <strong data-provider-name>{{ current_provider.display_name if current_provider else settings.default_provider }}</strong>
-          <span data-provider-url>{{ current_provider.base_url if current_provider else "" }}</span>
           <small data-provider-key>{{ current_provider.api_key_label if current_provider else "API Key" }}</small>
         </div>
       </div>
+
+      <label class="form-field">请求地址（Base URL）
+        <input name="base_url" data-provider-url-input
+               value="{{ current_provider.base_url if current_provider else '' }}"
+               placeholder="https://api.example.com/v1">
+      </label>
 
       <label class="form-field model-choice-field">模型
         <select name="model" data-model-input data-current-model="{{ settings.default_model }}" aria-label="模型">

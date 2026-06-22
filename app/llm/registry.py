@@ -30,8 +30,22 @@ def get_model_settings() -> dict[str, Any]:
     return settings
 
 
-def save_model_settings(provider: str, model: str, api_key: str | None = None) -> dict[str, Any]:
+def save_provider_base_url(provider: str, base_url: str | None) -> None:
     ensure_config_files()
+    if base_url is None:
+        return
+    providers = get_providers()
+    if provider not in providers:
+        return
+    providers[provider]["base_url"] = base_url.strip()
+    write_json(PROVIDERS_PATH, providers)
+
+
+def save_model_settings(provider: str, model: str, api_key: str | None = None, base_url: str | None = None) -> dict[str, Any]:
+    ensure_config_files()
+    if base_url is not None:
+        save_provider_base_url(provider, base_url)
+
     settings = read_json(MODEL_CONFIG_PATH, DEFAULT_MODEL_CONFIG)
     settings["default_provider"] = provider
     settings["default_model"] = model
@@ -148,7 +162,12 @@ async def test_active_connection() -> dict[str, Any]:
     }
 
 
-async def test_model_connection(provider_id: str, model: str | None = None, api_key: str | None = None) -> dict[str, Any]:
+async def test_model_connection(
+    provider_id: str,
+    model: str | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> dict[str, Any]:
     ensure_config_files()
     providers = get_providers()
     provider_config = providers.get(provider_id)
@@ -159,7 +178,7 @@ async def test_model_connection(provider_id: str, model: str | None = None, api_
     resolved_key = api_key or secrets.get("api_keys", {}).get(provider_id)
     models = [model] if model else provider_config.get("models", [])
     api_style = provider_config.get("api_style", "mock")
-    base_url = provider_config.get("base_url", "")
+    base_url = base_url if base_url is not None else provider_config.get("base_url", "")
 
     if api_style == "mock":
         provider = MockProvider()

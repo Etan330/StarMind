@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import or_
@@ -57,7 +57,7 @@ class SyncService:
         if not await connector_impl.login_check():
             raise ValueError(f"Connector {connector.name} login check failed")
 
-        scan_run_id = f"sync_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        scan_run_id = f"sync_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         result = ScanResult(connector_id=connector_id, scan_run_id=scan_run_id)
         self._log(connector.id, scan_run_id, "info", f"Started scan for {connector.name}")
 
@@ -128,7 +128,7 @@ class SyncService:
                 connector.last_top_url = normalized.canonical_url
             self._log(connector.id, scan_run_id, "info", f"Created candidate {candidate.id}: {candidate.title}")
 
-        connector.last_successful_scan_at = datetime.now(UTC)
+        connector.last_successful_scan_at = datetime.now(timezone.utc)
         if not result.boundary_hit and result.new_count > 0:
             result.messages.append("No historical boundary was hit in this scan.")
             self._log(connector.id, scan_run_id, "warning", "No historical boundary was hit in this scan.")
@@ -136,7 +136,7 @@ class SyncService:
         return result
 
     async def import_items(self, connector: Connector, items: list[ConnectorItem], scan_run_id_prefix: str = "import") -> ScanResult:
-        scan_run_id = f"{scan_run_id_prefix}_{datetime.now(UTC).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+        scan_run_id = f"{scan_run_id_prefix}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         result = ScanResult(connector_id=connector.id, scan_run_id=scan_run_id)
         self._log(connector.id, scan_run_id, "info", f"Started import for {connector.name}")
         existing_external_keys = self._existing_external_keys()
@@ -176,7 +176,7 @@ class SyncService:
             if result.first_new_url is None:
                 result.first_new_url = normalized.canonical_url
                 connector.last_top_url = normalized.canonical_url
-        connector.last_successful_scan_at = datetime.now(UTC)
+        connector.last_successful_scan_at = datetime.now(timezone.utc)
         self.db.commit()
         return result
 
@@ -230,7 +230,7 @@ class SyncService:
             .first()
         )
         if ledger_item:
-            ledger_item.last_seen_at = datetime.now(UTC)
+            ledger_item.last_seen_at = datetime.now(timezone.utc)
             ledger_item.is_boundary_hit = True
 
     def _log(self, connector_id: int | None, scan_run_id: str, level: str, message: str) -> None:

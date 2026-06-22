@@ -41,9 +41,10 @@
     const data = JSON.parse(picker.dataset.providerConfigs || "{}")
     const select = picker.querySelector("select")
     const name = picker.querySelector("[data-provider-name]")
-    const url = picker.querySelector("[data-provider-url]")
     const key = picker.querySelector("[data-provider-key]")
-    const modelInput = picker.closest("form")?.querySelector("[data-model-input]")
+    const form = picker.closest("form")
+    const urlInput = form?.querySelector("[data-provider-url-input]")
+    const modelInput = form?.querySelector("[data-model-input]")
 
     const updateModelOptions = (provider, keepCurrent) => {
       if (!modelInput) return
@@ -75,7 +76,7 @@
     const update = (keepCurrent = true) => {
       const provider = data[select.value] || {}
       if (name) name.textContent = provider.display_name || select.value
-      if (url) url.textContent = provider.base_url || "需要你在自定义接口里填写 Base URL"
+      if (urlInput) urlInput.value = provider.base_url || ""
       if (key) key.textContent = provider.api_key_label || "API Key"
       updateModelOptions(provider, keepCurrent)
     }

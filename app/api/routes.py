@@ -44,6 +44,7 @@ from app.llm import (
     get_providers,
     save_model_settings,
     save_provider_api_key,
+    save_provider_base_url,
     test_active_connection,
     test_model_connection,
 )
@@ -333,6 +334,37 @@ PLATFORM_EXCLUSIONS: list[dict[str, str]] = [
     {"name": "纯音乐平台", "reason": "收藏对象通常不是文本知识，暂不进入知识库主链路。"},
 ]
 
+SOCIAL_FAVORITE_PLATFORMS = {
+    "douyin",
+    "tiktok",
+    "xiaohongshu",
+    "bilibili",
+    "youtube",
+    "zhihu",
+    "weibo",
+    "twitter",
+    "instagram",
+    "facebook",
+    "reddit",
+}
+
+FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
+    "douyin": {
+        "status_label": "已支持同步",
+        "status_tone": "success",
+        "support_level": "live",
+        "capability": "本地浏览器登录后，可提取当前收藏 / 喜欢页面可见的视频链接，并进入待处理流程。",
+        "workflow": "打开浏览器 → 登录抖音 → 进入收藏页 → 提取并处理可见收藏",
+    },
+    "xiaohongshu": {
+        "status_label": "可登录，待解析",
+        "status_tone": "warning",
+        "support_level": "login_only",
+        "capability": "已能打开本地浏览器保存登录会话；收藏页解析器还未接入，不会假装同步成功。",
+        "workflow": "打开浏览器 → 登录小红书 → 保存目标页面，等待解析器接入",
+    },
+}
+
 
 def wants_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "")
@@ -490,6 +522,53 @@ def get_active_profile_id(settings: dict[str, Any], payload: dict[str, Any]) -> 
     if profile.get("model") != settings.get("default_model"):
         return ""
     return active_profile_id
+
+
+def favorite_platform_cards(db: Session) -> list[dict[str, Any]]:
+    source_connections = get_source_connections()["connections"]
+    connectors = {connector.platform: connector for connector in db.query(Connector).all()}
+    cards: list[dict[str, Any]] = []
+    for preset in sorted(PLATFORM_PRESETS, key=lambda item: int(item["priority"])):
+        platform = str(preset["platform"])
+        if platform not in SOCIAL_FAVORITE_PLATFORMS:
+            continue
+        connection = source_connections.get(platform, {})
+        connector = connectors.get(platform)
+        capability = FAVORITE_PLATFORM_CAPABILITIES.get(
+            platform,
+            {
+                "status_label": "待接入",
+                "status_tone": "neutral",
+                "support_level": "planned",
+                "capability": "当前先展示接入说明和本地配置入口，真实收藏页解析器将在后续版本接入。",
+                "workflow": "保存接入信息 → 等待平台解析器接入",
+            },
+        )
+        if connection and capability["support_level"] == "planned":
+            status_label = "已保存配置"
+            status_tone = "neutral"
+        else:
+            status_label = capability["status_label"]
+            status_tone = capability["status_tone"]
+        cards.append(
+            {
+                "platform": platform,
+                "name": preset["name"],
+                "logo_url": preset.get("logo_url", ""),
+                "reason": preset["reason"],
+                "auth_hint": preset["auth_hint"],
+                "status_label": status_label,
+                "status_tone": status_tone,
+                "support_level": capability["support_level"],
+                "capability": capability["capability"],
+                "workflow": capability["workflow"],
+                "is_configured": bool(connection),
+                "connector_status": connector.status if connector else "未配置",
+                "last_top_url": connector.last_top_url if connector else "",
+                "manage_url": f"/ui/source-setup/{platform}",
+            }
+        )
+    return cards
 
 
 WIKI_SECTIONS = [
@@ -1021,6 +1100,8 @@ async def v3_home_input(request: Request, db: Session = Depends(get_db)):
         "input_type": route.input_type,
         "source": "home_input",
     }
+    if route.mode == "favorites":
+        return RedirectResponse("/ui/sync", status_code=303)
     if route.content:
         params["prefill"] = route.content[:1600]
     return RedirectResponse(f"/ui/create?{urlencode(params)}", status_code=303)
@@ -1221,7 +1302,21 @@ def guide_page(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/ui/sync", response_class=HTMLResponse)
 def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
-    return RedirectResponse("/ui/source-setup/douyin", status_code=303)
+    cards = favorite_platform_cards(db)
+    live_platforms = [card for card in cards if card["support_level"] == "live"]
+    planned_platforms = [card for card in cards if card["support_level"] != "live"]
+    return templates.TemplateResponse(
+        request,
+        "sync_favorites.html",
+        template_context(
+            request,
+            "sync",
+            db,
+            favorite_platforms=cards,
+            live_platforms=live_platforms,
+            planned_platforms=planned_platforms,
+        ),
+    )
 
 
 @router.get("/ui/import-link", response_class=HTMLResponse)
@@ -1346,8 +1441,9 @@ async def update_model_settings(request: Request):
     data = await request_data(request)
     provider = str(data.get("provider") or data.get("default_provider") or "mock")
     model = str(data.get("model") or data.get("default_model") or "mock-fast")
+    base_url = str(data.get("base_url") or "").strip() if "base_url" in data else None
     api_key = str(data.get("api_key") or "").strip() or None
-    result = save_model_settings(provider=provider, model=model, api_key=api_key)
+    result = save_model_settings(provider=provider, model=model, api_key=api_key, base_url=base_url)
     if wants_html(request):
         return RedirectResponse("/ui/settings?status=saved", status_code=303)
     return result
@@ -1358,8 +1454,11 @@ async def test_model_settings(request: Request):
     data = await request_data(request)
     provider = str(data.get("provider") or data.get("default_provider") or "").strip()
     model = str(data.get("model") or data.get("default_model") or "").strip()
+    base_url = str(data.get("base_url") or "").strip()
     api_key = str(data.get("api_key") or "").strip() or None
-    result = await test_model_connection(provider, model, api_key) if provider else await test_active_connection()
+    if provider and base_url:
+        save_model_settings(provider=provider, model=model, base_url=base_url)
+    result = await test_model_connection(provider, model, api_key, base_url) if provider else await test_active_connection()
     if wants_html(request):
         state = "success" if result["ok"] else "failed"
         return RedirectResponse(f"/ui/settings?test={state}", status_code=303)
@@ -1386,6 +1485,7 @@ async def create_model_profile(request: Request):
     data = await request_data(request)
     provider = str(data.get("provider") or "mock").strip()
     model = str(data.get("model") or "mock-fast").strip()
+    base_url = str(data.get("base_url") or "").strip()
     provider_meta = get_providers().get(provider, {})
     default_name = f"{provider_meta.get('display_name', provider)} · {model}"
     name = str(data.get("name") or default_name).strip() or default_name
@@ -1394,6 +1494,8 @@ async def create_model_profile(request: Request):
     activate = str(data.get("activate") or "on").lower() in {"1", "true", "on", "yes"}
     if api_key:
         save_provider_api_key(provider, api_key)
+    if base_url:
+        save_provider_base_url(provider, base_url)
     payload = get_model_profiles()
     profile = next((item for item in payload["profiles"] if item.get("name") == name), None)
     if profile is None:
@@ -1404,7 +1506,7 @@ async def create_model_profile(request: Request):
         payload["active_profile_id"] = profile["id"]
     write_json(MODEL_PROFILES_PATH, payload)
     if activate:
-        save_model_settings(provider=provider, model=model, api_key=api_key or None)
+        save_model_settings(provider=provider, model=model, api_key=api_key or None, base_url=base_url)
     if wants_html(request):
         status = "model-profile-activated" if activate else "model-profile-saved"
         return RedirectResponse(f"/ui/settings?status={status}", status_code=303)

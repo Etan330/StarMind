@@ -1497,7 +1497,7 @@ th {
     left: 0;
     z-index: 30;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 0;
     border-top: 1px solid var(--color-border);
     background: var(--color-surface);
