@@ -1,0 +1,1390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>StarMind PRD V0.2｜主动知识筛选与维护 Agent</title>
+  <style>
+    :root {
+      --bg: #080d1a;
+      --panel: #11182d;
+      --panel2: #151f3a;
+      --text: #eaf0ff;
+      --muted: #aab7d8;
+      --line: #2a365f;
+      --primary: #7c9cff;
+      --accent: #a855f7;
+      --green: #3ddc97;
+      --yellow: #ffd166;
+      --red: #ff6b6b;
+      --orange: #ff9f1c;
+      --white: #ffffff;
+      --card: #121a31;
+      --code: #0a0f1f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      background:
+        radial-gradient(circle at 10% 0%, rgba(124,156,255,.22), transparent 28%),
+        radial-gradient(circle at 90% 8%, rgba(168,85,247,.18), transparent 30%),
+        linear-gradient(180deg, #080d1a 0%, #0b1020 46%, #070b16 100%);
+      color: var(--text);
+      line-height: 1.65;
+    }
+
+    .page {
+      width: min(1180px, 92vw);
+      margin: 0 auto;
+      padding: 48px 0 80px;
+    }
+
+    .hero {
+      padding: 56px 48px;
+      border: 1px solid rgba(124,156,255,.34);
+      border-radius: 30px;
+      background:
+        linear-gradient(135deg, rgba(17,24,45,.96), rgba(10,15,31,.92)),
+        radial-gradient(circle at 80% 10%, rgba(168,85,247,.35), transparent 28%);
+      box-shadow: 0 22px 90px rgba(0,0,0,.36);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero:after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      bottom: -90px;
+      width: 340px;
+      height: 340px;
+      border-radius: 50%;
+      border: 1px solid rgba(124,156,255,.20);
+      box-shadow: inset 0 0 90px rgba(124,156,255,.12);
+    }
+
+    .eyebrow {
+      color: var(--green);
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      font-size: 13px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: 48px;
+      line-height: 1.08;
+      margin: 0 0 18px;
+      letter-spacing: -0.045em;
+    }
+
+    .subtitle {
+      font-size: 20px;
+      color: var(--muted);
+      max-width: 880px;
+      margin: 0;
+    }
+
+    .meta {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap: 12px;
+      max-width: 960px;
+    }
+
+    .meta div {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.04);
+      padding: 12px 14px;
+      border-radius: 14px;
+    }
+
+    .meta span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .meta strong {
+      display: block;
+      font-size: 14px;
+      margin-top: 2px;
+    }
+
+    section {
+      margin-top: 34px;
+      padding: 34px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 24px;
+      background: rgba(17,24,45,.86);
+      box-shadow: 0 16px 60px rgba(0,0,0,.18);
+    }
+
+    h2 {
+      margin: 0 0 20px;
+      font-size: 28px;
+      letter-spacing: -0.025em;
+    }
+
+    h3 {
+      margin: 26px 0 12px;
+      font-size: 20px;
+      color: #dbe5ff;
+    }
+
+    h4 {
+      margin: 22px 0 8px;
+      font-size: 16px;
+      color: var(--green);
+    }
+
+    p { margin: 10px 0; color: #d9e2fb; }
+    ul, ol { margin: 10px 0 10px 22px; padding: 0; }
+    li { margin: 6px 0; color: #d9e2fb; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 18px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 18px;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.045);
+      border-radius: 18px;
+      padding: 18px;
+    }
+
+    .card strong { color: #fff; }
+
+    .tag {
+      display: inline-block;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(124,156,255,.35);
+      color: #cdd8ff;
+      background: rgba(124,156,255,.12);
+      font-size: 12px;
+      margin: 4px 4px 4px 0;
+    }
+
+    .tag.green { border-color: rgba(61,220,151,.35); background: rgba(61,220,151,.12); color: #c9ffe9; }
+    .tag.yellow { border-color: rgba(255,209,102,.35); background: rgba(255,209,102,.12); color: #fff0c2; }
+    .tag.red { border-color: rgba(255,107,107,.35); background: rgba(255,107,107,.12); color: #ffd0d0; }
+    .tag.orange { border-color: rgba(255,159,28,.35); background: rgba(255,159,28,.12); color: #ffe1b2; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 4px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.1);
+    }
+
+    th, td {
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      color: #d9e2fb;
+      font-size: 14px;
+    }
+
+    th {
+      background: rgba(124,156,255,.13);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    pre {
+      background: var(--code);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      padding: 18px;
+      overflow: auto;
+      color: #dfe7ff;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .note {
+      border-left: 4px solid var(--primary);
+      background: rgba(124,156,255,.10);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #e5ebff;
+      margin: 16px 0;
+    }
+
+    .warning {
+      border-left: 4px solid var(--yellow);
+      background: rgba(255,209,102,.10);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #fff0c2;
+      margin: 16px 0;
+    }
+
+    .danger {
+      border-left: 4px solid var(--red);
+      background: rgba(255,107,107,.10);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #ffd0d0;
+      margin: 16px 0;
+    }
+
+    .diagram-wrap {
+      width: 100%;
+      overflow-x: auto;
+      padding: 18px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(9,14,29,.96), rgba(20,29,56,.86));
+      border: 1px solid rgba(124,156,255,.18);
+      margin: 18px 0;
+    }
+
+    .diagram {
+      min-width: 1000px;
+      display: block;
+    }
+
+    .footer {
+      color: var(--muted);
+      text-align: center;
+      margin-top: 40px;
+      font-size: 13px;
+    }
+
+    .pill-row { margin-top: 18px; }
+
+    .priority-p0 { color: #c9ffe9; font-weight: 700; }
+    .priority-p1 { color: #fff0c2; font-weight: 700; }
+    .priority-p2 { color: #ffd0d0; font-weight: 700; }
+
+    .big-number {
+      font-size: 38px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.04em;
+      margin-bottom: 4px;
+    }
+
+    .score-high { color: #3ddc97; font-weight: 800; }
+    .score-mid { color: #ffd166; font-weight: 800; }
+    .score-low { color: #ff9f1c; font-weight: 800; }
+    .score-ignore { color: #ff6b6b; font-weight: 800; }
+
+    @media (max-width: 900px) {
+      h1 { font-size: 34px; }
+      .hero { padding: 34px 24px; }
+      section { padding: 24px 18px; }
+      .grid-2, .grid-3, .grid-4, .meta { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: #fff; color: #111; }
+      .hero, section { background: #fff; color: #111; box-shadow: none; border-color: #ddd; }
+      p, li, td { color: #222; }
+      h1, h2, h3, th { color: #111; }
+      .subtitle, .meta span, .footer { color: #555; }
+      .diagram-wrap { background: #fff; border-color: #ddd; }
+      .card { background: #fff; border-color: #ddd; }
+      pre { background: #f6f8fa; color: #111; }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">Product Requirements Document / V0.2</div>
+      <h1>StarMind：主动知识筛选与维护 Agent</h1>
+      <p class="subtitle">
+        StarMind 面向高频收藏但缺少整理能力的知识工作者。它不会把用户收藏夹里的所有内容都机械入库，
+        而是把收藏、喜欢、星标、播放列表等行为视为“候选信号”，由评分 Agent 判断是否值得沉淀为长期知识资产。
+        主动同步是核心能力；链接输入是封闭平台的兜底路径。
+      </p>
+
+      <div class="meta">
+        <div><span>文档版本</span><strong>V0.2 / 定位修订版</strong></div>
+        <div><span>核心变化</span><strong>加入知识价值评分机制</strong></div>
+        <div><span>产品原则</span><strong>主动为主，被动兜底</strong></div>
+        <div><span>目标用户</span><strong>高信息密度知识工作者</strong></div>
+      </div>
+
+      <div class="pill-row">
+        <span class="tag green">Active-first</span>
+        <span class="tag green">Scoring before Ingestion</span>
+        <span class="tag">Knowledge Worthiness Score</span>
+        <span class="tag">Self-maintaining Knowledge Base</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>0. 本版核心修订</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>上一版问题</th>
+            <th>本版修订</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>默认“收藏 = 知识”</td>
+            <td>改为“收藏 = 候选信号”，必须经过 Knowledge Worthiness Score 评分。</td>
+            <td>收藏夹里大量内容可能是娱乐、消费、临时兴趣、重复信息，直接入库会污染知识库。</td>
+          </tr>
+          <tr>
+            <td>产品定位偏功能描述</td>
+            <td>重写目标用户、核心痛点、愿景和差异化。</td>
+            <td>需要明确 StarMind 不是收藏导入器，而是主动筛选和维护知识资产的 Agent。</td>
+          </tr>
+          <tr>
+            <td>Agent 主动性表达不够具体</td>
+            <td>拆成主动采集、主动筛选、主动维护三层主动。</td>
+            <td>仅仅自动抓取不是壁垒，真正壁垒是判断什么值得保留，并持续维护。</td>
+          </tr>
+          <tr>
+            <td>被动入口与主动入口关系不清晰</td>
+            <td>明确被动入口只作为封闭平台兜底，所有内容进入同一评分和知识处理链路。</td>
+            <td>避免被动入口变成另一个普通“链接总结工具”。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>1. 产品定位</h2>
+      <div class="note">
+        <strong>StarMind 是一个主动知识筛选与维护 Agent。</strong><br/>
+        它通过用户授权的数据源持续观察收藏行为，把分散在多平台里的“弱收藏信号”转化为候选内容；
+        再通过评分机制筛选出真正值得长期沉淀的内容，自动完成摘要、聚类、关联、复习和更新。
+      </div>
+
+      <h3>一句话定位</h3>
+      <p>
+        <strong>StarMind 把用户散落在各平台收藏夹里的潜在知识资产，筛选、组织并维护成一个持续生长的个人知识系统。</strong>
+      </p>
+
+      <h3>产品边界</h3>
+      <div class="grid-3">
+        <div class="card">
+          <strong>不是收藏夹搬运工具</strong>
+          <p>StarMind 不追求把所有收藏都塞进知识库，而是只保留值得长期复用的内容。</p>
+        </div>
+        <div class="card">
+          <strong>不是简单摘要工具</strong>
+          <p>摘要只是中间产物，最终目标是形成主题、连接、复习和可检索知识资产。</p>
+        </div>
+        <div class="card">
+          <strong>不是全平台黑盒爬虫</strong>
+          <p>主动同步依赖用户授权和网页可见内容；封闭平台走主动发送链接兜底。</p>
+        </div>
+      </div>
+
+      <h3>愿景</h3>
+      <div class="note">
+        <strong>让收藏夹从“信息坟场”变成“会自我筛选、组织和更新的第二大脑”。</strong>
+        StarMind 的长期愿景不是帮用户保存更多信息，而是减少无效信息沉积，让真正有价值的内容持续服务用户的学习、研究和决策。
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 目标用户</h2>
+      <p>StarMind 不应面向所有互联网用户。第一阶段应聚焦“高信息密度 + 高频收藏 + 有知识复用需求”的人群。</p>
+
+      <h3>核心用户画像</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>用户类型</th>
+            <th>典型身份</th>
+            <th>收藏行为</th>
+            <th>核心痛点</th>
+            <th>StarMind 价值</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>学习研究型用户</td>
+            <td>研究生、考研/考证用户、独立研究者</td>
+            <td>收藏课程视频、论文解读、公众号文章、知乎回答、B站教程。</td>
+            <td>资料多但没有体系，复习时找不到重点。</td>
+            <td>把零散收藏整理成主题知识库和复习卡片。</td>
+          </tr>
+          <tr>
+            <td>行业观察型用户</td>
+            <td>产品经理、创业者、投资/咨询/商业分析从业者</td>
+            <td>收藏行业报告、竞品动态、融资新闻、专家观点、趋势分析。</td>
+            <td>信息输入多，但难以沉淀成可复用洞察。</td>
+            <td>自动聚合主题，形成行业观察和决策素材。</td>
+          </tr>
+          <tr>
+            <td>技术成长型用户</td>
+            <td>开发者、AI 工具玩家、自动化实践者</td>
+            <td>Star GitHub 项目，收藏技术文章、YouTube/B站教程、工具测评。</td>
+            <td>工具、框架、教程分散，难以形成完整学习路径。</td>
+            <td>连接项目、教程、概念和实践案例。</td>
+          </tr>
+          <tr>
+            <td>创作者型用户</td>
+            <td>内容创作者、知识博主、课程制作者</td>
+            <td>收藏选题、案例、观点、素材、数据和同行内容。</td>
+            <td>素材沉睡在收藏夹里，产出时难以快速调取。</td>
+            <td>把收藏转成选题库、案例库、观点库。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>非目标用户</h3>
+      <div class="danger">
+        <strong>第一阶段不建议服务纯娱乐收藏用户。</strong>
+        如果用户主要收藏搞笑视频、购物种草、明星动态、临时消费内容，StarMind 的知识库价值不明显。
+        这些内容可以被同步，但默认不应进入核心知识库。
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 用户核心问题</h2>
+      <div class="grid-4">
+        <div class="card">
+          <div class="big-number">01</div>
+          <strong>收藏太容易，整理太难</strong>
+          <p>用户频繁收藏，但不会定期整理，收藏夹逐渐变成不可用仓库。</p>
+        </div>
+        <div class="card">
+          <div class="big-number">02</div>
+          <strong>平台太分散</strong>
+          <p>同一主题内容分布在 B站、抖音、小红书、知乎、YouTube、X 等平台。</p>
+        </div>
+        <div class="card">
+          <div class="big-number">03</div>
+          <strong>价值混杂</strong>
+          <p>收藏夹里同时存在知识、娱乐、消费、临时兴趣、重复内容，直接入库会污染系统。</p>
+        </div>
+        <div class="card">
+          <div class="big-number">04</div>
+          <strong>知识不会自我更新</strong>
+          <p>即使用户手动建库，后续也需要持续打标签、去重、复习、更新，维护成本高。</p>
+        </div>
+      </div>
+
+      <h3>StarMind 要解决的核心问题</h3>
+      <div class="note">
+        <strong>用户不是缺少收藏工具，而是缺少一个能判断“什么值得成为知识”、并持续维护这些知识的主动 Agent。</strong>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. 产品解法：三层主动 + 一层兜底</h2>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>第一层主动：主动采集</h3>
+          <p>用户勾选平台并完成授权后，StarMind 定时同步用户自己可见的收藏、喜欢、星标、播放列表等内容。</p>
+          <span class="tag green">B站</span>
+          <span class="tag green">抖音</span>
+          <span class="tag green">小红书</span>
+          <span class="tag green">YouTube</span>
+          <span class="tag green">X</span>
+        </div>
+        <div class="card">
+          <h3>第二层主动：主动筛选</h3>
+          <p>同步到的内容不会直接进入知识库，而是进入 Candidate Pool，由评分 Agent 判断是否值得沉淀。</p>
+          <span class="tag yellow">Knowledge Worthiness Score</span>
+          <span class="tag yellow">Noise Filter</span>
+        </div>
+        <div class="card">
+          <h3>第三层主动：主动维护</h3>
+          <p>进入知识库后，Agent 持续做去重、聚类、关联、复习、过期检测、知识缺口提示。</p>
+          <span class="tag">Knowledge Graph</span>
+          <span class="tag">Maintenance Loop</span>
+        </div>
+        <div class="card">
+          <h3>兜底路径：被动输入</h3>
+          <p>对微信、公众号等无法主动读取的平台，用户可以主动发送链接、文章、图片或文件，进入同一评分和处理链路。</p>
+          <span class="tag orange">微信</span>
+          <span class="tag orange">公众号</span>
+          <span class="tag orange">PDF / 图片</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>5. 核心机制：Knowledge Worthiness Score</h2>
+      <p>
+        StarMind 需要一个明确的评分机制，判断某条收藏是否应该进入知识库。该机制分为两阶段：
+        <strong>采集后初筛</strong>和<strong>内容解析后精筛</strong>。
+      </p>
+
+      <div class="diagram-wrap">
+        <svg class="diagram" width="1060" height="560" viewBox="0 0 1060 560" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="StarMind 知识价值评分机制图">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#7c9cff"/>
+            </marker>
+            <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+              <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.32"/>
+            </filter>
+            <linearGradient id="scoreG" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0%" stop-color="#7c9cff"/>
+              <stop offset="100%" stop-color="#a855f7"/>
+            </linearGradient>
+          </defs>
+
+          <rect x="20" y="20" width="1020" height="520" rx="26" fill="#0b1020" stroke="#2a365f"/>
+          <text x="50" y="62" fill="#ffffff" font-size="24" font-weight="700">Knowledge Worthiness Score 评分链路</text>
+          <text x="50" y="91" fill="#aab7d8" font-size="14">收藏内容先进入候选池，经过评分后再决定是否进入正式知识库。</text>
+
+          <rect x="60" y="145" width="145" height="80" rx="16" fill="#121a31" stroke="#33416c" filter="url(#shadow)"/>
+          <text x="93" y="176" fill="#ffffff" font-size="15" font-weight="700">收藏信号</text>
+          <text x="78" y="201" fill="#aab7d8" font-size="13">收藏/喜欢/星标</text>
+
+          <rect x="255" y="145" width="155" height="80" rx="16" fill="#121a31" stroke="#33416c" filter="url(#shadow)"/>
+          <text x="296" y="176" fill="#ffffff" font-size="15" font-weight="700">候选池</text>
+          <text x="280" y="201" fill="#aab7d8" font-size="13">Candidate Pool</text>
+
+          <rect x="460" y="95" width="175" height="80" rx="16" fill="#112b32" stroke="#3ddc97" filter="url(#shadow)"/>
+          <text x="500" y="126" fill="#3ddc97" font-size="15" font-weight="700">初筛评分</text>
+          <text x="478" y="151" fill="#c9ffe9" font-size="13">元数据 / 平台 / 行为</text>
+
+          <rect x="460" y="240" width="175" height="80" rx="16" fill="#332815" stroke="#ffd166" filter="url(#shadow)"/>
+          <text x="500" y="271" fill="#ffd166" font-size="15" font-weight="700">内容解析</text>
+          <text x="480" y="296" fill="#fff0c2" font-size="13">正文/字幕/ASR/OCR</text>
+
+          <rect x="690" y="145" width="175" height="80" rx="16" fill="#1e1740" stroke="#a855f7" filter="url(#shadow)"/>
+          <text x="730" y="176" fill="#ffffff" font-size="15" font-weight="700">精筛评分</text>
+          <text x="717" y="201" fill="#d9ccff" font-size="13">信息密度 / 关联 / 新颖性</text>
+
+          <rect x="915" y="85" width="95" height="70" rx="16" fill="#103326" stroke="#3ddc97" filter="url(#shadow)"/>
+          <text x="945" y="113" fill="#3ddc97" font-size="15" font-weight="700">≥80</text>
+          <text x="935" y="137" fill="#c9ffe9" font-size="12">自动入库</text>
+
+          <rect x="915" y="175" width="95" height="70" rx="16" fill="#332815" stroke="#ffd166" filter="url(#shadow)"/>
+          <text x="945" y="203" fill="#ffd166" font-size="15" font-weight="700">60-79</text>
+          <text x="930" y="227" fill="#fff0c2" font-size="12">轻量卡片/待确认</text>
+
+          <rect x="915" y="265" width="95" height="70" rx="16" fill="#3a2414" stroke="#ff9f1c" filter="url(#shadow)"/>
+          <text x="945" y="293" fill="#ff9f1c" font-size="15" font-weight="700">40-59</text>
+          <text x="932" y="317" fill="#ffe1b2" font-size="12">归档不入库</text>
+
+          <rect x="915" y="355" width="95" height="70" rx="16" fill="#3a171d" stroke="#ff6b6b" filter="url(#shadow)"/>
+          <text x="948" y="383" fill="#ff6b6b" font-size="15" font-weight="700">&lt;40</text>
+          <text x="943" y="407" fill="#ffd0d0" font-size="12">忽略</text>
+
+          <rect x="450" y="390" width="235" height="85" rx="16" fill="url(#scoreG)" opacity="0.95" filter="url(#shadow)"/>
+          <text x="493" y="423" fill="#ffffff" font-size="15" font-weight="700">最终 KWS</text>
+          <text x="473" y="448" fill="#ffffff" font-size="13">意图 + 相关性 + 密度 + 新颖性</text>
+
+          <line x1="205" y1="185" x2="255" y2="185" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="410" y1="185" x2="460" y2="135" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="410" y1="185" x2="460" y2="280" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="635" y1="135" x2="690" y2="185" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="635" y1="280" x2="690" y2="185" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="865" y1="185" x2="915" y2="120" stroke="#3ddc97" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="865" y1="185" x2="915" y2="210" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="865" y1="185" x2="915" y2="300" stroke="#ff9f1c" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="865" y1="185" x2="915" y2="390" stroke="#ff6b6b" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <path d="M 777 225 C 750 380, 675 430, 685 432" fill="none" stroke="#a855f7" stroke-width="2.5" marker-end="url(#arrow)" stroke-dasharray="6 7"/>
+        </svg>
+      </div>
+
+      <h3>5.1 评分公式</h3>
+      <pre>KWS = 
+  0.20 × User Intent Signal        用户意图强度
++ 0.20 × Topic Relevance           与用户长期兴趣/当前项目的相关性
++ 0.20 × Information Density       信息密度
++ 0.15 × Novelty                   相对已有知识的新颖性
++ 0.10 × Actionability             是否能转化为行动/方法/案例
++ 0.10 × Source Quality            来源质量
++ 0.05 × Evergreen Value           长期价值
+- Penalty                          噪音、重复、娱乐、低完整度、广告等惩罚项</pre>
+
+      <h3>5.2 分数解释</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>分数区间</th>
+            <th>处理策略</th>
+            <th>产品表现</th>
+            <th>示例</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="score-high">80-100</td>
+            <td>自动进入正式知识库</td>
+            <td>生成完整知识卡片、标签、实体、主题关联、复习问题。</td>
+            <td>用户长期关注 AI Agent，收藏了一篇高质量 Agent 架构文章。</td>
+          </tr>
+          <tr>
+            <td class="score-mid">60-79</td>
+            <td>生成轻量卡片或进入待确认</td>
+            <td>进入 Knowledge Inbox，用户可一键确认入库。</td>
+            <td>一条不错的视频教程，但与用户主线兴趣关联不强。</td>
+          </tr>
+          <tr>
+            <td class="score-low">40-59</td>
+            <td>只归档，不进入核心知识库</td>
+            <td>可搜索，但不参与知识图谱和复习计划。</td>
+            <td>临时收藏的工具测评、消费参考、娱乐向内容。</td>
+          </tr>
+          <tr>
+            <td class="score-ignore">0-39</td>
+            <td>默认忽略</td>
+            <td>不处理或仅保留原始链接日志。</td>
+            <td>重复内容、广告、纯娱乐短视频、抽奖活动、商品页面。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>5.3 评分维度说明</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>维度</th>
+            <th>高分特征</th>
+            <th>低分特征</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>User Intent Signal</td>
+            <td>用户主动收藏、加入专辑、多次收藏同主题、长时间观看/阅读。</td>
+            <td>偶然点赞、短暂停留、误触收藏、一次性娱乐内容。</td>
+          </tr>
+          <tr>
+            <td>Topic Relevance</td>
+            <td>匹配用户设置的目标：AI、自动化、商业分析、学习专题等。</td>
+            <td>与用户长期主题无关，且没有明确项目关联。</td>
+          </tr>
+          <tr>
+            <td>Information Density</td>
+            <td>包含方法论、概念解释、案例、数据、结构化观点。</td>
+            <td>标题党、情绪表达、低信息量口播、纯展示内容。</td>
+          </tr>
+          <tr>
+            <td>Novelty</td>
+            <td>补充已有知识缺口，或提供新框架、新案例、新数据。</td>
+            <td>与已有知识高度重复，或只是同一观点重复表达。</td>
+          </tr>
+          <tr>
+            <td>Actionability</td>
+            <td>可转化为任务、学习路径、工作流、决策依据、案例库。</td>
+            <td>只能看一眼，没有后续复用价值。</td>
+          </tr>
+          <tr>
+            <td>Source Quality</td>
+            <td>可靠作者、权威媒体、技术文档、高质量社区、长内容。</td>
+            <td>营销号、搬运号、无来源、广告、低质量合集。</td>
+          </tr>
+          <tr>
+            <td>Evergreen Value</td>
+            <td>长期有效的方法、模型、概念、案例、基础知识。</td>
+            <td>短期热点、临时折扣、时效很短的娱乐新闻。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>6. 总体产品架构图</h2>
+      <p>相比上一版，本版增加了 Candidate Pool 和 Scoring Agent。所有主动/被动输入都必须经过评分，不直接进入知识库。</p>
+
+      <div class="diagram-wrap">
+        <svg class="diagram" width="1060" height="670" viewBox="0 0 1060 670" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="StarMind V0.2 总体架构图">
+          <defs>
+            <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0%" stop-color="#7c9cff" stop-opacity="0.95"/>
+              <stop offset="100%" stop-color="#a855f7" stop-opacity="0.9"/>
+            </linearGradient>
+            <filter id="shadowA" x="-10%" y="-10%" width="120%" height="120%">
+              <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.32"/>
+            </filter>
+            <marker id="arrowA" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#7c9cff"/>
+            </marker>
+          </defs>
+
+          <rect x="20" y="20" width="1020" height="630" rx="26" fill="#0b1020" stroke="#2a365f"/>
+
+          <text x="50" y="62" fill="#ffffff" font-size="24" font-weight="700">StarMind V0.2 架构：先评分，再入库</text>
+          <text x="50" y="91" fill="#aab7d8" font-size="14">收藏不是知识。收藏先进入候选池，由 Scoring Agent 判断是否值得进入长期知识库。</text>
+
+          <!-- data source -->
+          <rect x="50" y="130" width="170" height="425" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadowA)"/>
+          <text x="75" y="163" fill="#3ddc97" font-size="16" font-weight="700">数据源</text>
+          <rect x="75" y="190" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="100" y="212" fill="#eaf0ff" font-size="13">B站收藏</text>
+          <rect x="75" y="234" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="98" y="256" fill="#eaf0ff" font-size="13">抖音收藏</text>
+          <rect x="75" y="278" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="93" y="300" fill="#eaf0ff" font-size="13">小红书收藏</text>
+          <rect x="75" y="322" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="101" y="344" fill="#eaf0ff" font-size="13">知乎收藏</text>
+          <rect x="75" y="366" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="98" y="388" fill="#eaf0ff" font-size="13">YouTube / X</text>
+          <rect x="75" y="410" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="103" y="432" fill="#eaf0ff" font-size="13">GitHub Star</text>
+          <rect x="75" y="475" width="120" height="42" rx="10" fill="#2a1f3d" stroke="#6d4ca1"/>
+          <text x="90" y="501" fill="#fff0c2" font-size="13">微信/链接兜底</text>
+
+          <!-- connectors -->
+          <rect x="270" y="130" width="165" height="425" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadowA)"/>
+          <text x="302" y="163" fill="#3ddc97" font-size="16" font-weight="700">采集层</text>
+          <rect x="298" y="205" width="110" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="320" y="231" fill="#eaf0ff" font-size="13">Connector</text>
+          <rect x="298" y="275" width="110" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="322" y="301" fill="#eaf0ff" font-size="13">Scheduler</text>
+          <rect x="298" y="345" width="110" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="318" y="371" fill="#eaf0ff" font-size="13">Delta Sync</text>
+          <rect x="298" y="415" width="110" height="42" rx="12" fill="#2a1f3d" stroke="#6d4ca1"/>
+          <text x="318" y="441" fill="#fff0c2" font-size="13">Passive API</text>
+
+          <!-- candidate & scoring -->
+          <rect x="485" y="130" width="185" height="425" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadowA)"/>
+          <text x="516" y="163" fill="#3ddc97" font-size="16" font-weight="700">筛选层</text>
+          <rect x="515" y="190" width="125" height="48" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="537" y="219" fill="#eaf0ff" font-size="13">Candidate Pool</text>
+          <rect x="515" y="260" width="125" height="48" rx="12" fill="#112b32" stroke="#3ddc97"/>
+          <text x="539" y="289" fill="#c9ffe9" font-size="13">Initial Score</text>
+          <rect x="515" y="330" width="125" height="48" rx="12" fill="#332815" stroke="#ffd166"/>
+          <text x="534" y="359" fill="#fff0c2" font-size="13">Content Parse</text>
+          <rect x="515" y="400" width="125" height="48" rx="12" fill="url(#g1)"/>
+          <text x="531" y="429" fill="#ffffff" font-size="13" font-weight="700">Final KWS</text>
+          <rect x="515" y="470" width="125" height="48" rx="12" fill="#3a171d" stroke="#ff6b6b"/>
+          <text x="541" y="499" fill="#ffd0d0" font-size="13">Noise Bin</text>
+
+          <!-- knowledge -->
+          <rect x="720" y="130" width="285" height="425" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadowA)"/>
+          <text x="760" y="163" fill="#3ddc97" font-size="16" font-weight="700">知识层与维护层</text>
+          <rect x="755" y="190" width="95" height="42" rx="12" fill="url(#g1)"/>
+          <text x="773" y="216" fill="#ffffff" font-size="13" font-weight="700">Knowledge</text>
+          <rect x="875" y="190" width="95" height="42" rx="12" fill="url(#g1)"/>
+          <text x="900" y="216" fill="#ffffff" font-size="13" font-weight="700">Graph</text>
+          <rect x="755" y="260" width="95" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="779" y="286" fill="#eaf0ff" font-size="13">Vector DB</text>
+          <rect x="875" y="260" width="95" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="901" y="286" fill="#eaf0ff" font-size="13">Card DB</text>
+          <rect x="755" y="330" width="215" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="808" y="356" fill="#eaf0ff" font-size="13">Maintenance Agent</text>
+          <rect x="755" y="400" width="215" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="797" y="426" fill="#eaf0ff" font-size="13">Daily / Weekly Reflection</text>
+          <rect x="755" y="470" width="215" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="798" y="496" fill="#eaf0ff" font-size="13">Review / Update / Prune</text>
+
+          <!-- arrows -->
+          <line x1="220" y1="342" x2="270" y2="342" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrowA)"/>
+          <line x1="435" y1="342" x2="485" y2="342" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrowA)"/>
+          <line x1="670" y1="342" x2="720" y2="342" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrowA)"/>
+          <path d="M 640 494 C 675 540, 450 580, 380 508" fill="none" stroke="#ff6b6b" stroke-width="2" stroke-dasharray="6 8"/>
+          <text x="445" y="600" fill="#ffd0d0" font-size="13">低分内容不进入核心知识库，只保留日志或进入归档</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>7. 关键功能需求</h2>
+
+      <h3>7.1 主动采集功能</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>功能</th>
+            <th>说明</th>
+            <th>优先级</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>平台勾选</td>
+            <td>用户选择需要同步的平台，如 B站、抖音、小红书、YouTube、X。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>网页登录授权</td>
+            <td>用户在本地或安全浏览器会话中完成登录，StarMind 仅读取用户可见收藏页。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>增量同步</td>
+            <td>只读取新增收藏或变更内容，避免重复处理。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>失败降级</td>
+            <td>若平台同步失败，提示用户通过链接输入补充。</td>
+            <td class="priority-p1">P1</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>7.2 评分与筛选功能</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>功能</th>
+            <th>说明</th>
+            <th>优先级</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Candidate Pool</td>
+            <td>所有采集内容先进入候选池，不直接进入知识库。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>Initial Score</td>
+            <td>基于平台、收藏动作、标题、作者、内容类型、用户兴趣做初筛。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>Final KWS</td>
+            <td>内容解析后，基于信息密度、相关性、新颖性和长期价值评分。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>用户反馈修正</td>
+            <td>用户可标记“这个有用/这个无用”，系统更新偏好。</td>
+            <td class="priority-p1">P1</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>7.3 被动输入功能</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>入口</th>
+            <th>目标场景</th>
+            <th>要求</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>链接输入框</td>
+            <td>微信、公众号、临时网页、无法同步平台。</td>
+            <td>粘贴链接后自动识别平台并进入 Candidate Pool。</td>
+          </tr>
+          <tr>
+            <td>微信/飞书机器人</td>
+            <td>用户从微信/飞书转发文章、链接、图片、文件。</td>
+            <td>机器人收到后调用 StarMind API，所有内容进入评分链路。</td>
+          </tr>
+          <tr>
+            <td>文件上传</td>
+            <td>PDF、截图、图片笔记、书签导出文件。</td>
+            <td>PDF/OCR/HTML Parser 处理后进入评分链路。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>7.4 知识维护功能</h3>
+      <ul>
+        <li>自动去重：同一内容多平台出现时合并。</li>
+        <li>主题聚类：根据语义自动生成主题，如“AI Agent 商业化”“飞书自动化”“机器人行业”。</li>
+        <li>知识图谱：建立“解释、补充、相似、冲突、延伸”关系。</li>
+        <li>复习机制：对高 KWS 内容生成复习问题和周期回顾。</li>
+        <li>知识过期检测：对强时效内容标记过期风险。</li>
+        <li>知识缺口提示：当用户持续关注一个主题但缺少基础概念时，主动提示补充。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>8. MVP 范围</h2>
+
+      <h3>8.1 推荐 MVP 组合</h3>
+      <div class="grid-3">
+        <div class="card">
+          <strong>主动 Connector</strong>
+          <p>B站、抖音、小红书、YouTube。</p>
+          <span class="tag green">P0</span>
+        </div>
+        <div class="card">
+          <strong>评分机制</strong>
+          <p>Candidate Pool + KWS 评分 + 分层处理。</p>
+          <span class="tag green">P0</span>
+        </div>
+        <div class="card">
+          <strong>被动入口</strong>
+          <p>链接输入框 + 微信/飞书机器人二选一。</p>
+          <span class="tag green">P0</span>
+        </div>
+      </div>
+
+      <h3>8.2 平台优先级</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>平台</th>
+            <th>采集对象</th>
+            <th>内容类型</th>
+            <th>优先级</th>
+            <th>备注</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Bilibili</td>
+            <td>收藏夹、稍后看</td>
+            <td>长视频、知识教程</td>
+            <td class="priority-p0">P0</td>
+            <td>适合知识类内容，Demo 表达清晰。</td>
+          </tr>
+          <tr>
+            <td>抖音</td>
+            <td>收藏、喜欢</td>
+            <td>短视频</td>
+            <td class="priority-p0">P0</td>
+            <td>需要强评分过滤，否则娱乐噪音很高。</td>
+          </tr>
+          <tr>
+            <td>小红书</td>
+            <td>收藏笔记</td>
+            <td>图文、生活经验、行业信息</td>
+            <td class="priority-p0">P0</td>
+            <td>需要 OCR 和图文抽取。</td>
+          </tr>
+          <tr>
+            <td>YouTube</td>
+            <td>Liked videos、Playlists</td>
+            <td>长视频、课程、访谈</td>
+            <td class="priority-p0">P0</td>
+            <td>字幕优先，ASR 兜底。</td>
+          </tr>
+          <tr>
+            <td>知乎</td>
+            <td>收藏夹</td>
+            <td>问答、文章</td>
+            <td class="priority-p1">P1</td>
+            <td>适合第二批加入。</td>
+          </tr>
+          <tr>
+            <td>X / Twitter</td>
+            <td>Bookmarks、Likes</td>
+            <td>帖子、Thread、外链</td>
+            <td class="priority-p1">P1</td>
+            <td>适合国际版或技术用户。</td>
+          </tr>
+          <tr>
+            <td>微信公众号</td>
+            <td>用户发送的文章链接</td>
+            <td>文章</td>
+            <td class="priority-p0">P0 兜底</td>
+            <td>不做主动同步，做被动输入。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>9. 用户流程</h2>
+
+      <h3>流程 A：主动同步 + 自动筛选</h3>
+      <pre>1. 用户打开 StarMind，选择关注方向：
+   - AI / 自动化 / 商业分析 / 学习 / 编程 / 创作素材
+
+2. 用户勾选平台：
+   - B站、抖音、小红书、YouTube
+
+3. 用户完成登录或授权。
+
+4. StarMind 拉取最近收藏内容，进入 Candidate Pool。
+
+5. Scoring Agent 做初筛：
+   - 判断平台、标题、作者、内容类型、用户意图。
+
+6. 对候选内容做解析：
+   - 视频转逐字稿，图文做 OCR，文章抽正文。
+
+7. Scoring Agent 做精筛：
+   - 输出 KWS 分数。
+
+8. 系统按分数处理：
+   - ≥80：进入核心知识库
+   - 60-79：进入待确认
+   - 40-59：只归档
+   - &lt;40：忽略
+
+9. Maintenance Agent 对入库内容做摘要、标签、聚类、知识图谱和复习计划。</pre>
+
+      <h3>流程 B：封闭平台被动输入</h3>
+      <pre>1. 用户在微信看到公众号文章。
+2. 用户把文章链接发给 StarMind Agent。
+3. StarMind 不直接入库，而是先进入 Candidate Pool。
+4. 文章正文被抽取后，Scoring Agent 计算 KWS。
+5. 只有达到阈值的内容才进入知识库。
+6. 如果该文章与已有主题相关，自动连接到已有知识图谱。</pre>
+    </section>
+
+    <section>
+      <h2>10. 用户偏好与评分冷启动</h2>
+      <p>评分机制需要知道用户“什么算知识”。因此首次使用时应加入轻量化偏好设置。</p>
+
+      <h3>冷启动问题</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>问题</th>
+            <th>解决方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>系统不知道用户关注什么</td>
+            <td>Onboarding 让用户选择 3-5 个长期关注方向。</td>
+          </tr>
+          <tr>
+            <td>系统不知道哪些平台更重要</td>
+            <td>用户可设置平台权重，例如 B站教程高权重，抖音娱乐低权重。</td>
+          </tr>
+          <tr>
+            <td>系统初期评分可能不准</td>
+            <td>在待确认区让用户快速反馈“有用/无用”。</td>
+          </tr>
+          <tr>
+            <td>用户收藏主题会变化</td>
+            <td>Maintenance Agent 每周更新用户兴趣画像。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>首次设置字段</h3>
+      <pre>{
+  "long_term_interests": ["AI Agent", "自动化", "商业分析", "具身智能"],
+  "current_projects": ["黑客松 StarMind", "个人知识库", "n8n 自动化"],
+  "noise_preferences": ["娱乐短视频", "购物种草", "明星八卦", "抽奖活动"],
+  "platform_weights": {
+    "bilibili": 0.9,
+    "youtube": 0.9,
+    "xiaohongshu": 0.65,
+    "douyin": 0.45
+  }
+}</pre>
+    </section>
+
+    <section>
+      <h2>11. 数据结构更新</h2>
+
+      <h3>11.1 CandidateItem</h3>
+      <pre>{
+  "candidate_id": "cand_001",
+  "user_id": "user_001",
+  "source_type": "active_connector",
+  "platform": "douyin",
+  "collection_type": "favorite",
+  "content_type": "video",
+  "title": "视频标题",
+  "url": "https://...",
+  "author": "作者名",
+  "saved_at": "2026-06-18T10:00:00+09:00",
+  "initial_score": 63,
+  "status": "pending_parse",
+  "raw_metadata": {}
+}</pre>
+
+      <h3>11.2 KnowledgeWorthinessScore</h3>
+      <pre>{
+  "candidate_id": "cand_001",
+  "initial_score": 63,
+  "final_score": 84,
+  "dimensions": {
+    "user_intent_signal": 80,
+    "topic_relevance": 90,
+    "information_density": 86,
+    "novelty": 78,
+    "actionability": 82,
+    "source_quality": 76,
+    "evergreen_value": 88
+  },
+  "penalties": {
+    "duplicate_penalty": 0,
+    "noise_penalty": 5,
+    "low_completeness_penalty": 0
+  },
+  "decision": "auto_ingest",
+  "reason": "内容与用户长期关注的 AI Agent 主题高度相关，信息密度高，且能补充已有知识图谱。"
+}</pre>
+
+      <h3>11.3 KnowledgeItem</h3>
+      <pre>{
+  "knowledge_id": "kn_001",
+  "candidate_id": "cand_001",
+  "user_id": "user_001",
+  "source_url": "https://...",
+  "platform": "youtube",
+  "content_type": "video",
+  "title": "视频标题",
+  "clean_text": "...",
+  "transcript": "...",
+  "summary_short": "一句话摘要",
+  "summary_structured": ["观点1", "观点2", "观点3"],
+  "tags": ["AI Agent", "知识管理", "自动化"],
+  "entities": ["Karpathy", "RAG", "Agent Loop"],
+  "topics": ["Agentic Knowledge Management"],
+  "kws": 84,
+  "knowledge_status": "core",
+  "review_questions": ["这个视频提出的 Agent Loop 有哪几个环节？"],
+  "related_items": [
+    {
+      "knowledge_id": "kn_009",
+      "relation": "补充说明"
+    }
+  ]
+}</pre>
+    </section>
+
+    <section>
+      <h2>12. 页面与交互设计</h2>
+
+      <h3>12.1 Onboarding：定义我的知识目标</h3>
+      <ul>
+        <li>用户选择长期关注方向：AI、商业、自动化、编程、学习、创作、投资、行业研究等。</li>
+        <li>用户填写当前项目：例如“黑客松 StarMind”“AI Agent 商业化研究”。</li>
+        <li>用户选择默认过滤内容：娱乐、购物、明星、抽奖、低质营销等。</li>
+      </ul>
+
+      <h3>12.2 Connector 页面：连接数据源</h3>
+      <ul>
+        <li>平台卡片显示：可同步对象、风险提示、上次同步时间、待处理数量。</li>
+        <li>每个平台允许设置权重：高、中、低。</li>
+        <li>允许关闭某个平台的自动入库，仅做候选收集。</li>
+      </ul>
+
+      <h3>12.3 Candidate Pool 页面：候选内容池</h3>
+      <ul>
+        <li>展示所有新采集内容和初筛分数。</li>
+        <li>支持按平台、分数、主题、内容类型筛选。</li>
+        <li>用户可批量确认、忽略、调整评分。</li>
+      </ul>
+
+      <h3>12.4 Knowledge Inbox 页面：待确认知识</h3>
+      <ul>
+        <li>展示 60-79 分内容。</li>
+        <li>让用户一键选择：入库、归档、忽略、永远忽略类似内容。</li>
+        <li>用户反馈用于训练个人评分偏好。</li>
+      </ul>
+
+      <h3>12.5 Knowledge Map 页面：核心知识库</h3>
+      <ul>
+        <li>仅展示 KWS ≥ 80 或用户确认入库的内容。</li>
+        <li>按主题、标签、实体、时间线组织。</li>
+        <li>支持图谱关系：相似、补充、解释、冲突、延伸。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>13. 技术实现建议</h2>
+
+      <h3>13.1 模块架构</h3>
+      <pre>Source Connectors
+  → Candidate Pool
+  → Initial Scoring Agent
+  → Extractor Router
+      - Web Article Parser
+      - Video Transcript / ASR
+      - OCR
+      - PDF Parser
+  → Final Scoring Agent
+  → Decision Router
+      - Core Knowledge Base
+      - Review Inbox
+      - Archive
+      - Ignore Bin
+  → Maintenance Agent
+      - Deduplicate
+      - Cluster
+      - Link
+      - Review
+      - Update
+      - Prune</pre>
+
+      <h3>13.2 Scoring Agent Prompt 方向</h3>
+      <pre>你是 StarMind 的知识价值评分 Agent。
+你的任务不是总结内容，而是判断这条内容是否值得进入用户的长期知识库。
+
+请基于以下信息评分：
+1. 用户长期关注方向
+2. 用户当前项目
+3. 内容标题、作者、平台
+4. 内容正文/逐字稿
+5. 已有知识库主题
+6. 用户明确排除的噪音类型
+
+输出：
+- 0-100 的 KWS 分数
+- 各维度子分
+- 是否入库的决策
+- 简短理由
+- 若不入库，应归档还是忽略</pre>
+    </section>
+
+    <section>
+      <h2>14. 成功指标</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>指标类型</th>
+            <th>指标</th>
+            <th>MVP 目标</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>主动性</td>
+            <td>主动采集内容占比</td>
+            <td>≥ 70%。</td>
+          </tr>
+          <tr>
+            <td>筛选质量</td>
+            <td>用户确认“有用”的自动入库内容比例</td>
+            <td>≥ 75%。</td>
+          </tr>
+          <tr>
+            <td>污染控制</td>
+            <td>核心知识库中低价值内容占比</td>
+            <td>≤ 15%。</td>
+          </tr>
+          <tr>
+            <td>处理效率</td>
+            <td>从收藏同步到初筛完成</td>
+            <td>Demo 场景 ≤ 30 秒。</td>
+          </tr>
+          <tr>
+            <td>知识组织</td>
+            <td>自动聚类准确率</td>
+            <td>用户主观认可 ≥ 70%。</td>
+          </tr>
+          <tr>
+            <td>留存价值</td>
+            <td>用户每周查看知识报告次数</td>
+            <td>≥ 2 次。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>15. 风险与应对</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>说明</th>
+            <th>应对策略</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>知识库污染</td>
+            <td>收藏夹中娱乐/消费/重复内容过多。</td>
+            <td>KWS 评分 + 阈值入库 + 用户反馈修正。</td>
+          </tr>
+          <tr>
+            <td>评分不准</td>
+            <td>冷启动时系统不了解用户偏好。</td>
+            <td>Onboarding 收集兴趣；待确认区获取反馈；逐步个性化。</td>
+          </tr>
+          <tr>
+            <td>平台同步失败</td>
+            <td>网页登录状态失效、页面结构变化、反自动化。</td>
+            <td>低频同步、手动重连、失败降级为链接输入。</td>
+          </tr>
+          <tr>
+            <td>用户隐私担忧</td>
+            <td>收藏夹可能包含私密兴趣或敏感内容。</td>
+            <td>明确授权范围、支持删除、仅处理用户选择平台、不读取账号密码。</td>
+          </tr>
+          <tr>
+            <td>产品被理解成爬虫</td>
+            <td>评委或用户可能只看到采集功能。</td>
+            <td>路演强调 Scoring Agent 和 Maintenance Agent，核心是筛选与维护。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>16. 黑客松 Demo 脚本</h2>
+      <pre>Demo 目标：证明 StarMind 不是把收藏全塞进知识库，而是主动筛选和维护。
+
+1. 用户首次进入 StarMind，选择关注方向：
+   - AI Agent
+   - 自动化
+   - 商业分析
+   - 个人知识管理
+
+2. 用户连接 B站、抖音、小红书、YouTube。
+
+3. StarMind 自动同步最近 30 条收藏。
+   系统显示：
+   - 30 条进入 Candidate Pool
+   - 12 条高价值自动入库
+   - 8 条进入待确认
+   - 10 条被归档或忽略
+
+4. 展示评分样例：
+   - B站 Karpathy 相关视频：KWS 91，自动入库
+   - 抖音娱乐短视频：KWS 22，忽略
+   - 小红书工具测评：KWS 68，进入待确认
+   - YouTube Agent 教程：KWS 87，自动入库
+
+5. StarMind 自动生成 3 个主题：
+   - Agentic Knowledge Loop
+   - 自动化工作流
+   - AI 产品商业化
+
+6. 用户把一篇微信公众号文章发给 StarMind。
+   文章进入 Candidate Pool，评分 82，被自动连接到“AI 产品商业化”主题。
+
+7. 系统展示每日知识报告：
+   “今天你新增了 12 条高价值知识，我过滤掉了 10 条低价值收藏，并发现你正在形成一个关于 Agentic Knowledge Management 的研究主题。”</pre>
+    </section>
+
+    <section>
+      <h2>17. 路演核心话术</h2>
+      <div class="note">
+        <p><strong>StarMind is not a bookmark importer. It is an active knowledge filtering and maintenance agent.</strong></p>
+        <p>
+          用户的收藏夹里并不全是知识。它混杂了娱乐、消费、临时兴趣和重复信息。
+          StarMind 的核心能力不是“同步更多收藏”，而是主动判断什么值得成为长期知识资产。
+          它会把多平台收藏先放入候选池，通过 Knowledge Worthiness Score 评分筛选，再将高价值内容沉淀为知识卡片、主题和知识图谱。
+          对于微信和公众号等封闭平台，用户可以主动发送链接，仍然进入同一套评分和维护链路。
+        </p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      StarMind PRD V0.2｜主动采集 × 主动筛选 × 主动维护｜收藏不是知识，筛选后才是知识资产
+    </footer>
+  </main>
+</body>
+</html>

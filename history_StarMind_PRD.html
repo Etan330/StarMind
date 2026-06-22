@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>StarMind PRD｜主动知识 Agent 产品需求文档</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #11182d;
+      --panel2: #151f3a;
+      --text: #eaf0ff;
+      --muted: #aab7d8;
+      --line: #2a365f;
+      --primary: #7c9cff;
+      --accent: #a855f7;
+      --green: #3ddc97;
+      --yellow: #ffd166;
+      --red: #ff6b6b;
+      --white: #ffffff;
+      --card: #121a31;
+      --code: #0a0f1f;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      background: radial-gradient(circle at top left, #1a2450 0%, #0b1020 36%, #070b16 100%);
+      color: var(--text);
+      line-height: 1.65;
+    }
+
+    .page {
+      width: min(1180px, 92vw);
+      margin: 0 auto;
+      padding: 48px 0 80px;
+    }
+
+    .hero {
+      padding: 54px 46px;
+      border: 1px solid rgba(124,156,255,.3);
+      border-radius: 28px;
+      background:
+        radial-gradient(circle at 85% 10%, rgba(168,85,247,.28), transparent 28%),
+        radial-gradient(circle at 10% 20%, rgba(124,156,255,.25), transparent 30%),
+        linear-gradient(135deg, rgba(17,24,45,.95), rgba(10,15,31,.92));
+      box-shadow: 0 20px 80px rgba(0,0,0,.35);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero:after {
+      content: "";
+      position: absolute;
+      right: -80px;
+      bottom: -80px;
+      width: 300px;
+      height: 300px;
+      border-radius: 50%;
+      border: 1px solid rgba(124,156,255,.18);
+      box-shadow: inset 0 0 80px rgba(124,156,255,.12);
+    }
+
+    .eyebrow {
+      color: var(--green);
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      font-size: 13px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: 48px;
+      line-height: 1.08;
+      margin: 0 0 18px;
+      letter-spacing: -0.04em;
+    }
+
+    .subtitle {
+      font-size: 20px;
+      color: var(--muted);
+      max-width: 850px;
+      margin: 0;
+    }
+
+    .meta {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap: 12px;
+      max-width: 900px;
+    }
+
+    .meta div {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.04);
+      padding: 12px 14px;
+      border-radius: 14px;
+    }
+
+    .meta span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .meta strong {
+      display: block;
+      font-size: 14px;
+      margin-top: 2px;
+    }
+
+    section {
+      margin-top: 34px;
+      padding: 34px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 24px;
+      background: rgba(17,24,45,.84);
+      box-shadow: 0 16px 60px rgba(0,0,0,.18);
+    }
+
+    h2 {
+      margin: 0 0 20px;
+      font-size: 28px;
+      letter-spacing: -0.02em;
+    }
+
+    h3 {
+      margin: 26px 0 12px;
+      font-size: 20px;
+      color: #dbe5ff;
+    }
+
+    h4 {
+      margin: 22px 0 8px;
+      font-size: 16px;
+      color: var(--green);
+    }
+
+    p { margin: 10px 0; color: #d9e2fb; }
+    ul, ol { margin: 10px 0 10px 22px; padding: 0; }
+    li { margin: 6px 0; color: #d9e2fb; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 18px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 18px;
+    }
+
+    .card {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.04);
+      border-radius: 18px;
+      padding: 18px;
+    }
+
+    .card strong {
+      color: #fff;
+    }
+
+    .tag {
+      display: inline-block;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(124,156,255,.35);
+      color: #cdd8ff;
+      background: rgba(124,156,255,.12);
+      font-size: 12px;
+      margin: 4px 4px 4px 0;
+    }
+
+    .tag.green { border-color: rgba(61,220,151,.35); background: rgba(61,220,151,.12); color: #c9ffe9; }
+    .tag.yellow { border-color: rgba(255,209,102,.35); background: rgba(255,209,102,.12); color: #fff0c2; }
+    .tag.red { border-color: rgba(255,107,107,.35); background: rgba(255,107,107,.12); color: #ffd0d0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 4px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.1);
+    }
+
+    th, td {
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      color: #d9e2fb;
+      font-size: 14px;
+    }
+
+    th {
+      background: rgba(124,156,255,.13);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    pre {
+      background: var(--code);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      padding: 18px;
+      overflow: auto;
+      color: #dfe7ff;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .note {
+      border-left: 4px solid var(--primary);
+      background: rgba(124,156,255,.1);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #e5ebff;
+      margin: 16px 0;
+    }
+
+    .warning {
+      border-left: 4px solid var(--yellow);
+      background: rgba(255,209,102,.1);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #fff0c2;
+      margin: 16px 0;
+    }
+
+    .diagram-wrap {
+      width: 100%;
+      overflow-x: auto;
+      padding: 18px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(9,14,29,.96), rgba(20,29,56,.86));
+      border: 1px solid rgba(124,156,255,.18);
+      margin: 18px 0;
+    }
+
+    .diagram {
+      min-width: 1000px;
+      display: block;
+    }
+
+    .footer {
+      color: var(--muted);
+      text-align: center;
+      margin-top: 40px;
+      font-size: 13px;
+    }
+
+    .pill-row { margin-top: 18px; }
+
+    .priority-p0 { color: #c9ffe9; font-weight: 700; }
+    .priority-p1 { color: #fff0c2; font-weight: 700; }
+    .priority-p2 { color: #ffd0d0; font-weight: 700; }
+
+    @media (max-width: 860px) {
+      h1 { font-size: 34px; }
+      .hero { padding: 34px 24px; }
+      section { padding: 24px 18px; }
+      .grid-2, .grid-3, .meta { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: #fff; color: #111; }
+      .hero, section { background: #fff; color: #111; box-shadow: none; border-color: #ddd; }
+      p, li, td { color: #222; }
+      h1, h2, h3, th { color: #111; }
+      .subtitle, .meta span, .footer { color: #555; }
+      .diagram-wrap { background: #fff; border-color: #ddd; }
+      .card { background: #fff; border-color: #ddd; }
+      pre { background: #f6f8fa; color: #111; }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">Product Requirements Document</div>
+      <h1>StarMind：主动知识 Agent</h1>
+      <p class="subtitle">
+        StarMind 通过用户授权的数据源，主动同步用户在各平台的收藏、喜欢、星标、播放列表和稍后看内容，
+        自动完成内容抽取、摘要、标签、聚类、知识图谱关联和持续维护；同时保留“用户主动发送链接”的被动入口，用于覆盖微信、公众号等封闭平台。
+      </p>
+
+      <div class="meta">
+        <div><span>文档版本</span><strong>V0.1 / Hackathon MVP</strong></div>
+        <div><span>产品阶段</span><strong>原型验证 / Demo 可用</strong></div>
+        <div><span>核心原则</span><strong>主动为主，被动兜底</strong></div>
+        <div><span>目标用户</span><strong>高频收藏 / 信息过载用户</strong></div>
+      </div>
+
+      <div class="pill-row">
+        <span class="tag green">Active-first</span>
+        <span class="tag">Knowledge Agent</span>
+        <span class="tag">Cross-platform Collector</span>
+        <span class="tag">Self-maintaining Knowledge Base</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>1. 产品一句话定义</h2>
+      <div class="note">
+        <strong>StarMind 是一个后台运行的主动知识 Agent。</strong>
+        用户授权后，它会持续观察用户在不同平台的收藏行为，将分散在抖音、小红书、B站、YouTube、X、知乎等平台里的内容，
+        自动转化为一个持续生长、自我维护的个人知识库。
+      </div>
+
+      <h3>核心定位</h3>
+      <div class="grid-3">
+        <div class="card">
+          <strong>不是收藏夹导入器</strong>
+          <p>不是一次性把链接搬进数据库，而是持续监听新增收藏和兴趣信号。</p>
+        </div>
+        <div class="card">
+          <strong>不是摘要工具</strong>
+          <p>不是简单生成摘要，而是做去重、聚类、知识关联、复习和更新。</p>
+        </div>
+        <div class="card">
+          <strong>不是全平台爬虫</strong>
+          <p>开放平台走官方/API/网页登录授权；封闭平台通过主动发送链接作为兜底。</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. 背景与问题</h2>
+      <h3>用户现状</h3>
+      <ul>
+        <li>用户在多个平台收藏了大量内容：视频、图文、文章、帖子、代码项目、问答、PDF。</li>
+        <li>收藏行为本身代表“未来可能有用”，但大多数收藏夹最终变成沉睡仓库。</li>
+        <li>用户没有时间逐条整理，也没有动力持续维护知识库。</li>
+        <li>封闭平台如微信收藏、公众号星标等缺少稳定的第三方自动读取路径。</li>
+      </ul>
+
+      <h3>核心问题</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>问题</th>
+            <th>用户痛点</th>
+            <th>StarMind 解决方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>收藏分散</td>
+            <td>信息散落在不同平台，无法统一检索和复用。</td>
+            <td>通过 Connector 主动同步多平台收藏信号。</td>
+          </tr>
+          <tr>
+            <td>收藏不等于知识</td>
+            <td>收藏后很少回看，无法沉淀为长期记忆。</td>
+            <td>自动抽取、摘要、标签、聚类、建立知识图谱。</td>
+          </tr>
+          <tr>
+            <td>维护成本高</td>
+            <td>知识库需要长期整理，用户难以坚持。</td>
+            <td>Maintenance Agent 周期性去重、更新、复习、清理。</td>
+          </tr>
+          <tr>
+            <td>封闭平台难接入</td>
+            <td>微信等平台不能稳定自动读取收藏。</td>
+            <td>保留被动入口：用户发送链接/文章给 Agent 后自动处理。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>3. 产品目标与非目标</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>产品目标</h3>
+          <ul>
+            <li>实现“授权一次，后台持续同步”的主动知识采集体验。</li>
+            <li>支持主流社交媒体和内容平台的收藏、喜欢、星标、播放列表读取。</li>
+            <li>将不同来源内容统一标准化为 Knowledge Item。</li>
+            <li>通过 Agent 自动完成知识维护，而非仅做摘要。</li>
+            <li>为无法主动读取的平台提供低摩擦被动入口。</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>非目标</h3>
+          <ul>
+            <li>不承诺读取所有平台的私有收藏夹。</li>
+            <li>不要求用户提供账号密码、Cookie 或 Session Token。</li>
+            <li>不绕过验证码、登录限制、付费墙或平台权限。</li>
+            <li>不把微信收藏作为第一阶段主动同步能力。</li>
+            <li>不把“抓取数量”作为核心价值，核心价值是知识维护。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. 核心用户与使用场景</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>用户类型</th>
+            <th>典型行为</th>
+            <th>需求</th>
+            <th>StarMind 价值</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>研究生 / 学习型用户</td>
+            <td>收藏论文、课程视频、公众号文章、知乎回答。</td>
+            <td>把零散资料变成可复习知识体系。</td>
+            <td>自动归类主题、生成复习卡片和知识图谱。</td>
+          </tr>
+          <tr>
+            <td>产品经理 / 创业者</td>
+            <td>收藏竞品、趋势、融资新闻、行业分析。</td>
+            <td>沉淀行业洞察，快速形成专题研究。</td>
+            <td>主动聚合主题，生成趋势线索和行动项。</td>
+          </tr>
+          <tr>
+            <td>开发者 / AI 工具用户</td>
+            <td>Star GitHub 项目，收藏技术博客和视频。</td>
+            <td>持续跟踪工具链、框架和开源项目。</td>
+            <td>自动连接 GitHub Stars、技术文章、教程视频。</td>
+          </tr>
+          <tr>
+            <td>内容重度消费者</td>
+            <td>在小红书、抖音、B站、YouTube 高频收藏。</td>
+            <td>避免收藏夹沉睡，找回真正有用内容。</td>
+            <td>把娱乐式收藏筛选为长期知识资产。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>5. 产品原则：主动为主，被动为辅</h2>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>主动路径：主功能</h3>
+          <p>用户勾选平台并完成授权后，StarMind 后台自动同步用户收藏、喜欢、星标、播放列表等内容。</p>
+          <pre>用户勾选平台
+→ 完成登录/授权
+→ Connector 定时同步
+→ Agent 判断知识价值
+→ 自动入库与维护</pre>
+          <span class="tag green">核心竞争力</span>
+          <span class="tag green">默认体验</span>
+        </div>
+
+        <div class="card">
+          <h3>被动路径：兜底功能</h3>
+          <p>当某些平台无法主动读取收藏夹时，用户可以主动把链接/文章/图片/文件发送给 StarMind。</p>
+          <pre>用户发送链接/文章
+→ StarMind 识别平台
+→ 抽取正文/逐字稿/OCR
+→ 进入同一知识处理链路</pre>
+          <span class="tag yellow">覆盖封闭平台</span>
+          <span class="tag yellow">例如微信公众号</span>
+        </div>
+      </div>
+
+      <div class="warning">
+        <strong>产品表述建议：</strong>
+        StarMind 不是“全平台爬虫”，而是“主动知识 Agent”。对于开放或网页可见的平台，StarMind 主动同步；
+        对于微信、公众号等封闭平台，StarMind 提供发送链接的低摩擦入口作为兜底。
+      </div>
+    </section>
+
+    <section>
+      <h2>6. 总体架构图</h2>
+      <p>StarMind 由“数据源连接层、采集同步层、内容解析层、Agent 处理层、知识存储层、用户交互层”组成。</p>
+
+      <div class="diagram-wrap">
+        <svg class="diagram" width="1060" height="640" viewBox="0 0 1060 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="StarMind 系统架构图">
+          <defs>
+            <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0%" stop-color="#7c9cff" stop-opacity="0.95"/>
+              <stop offset="100%" stop-color="#a855f7" stop-opacity="0.9"/>
+            </linearGradient>
+            <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+              <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.32"/>
+            </filter>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#7c9cff"/>
+            </marker>
+          </defs>
+
+          <rect x="20" y="20" width="1020" height="600" rx="26" fill="#0b1020" stroke="#2a365f"/>
+
+          <text x="50" y="62" fill="#ffffff" font-size="24" font-weight="700">StarMind 主动知识 Agent 架构</text>
+          <text x="50" y="91" fill="#aab7d8" font-size="14">Active-first collector + passive fallback + self-maintaining knowledge base</text>
+
+          <!-- Data sources -->
+          <rect x="50" y="125" width="170" height="410" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="75" y="158" fill="#3ddc97" font-size="16" font-weight="700">数据源连接层</text>
+          <rect x="75" y="182" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="100" y="204" fill="#eaf0ff" font-size="13">B站收藏</text>
+          <rect x="75" y="226" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="98" y="248" fill="#eaf0ff" font-size="13">抖音收藏</text>
+          <rect x="75" y="270" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="93" y="292" fill="#eaf0ff" font-size="13">小红书收藏</text>
+          <rect x="75" y="314" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="101" y="336" fill="#eaf0ff" font-size="13">知乎收藏</text>
+          <rect x="75" y="358" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="96" y="380" fill="#eaf0ff" font-size="13">YouTube</text>
+          <rect x="75" y="402" width="120" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="112" y="424" fill="#eaf0ff" font-size="13">X / GitHub</text>
+          <rect x="75" y="461" width="120" height="40" rx="10" fill="#2a1f3d" stroke="#6d4ca1"/>
+          <text x="93" y="486" fill="#fff0c2" font-size="13">微信链接兜底</text>
+
+          <!-- Collector layer -->
+          <rect x="285" y="125" width="185" height="410" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="315" y="158" fill="#3ddc97" font-size="16" font-weight="700">采集同步层</text>
+          <rect x="315" y="190" width="125" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="333" y="216" fill="#eaf0ff" font-size="13">Connector Manager</text>
+          <rect x="315" y="252" width="125" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="347" y="278" fill="#eaf0ff" font-size="13">Scheduler</text>
+          <rect x="315" y="314" width="125" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="349" y="340" fill="#eaf0ff" font-size="13">Delta Sync</text>
+          <rect x="315" y="376" width="125" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="348" y="402" fill="#eaf0ff" font-size="13">Normalizer</text>
+          <rect x="315" y="438" width="125" height="42" rx="12" fill="#2a1f3d" stroke="#6d4ca1"/>
+          <text x="337" y="464" fill="#fff0c2" font-size="13">Passive Inbox</text>
+
+          <!-- Extractor -->
+          <rect x="530" y="125" width="190" height="410" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="560" y="158" fill="#3ddc97" font-size="16" font-weight="700">内容解析层</text>
+          <rect x="560" y="185" width="130" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="581" y="209" fill="#eaf0ff" font-size="13">网页正文抽取</text>
+          <rect x="560" y="238" width="130" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="583" y="262" fill="#eaf0ff" font-size="13">视频逐字稿</text>
+          <rect x="560" y="291" width="130" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="591" y="315" fill="#eaf0ff" font-size="13">ASR 兜底</text>
+          <rect x="560" y="344" width="130" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="602" y="368" fill="#eaf0ff" font-size="13">OCR</text>
+          <rect x="560" y="397" width="130" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="598" y="421" fill="#eaf0ff" font-size="13">PDF 解析</text>
+          <rect x="560" y="450" width="130" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="585" y="474" fill="#eaf0ff" font-size="13">元数据提取</text>
+
+          <!-- Agent -->
+          <rect x="780" y="125" width="220" height="410" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="813" y="158" fill="#3ddc97" font-size="16" font-weight="700">Agent 处理与知识层</text>
+          <rect x="810" y="185" width="160" height="38" rx="12" fill="url(#g1)" opacity="0.95"/>
+          <text x="851" y="209" fill="#ffffff" font-size="13" font-weight="700">Filter Agent</text>
+          <rect x="810" y="238" width="160" height="38" rx="12" fill="url(#g1)" opacity="0.95"/>
+          <text x="842" y="262" fill="#ffffff" font-size="13" font-weight="700">Knowledge Agent</text>
+          <rect x="810" y="291" width="160" height="38" rx="12" fill="url(#g1)" opacity="0.95"/>
+          <text x="831" y="315" fill="#ffffff" font-size="13" font-weight="700">Maintenance Agent</text>
+          <rect x="810" y="356" width="160" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="845" y="380" fill="#eaf0ff" font-size="13">Vector DB</text>
+          <rect x="810" y="409" width="160" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="850" y="433" fill="#eaf0ff" font-size="13">Graph DB</text>
+          <rect x="810" y="462" width="160" height="38" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="842" y="486" fill="#eaf0ff" font-size="13">Knowledge Cards</text>
+
+          <!-- Arrows -->
+          <line x1="220" y1="330" x2="285" y2="330" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="470" y1="330" x2="530" y2="330" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="720" y1="330" x2="780" y2="330" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+          <path d="M 890 535 C 890 585, 620 585, 620 535" fill="none" stroke="#a855f7" stroke-width="2.5" marker-end="url(#arrow)" stroke-dasharray="6 6"/>
+          <text x="680" y="580" fill="#cdd8ff" font-size="13">周期性复盘、去重、更新、重新关联</text>
+
+          <path d="M 135 500 C 135 575, 890 575, 890 500" fill="none" stroke="#ffd166" stroke-width="2" marker-end="url(#arrow)" stroke-dasharray="6 8"/>
+          <text x="280" y="605" fill="#fff0c2" font-size="13">被动入口进入同一条知识处理链路，不单独做孤立功能</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>7. 主动与被动双路径流程图</h2>
+
+      <div class="diagram-wrap">
+        <svg class="diagram" width="1060" height="540" viewBox="0 0 1060 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="StarMind 主动被动双路径流程图">
+          <defs>
+            <marker id="arrow2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#7c9cff"/>
+            </marker>
+            <filter id="shadow2" x="-10%" y="-10%" width="120%" height="120%">
+              <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.3"/>
+            </filter>
+          </defs>
+
+          <rect x="20" y="20" width="1020" height="500" rx="26" fill="#0b1020" stroke="#2a365f"/>
+
+          <text x="50" y="62" fill="#ffffff" font-size="24" font-weight="700">StarMind 双路径工作流</text>
+          <text x="50" y="91" fill="#aab7d8" font-size="14">主动路径覆盖可同步平台；被动路径覆盖微信、公众号等封闭平台。</text>
+
+          <!-- Active path -->
+          <rect x="60" y="130" width="160" height="76" rx="16" fill="#112b32" stroke="#3ddc97" filter="url(#shadow2)"/>
+          <text x="94" y="160" fill="#3ddc97" font-size="15" font-weight="700">主动路径</text>
+          <text x="82" y="184" fill="#eaf0ff" font-size="13">平台授权 / 网页登录</text>
+
+          <rect x="280" y="130" width="160" height="76" rx="16" fill="#121a31" stroke="#33416c" filter="url(#shadow2)"/>
+          <text x="321" y="160" fill="#ffffff" font-size="15" font-weight="700">Connector</text>
+          <text x="303" y="184" fill="#aab7d8" font-size="13">定时读取新增收藏</text>
+
+          <rect x="500" y="130" width="160" height="76" rx="16" fill="#121a31" stroke="#33416c" filter="url(#shadow2)"/>
+          <text x="539" y="160" fill="#ffffff" font-size="15" font-weight="700">Filter Agent</text>
+          <text x="524" y="184" fill="#aab7d8" font-size="13">判断知识价值</text>
+
+          <!-- Passive path -->
+          <rect x="60" y="300" width="160" height="76" rx="16" fill="#332815" stroke="#ffd166" filter="url(#shadow2)"/>
+          <text x="94" y="330" fill="#ffd166" font-size="15" font-weight="700">被动路径</text>
+          <text x="82" y="354" fill="#fff0c2" font-size="13">用户发送链接/文章</text>
+
+          <rect x="280" y="300" width="160" height="76" rx="16" fill="#121a31" stroke="#33416c" filter="url(#shadow2)"/>
+          <text x="315" y="330" fill="#ffffff" font-size="15" font-weight="700">Passive Inbox</text>
+          <text x="305" y="354" fill="#aab7d8" font-size="13">微信/公众号兜底</text>
+
+          <rect x="500" y="300" width="160" height="76" rx="16" fill="#121a31" stroke="#33416c" filter="url(#shadow2)"/>
+          <text x="537" y="330" fill="#ffffff" font-size="15" font-weight="700">URL Router</text>
+          <text x="520" y="354" fill="#aab7d8" font-size="13">识别平台与内容类型</text>
+
+          <!-- Common -->
+          <rect x="740" y="210" width="170" height="76" rx="16" fill="#121a31" stroke="#7c9cff" filter="url(#shadow2)"/>
+          <text x="781" y="240" fill="#ffffff" font-size="15" font-weight="700">Extractor</text>
+          <text x="765" y="264" fill="#aab7d8" font-size="13">正文/字幕/ASR/OCR</text>
+
+          <rect x="740" y="340" width="170" height="76" rx="16" fill="#1e1740" stroke="#a855f7" filter="url(#shadow2)"/>
+          <text x="784" y="370" fill="#ffffff" font-size="15" font-weight="700">Knowledge</text>
+          <text x="766" y="394" fill="#d9ccff" font-size="13">摘要、标签、聚类、图谱</text>
+
+          <rect x="740" y="80" width="170" height="76" rx="16" fill="#1e1740" stroke="#a855f7" filter="url(#shadow2)"/>
+          <text x="766" y="110" fill="#ffffff" font-size="15" font-weight="700">Maintenance Loop</text>
+          <text x="768" y="134" fill="#d9ccff" font-size="13">去重、更新、复习、清理</text>
+
+          <!-- Arrows -->
+          <line x1="220" y1="168" x2="280" y2="168" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow2)"/>
+          <line x1="440" y1="168" x2="500" y2="168" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow2)"/>
+          <path d="M 660 168 C 700 168, 700 248, 740 248" fill="none" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow2)"/>
+
+          <line x1="220" y1="338" x2="280" y2="338" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrow2)"/>
+          <line x1="440" y1="338" x2="500" y2="338" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrow2)"/>
+          <path d="M 660 338 C 700 338, 700 248, 740 248" fill="none" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrow2)"/>
+
+          <line x1="825" y1="286" x2="825" y2="340" stroke="#a855f7" stroke-width="2.5" marker-end="url(#arrow2)"/>
+          <path d="M 825 340 C 945 290, 945 170, 825 156" fill="none" stroke="#a855f7" stroke-width="2.5" marker-end="url(#arrow2)" stroke-dasharray="6 7"/>
+          <path d="M 825 156 C 700 170, 700 320, 740 360" fill="none" stroke="#a855f7" stroke-width="2.5" marker-end="url(#arrow2)" stroke-dasharray="6 7"/>
+
+          <text x="66" y="440" fill="#aab7d8" font-size="13">原则：主动路径是默认能力；被动路径只用于封闭平台和临时补充输入。</text>
+        </svg>
+      </div>
+    </section>
+
+    <section>
+      <h2>8. MVP 功能范围</h2>
+
+      <h3>8.1 主动采集 Connector</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>平台</th>
+            <th>采集对象</th>
+            <th>优先级</th>
+            <th>MVP 目标</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Bilibili</td>
+            <td>收藏夹、稍后再看、视频元数据</td>
+            <td class="priority-p0">P0</td>
+            <td>读取收藏视频列表，转为知识卡片，视频内容走字幕/ASR。</td>
+          </tr>
+          <tr>
+            <td>抖音</td>
+            <td>收藏视频、喜欢视频</td>
+            <td class="priority-p0">P0</td>
+            <td>读取用户自己可见的收藏/喜欢列表，调用豆包或 ASR 获取逐字稿。</td>
+          </tr>
+          <tr>
+            <td>小红书</td>
+            <td>收藏笔记、点赞笔记</td>
+            <td class="priority-p0">P0</td>
+            <td>读取笔记链接、标题、作者、封面；图文走 OCR/正文抽取。</td>
+          </tr>
+          <tr>
+            <td>知乎</td>
+            <td>收藏夹、回答、文章</td>
+            <td class="priority-p1">P1</td>
+            <td>读取收藏内容，抽取正文与问答结构。</td>
+          </tr>
+          <tr>
+            <td>YouTube</td>
+            <td>Liked videos、Playlists</td>
+            <td class="priority-p0">P0</td>
+            <td>读取视频列表，字幕优先，ASR 兜底。</td>
+          </tr>
+          <tr>
+            <td>X / Twitter</td>
+            <td>Bookmarks、Likes</td>
+            <td class="priority-p1">P1</td>
+            <td>读取帖子和 thread，保留原文结构和外链。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>8.2 被动输入能力</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>入口</th>
+            <th>覆盖场景</th>
+            <th>处理方式</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>链接输入框</td>
+            <td>用户粘贴任意文章/视频/PDF 链接。</td>
+            <td>URL Router 识别平台后进入 Extractor。</td>
+          </tr>
+          <tr>
+            <td>微信/飞书机器人</td>
+            <td>公众号文章、微信群链接、文件转发。</td>
+            <td>机器人接收消息，转发给 StarMind API。</td>
+          </tr>
+          <tr>
+            <td>文件上传</td>
+            <td>PDF、图片、截图、导出的书签文件。</td>
+            <td>PDF Parser / OCR / HTML Bookmark Parser。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>8.3 知识处理能力</h3>
+      <ul>
+        <li>标题、作者、平台、URL、收藏时间、封面等元数据提取。</li>
+        <li>文章正文抽取、视频逐字稿、OCR、PDF 解析。</li>
+        <li>一句话摘要、结构化摘要、关键词、标签、实体识别。</li>
+        <li>自动去重：同一内容多平台出现时合并。</li>
+        <li>主题聚类：把收藏内容归入自动生成的研究主题。</li>
+        <li>知识图谱：内容之间建立“相似 / 解释 / 补充 / 冲突 / 延伸”关系。</li>
+        <li>周期性维护：每日/每周生成知识更新报告。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>9. 用户核心流程</h2>
+
+      <h3>流程 A：主动同步</h3>
+      <pre>1. 用户进入 StarMind Onboarding
+2. 用户勾选想接入的平台：B站 / 抖音 / 小红书 / YouTube / X
+3. 系统打开授权或网页登录流程
+4. 用户完成登录并确认“允许 StarMind 读取自己可见的收藏列表”
+5. Connector 拉取最近 N 条收藏内容
+6. Filter Agent 过滤低价值/重复/娱乐噪音内容
+7. Extractor 抽取正文、字幕、逐字稿或图片文字
+8. Knowledge Agent 生成摘要、标签、实体和主题
+9. Maintenance Agent 建立知识关联并生成首次知识图谱
+10. 后台 Scheduler 持续同步新增收藏</pre>
+
+      <h3>流程 B：被动补充</h3>
+      <pre>1. 用户在微信看到公众号文章
+2. 用户转发给 StarMind 机器人，或复制链接到 StarMind
+3. StarMind 识别为微信公众号文章
+4. 抽取正文、标题、作者、发布时间
+5. 进入与主动路径完全相同的知识处理链路
+6. 如果内容与已有主题相关，自动合并到对应主题</pre>
+    </section>
+
+    <section>
+      <h2>10. Agent 设计</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>职责</th>
+            <th>输入</th>
+            <th>输出</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Observer / Collector Agent</td>
+            <td>监听和拉取用户授权数据源中的新增收藏。</td>
+            <td>平台连接状态、收藏列表、增量游标。</td>
+            <td>Raw Item 列表。</td>
+          </tr>
+          <tr>
+            <td>Filter Agent</td>
+            <td>判断内容是否值得进入知识库，过滤低价值噪音。</td>
+            <td>标题、平台、作者、内容类型、用户兴趣画像。</td>
+            <td>Knowledge Worthiness Score。</td>
+          </tr>
+          <tr>
+            <td>Extractor Agent</td>
+            <td>抽取正文、逐字稿、图片文字、PDF 文本。</td>
+            <td>URL、页面 HTML、视频链接、图片、PDF。</td>
+            <td>Clean Text / Transcript。</td>
+          </tr>
+          <tr>
+            <td>Knowledge Agent</td>
+            <td>生成摘要、标签、实体、主题和知识卡片。</td>
+            <td>Clean Text / Transcript。</td>
+            <td>Knowledge Item。</td>
+          </tr>
+          <tr>
+            <td>Maintenance Agent</td>
+            <td>持续维护知识库，做去重、合并、更新、复习和清理。</td>
+            <td>新旧 Knowledge Items、用户行为反馈。</td>
+            <td>知识图谱更新、复习报告、待处理建议。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>11. 核心数据结构</h2>
+
+      <h3>11.1 Source Connector</h3>
+      <pre>{
+  "connector_id": "conn_bilibili_001",
+  "user_id": "user_001",
+  "platform": "bilibili",
+  "connector_type": "web_session",
+  "status": "active",
+  "sync_frequency": "daily",
+  "last_sync_at": "2026-06-18T10:00:00+09:00",
+  "auth_method": "user_login_session",
+  "scope": ["favorites", "watch_later"]
+}</pre>
+
+      <h3>11.2 RawKnowledgeItem</h3>
+      <pre>{
+  "raw_item_id": "raw_001",
+  "user_id": "user_001",
+  "platform": "douyin",
+  "source_type": "active_connector",
+  "collection_type": "favorite",
+  "content_type": "video",
+  "title": "视频标题",
+  "url": "https://...",
+  "author": "作者名",
+  "saved_at": "2026-06-18T10:00:00+09:00",
+  "cover_url": "https://...",
+  "raw_metadata": {}
+}</pre>
+
+      <h3>11.3 KnowledgeItem</h3>
+      <pre>{
+  "knowledge_id": "kn_001",
+  "user_id": "user_001",
+  "source_url": "https://...",
+  "platform": "youtube",
+  "content_type": "video",
+  "title": "视频标题",
+  "clean_text": "...",
+  "transcript": "...",
+  "summary_short": "一句话摘要",
+  "summary_structured": ["观点1", "观点2", "观点3"],
+  "tags": ["AI Agent", "知识管理", "自动化"],
+  "entities": ["Karpathy", "RAG", "Agent Loop"],
+  "topics": ["Agentic Knowledge Management"],
+  "related_items": [
+    {
+      "knowledge_id": "kn_009",
+      "relation": "补充说明"
+    }
+  ],
+  "knowledge_score": 0.86,
+  "status": "active"
+}</pre>
+    </section>
+
+    <section>
+      <h2>12. 平台接入策略</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>平台类型</th>
+            <th>示例</th>
+            <th>接入方式</th>
+            <th>产品策略</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Web 收藏页可见</td>
+            <td>B站、微博、知乎、小红书、抖音</td>
+            <td>网页登录 + 浏览器自动化 + 增量同步</td>
+            <td>主动路径优先支持。</td>
+          </tr>
+          <tr>
+            <td>官方 API 可用</td>
+            <td>YouTube、X、GitHub、Readwise、Raindrop</td>
+            <td>OAuth / API Token</td>
+            <td>正式版优先做，稳定性高。</td>
+          </tr>
+          <tr>
+            <td>封闭但链接可解析</td>
+            <td>微信公众号文章、微信聊天链接</td>
+            <td>用户主动发送链接 / 机器人入口</td>
+            <td>被动路径兜底。</td>
+          </tr>
+          <tr>
+            <td>高风险封闭收藏</td>
+            <td>微信收藏、小红书深度私域、Instagram Saved</td>
+            <td>不作为 MVP 承诺</td>
+            <td>未来考虑本地授权迁移工具。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>13. MVP 页面设计</h2>
+      <h3>13.1 Onboarding：选择数据源</h3>
+      <ul>
+        <li>标题：连接你的收藏源。</li>
+        <li>副标题：选择你常用的平台，StarMind 会在后台自动同步新增收藏。</li>
+        <li>平台卡片：B站、抖音、小红书、知乎、YouTube、X、GitHub。</li>
+        <li>每个平台显示：可同步对象、同步方式、隐私说明、连接按钮。</li>
+      </ul>
+
+      <h3>13.2 Knowledge Inbox：待处理知识收件箱</h3>
+      <ul>
+        <li>展示新同步但尚未完全处理的内容。</li>
+        <li>显示处理状态：已抓取 / 正在解析 / 已入库 / 需要用户确认。</li>
+        <li>支持用户手动保留、忽略、加入专题。</li>
+      </ul>
+
+      <h3>13.3 Knowledge Map：知识图谱</h3>
+      <ul>
+        <li>以主题为中心展示内容节点。</li>
+        <li>节点类型包括：视频、文章、图文笔记、问答、代码项目、PDF。</li>
+        <li>边关系包括：相似、补充、引用、冲突、延伸。</li>
+      </ul>
+
+      <h3>13.4 Daily Reflection：每日知识报告</h3>
+      <ul>
+        <li>今日新增内容数量。</li>
+        <li>新增主题和高频关键词。</li>
+        <li>值得复习的旧内容。</li>
+        <li>Agent 发现的知识缺口和后续阅读建议。</li>
+      </ul>
+
+      <h3>13.5 Passive Add：手动补充入口</h3>
+      <ul>
+        <li>粘贴链接输入框。</li>
+        <li>上传文件按钮。</li>
+        <li>微信/飞书机器人入口说明。</li>
+        <li>提示语：用于微信、公众号等无法主动同步的平台。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>14. 技术实现建议</h2>
+      <h3>14.1 Hackathon 技术栈</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>推荐实现</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>自动化采集</td>
+            <td>Python + Playwright</td>
+            <td>网页登录、滚动收藏列表、解析 DOM、增量同步。</td>
+          </tr>
+          <tr>
+            <td>流程编排</td>
+            <td>n8n / FastAPI</td>
+            <td>Webhook、定时任务、调用 LLM、写入数据库。</td>
+          </tr>
+          <tr>
+            <td>临时数据库</td>
+            <td>飞书多维表格 / Supabase</td>
+            <td>黑客松阶段可快速展示和管理数据。</td>
+          </tr>
+          <tr>
+            <td>向量检索</td>
+            <td>Chroma / Supabase Vector / Qdrant</td>
+            <td>支持语义搜索和相关内容召回。</td>
+          </tr>
+          <tr>
+            <td>内容解析</td>
+            <td>Readability + ASR + OCR + PDF Parser</td>
+            <td>不同内容类型走不同 Extractor。</td>
+          </tr>
+          <tr>
+            <td>LLM / Agent</td>
+            <td>豆包 / OpenAI / Claude / Qwen</td>
+            <td>摘要、标签、实体、主题聚类、维护逻辑。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>14.2 Connector 函数抽象</h3>
+      <pre>class BaseConnector:
+    def login_check(self):
+        pass
+
+    def fetch_collections(self):
+        pass
+
+    def fetch_items(self, collection_id, cursor=None):
+        pass
+
+    def normalize_item(self, raw):
+        pass
+
+    def sync_delta(self):
+        pass</pre>
+    </section>
+
+    <section>
+      <h2>15. 成功指标</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>指标类型</th>
+            <th>指标</th>
+            <th>MVP 目标</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>接入能力</td>
+            <td>可用 Connector 数量</td>
+            <td>至少 3 个主动 Connector + 1 个被动入口。</td>
+          </tr>
+          <tr>
+            <td>处理能力</td>
+            <td>内容解析成功率</td>
+            <td>核心 Demo 平台 ≥ 80%。</td>
+          </tr>
+          <tr>
+            <td>知识生成</td>
+            <td>知识卡片生成成功率</td>
+            <td>≥ 90%。</td>
+          </tr>
+          <tr>
+            <td>主动性</td>
+            <td>无需用户手动发送的内容占比</td>
+            <td>≥ 70%。</td>
+          </tr>
+          <tr>
+            <td>体验</td>
+            <td>首次连接到知识图谱生成时间</td>
+            <td>Demo 场景控制在 3 分钟内。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>16. 风险与边界</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>影响</th>
+            <th>应对策略</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>平台反自动化</td>
+            <td>Connector 失效或同步失败。</td>
+            <td>低频同步、人工登录、不绕过验证码、失败后降级为链接输入。</td>
+          </tr>
+          <tr>
+            <td>隐私风险</td>
+            <td>用户对收藏、历史、私密内容敏感。</td>
+            <td>明确授权范围；不保存账号密码；支持删除数据；敏感内容本地处理优先。</td>
+          </tr>
+          <tr>
+            <td>内容解析失败</td>
+            <td>无法生成摘要或逐字稿。</td>
+            <td>多 Extractor 兜底：字幕、ASR、OCR、人工链接补充。</td>
+          </tr>
+          <tr>
+            <td>知识库污染</td>
+            <td>娱乐/低价值内容过多。</td>
+            <td>Filter Agent 评分；用户可设置兴趣主题和忽略规则。</td>
+          </tr>
+          <tr>
+            <td>被质疑“只是爬虫”</td>
+            <td>产品价值被低估。</td>
+            <td>路演重点放在主动维护循环和知识图谱，而非抓取本身。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>17. 黑客松 Demo 脚本</h2>
+      <pre>场景：一个用户平时在 B站、小红书、YouTube 收藏大量 AI Agent 和知识管理内容。
+
+1. 用户打开 StarMind。
+2. 勾选 B站、小红书、YouTube 三个平台。
+3. StarMind 读取最近收藏内容。
+4. 系统自动生成 20 张知识卡片。
+5. Agent 识别出 3 个主题：
+   - AI Agent
+   - 个人知识管理
+   - 自动化工作流
+6. StarMind 自动发现：
+   “你在 B站收藏的 Karpathy 视频”和“小红书的知识库笔记”属于同一个主题。
+7. 系统生成知识图谱。
+8. 用户再把一篇微信公众号文章发送给 StarMind。
+9. 文章被自动归入“AI Agent”主题。
+10. StarMind 输出今日知识报告：
+    “你今天新增了 7 个 Agent 相关知识点，我已经合并为一个研究专题，并发现 2 个可继续学习的问题。”</pre>
+    </section>
+
+    <section>
+      <h2>18. 路演核心话术</h2>
+      <div class="note">
+        <p>
+          <strong>StarMind is not a bookmark importer. It is a background knowledge agent.</strong>
+        </p>
+        <p>
+          StarMind 主动同步用户授权平台上的收藏、喜欢、星标和播放列表，把这些分散的弱收藏行为转化为结构化知识。
+          对于微信、公众号等无法主动同步的平台，StarMind 提供链接发送入口作为兜底。最终，用户不再需要手动维护知识库，
+          因为 StarMind 会持续帮用户收集、理解、连接、更新和复习知识。
+        </p>
+      </div>
+    </section>
+
+    <footer class="footer">
+      StarMind PRD V0.1｜主动为主，被动兜底｜Generated for Hackathon Product Design
+    </footer>
+  </main>
+</body>
+</html>

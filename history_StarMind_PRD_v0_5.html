@@ -1,0 +1,1369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>StarMind PRD V0.5｜原始资料不可变，边界链接增量同步</title>
+  <style>
+    :root {
+      --bg: #080d1a;
+      --panel: #11182d;
+      --panel2: #151f3a;
+      --text: #eaf0ff;
+      --muted: #aab7d8;
+      --line: #2a365f;
+      --primary: #7c9cff;
+      --accent: #a855f7;
+      --green: #3ddc97;
+      --yellow: #ffd166;
+      --red: #ff6b6b;
+      --orange: #ff9f1c;
+      --code: #0a0f1f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(124,156,255,.22), transparent 28%),
+        radial-gradient(circle at 88% 8%, rgba(168,85,247,.18), transparent 30%),
+        linear-gradient(180deg, #080d1a 0%, #0b1020 48%, #070b16 100%);
+      color: var(--text);
+      line-height: 1.66;
+    }
+
+    .page {
+      width: min(1180px, 92vw);
+      margin: 0 auto;
+      padding: 48px 0 80px;
+    }
+
+    .hero {
+      padding: 56px 48px;
+      border: 1px solid rgba(124,156,255,.34);
+      border-radius: 30px;
+      background:
+        linear-gradient(135deg, rgba(17,24,45,.96), rgba(10,15,31,.92)),
+        radial-gradient(circle at 80% 10%, rgba(168,85,247,.35), transparent 28%);
+      box-shadow: 0 22px 90px rgba(0,0,0,.36);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero:after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      bottom: -90px;
+      width: 340px;
+      height: 340px;
+      border-radius: 50%;
+      border: 1px solid rgba(124,156,255,.20);
+      box-shadow: inset 0 0 90px rgba(124,156,255,.12);
+    }
+
+    .eyebrow {
+      color: var(--green);
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      font-size: 13px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      font-size: 46px;
+      line-height: 1.08;
+      margin: 0 0 18px;
+      letter-spacing: -0.045em;
+    }
+
+    .subtitle {
+      font-size: 20px;
+      color: var(--muted);
+      max-width: 920px;
+      margin: 0;
+    }
+
+    .meta {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap: 12px;
+      max-width: 980px;
+    }
+
+    .meta div {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.04);
+      padding: 12px 14px;
+      border-radius: 14px;
+    }
+
+    .meta span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .meta strong {
+      display: block;
+      font-size: 14px;
+      margin-top: 2px;
+    }
+
+    section {
+      margin-top: 34px;
+      padding: 34px;
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 24px;
+      background: rgba(17,24,45,.86);
+      box-shadow: 0 16px 60px rgba(0,0,0,.18);
+    }
+
+    h2 {
+      margin: 0 0 20px;
+      font-size: 28px;
+      letter-spacing: -0.025em;
+    }
+
+    h3 {
+      margin: 26px 0 12px;
+      font-size: 20px;
+      color: #dbe5ff;
+    }
+
+    p { margin: 10px 0; color: #d9e2fb; }
+    ul, ol { margin: 10px 0 10px 22px; padding: 0; }
+    li { margin: 6px 0; color: #d9e2fb; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0,1fr));
+      gap: 18px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0,1fr));
+      gap: 18px;
+    }
+
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0,1fr));
+      gap: 14px;
+    }
+
+    .card {
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.045);
+      border-radius: 18px;
+      padding: 18px;
+    }
+
+    .card strong { color: #fff; }
+
+    .tag {
+      display: inline-block;
+      padding: 4px 9px;
+      border-radius: 999px;
+      border: 1px solid rgba(124,156,255,.35);
+      color: #cdd8ff;
+      background: rgba(124,156,255,.12);
+      font-size: 12px;
+      margin: 4px 4px 4px 0;
+    }
+
+    .tag.green { border-color: rgba(61,220,151,.35); background: rgba(61,220,151,.12); color: #c9ffe9; }
+    .tag.yellow { border-color: rgba(255,209,102,.35); background: rgba(255,209,102,.12); color: #fff0c2; }
+    .tag.red { border-color: rgba(255,107,107,.35); background: rgba(255,107,107,.12); color: #ffd0d0; }
+    .tag.orange { border-color: rgba(255,159,28,.35); background: rgba(255,159,28,.12); color: #ffe1b2; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 4px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,.1);
+    }
+
+    th, td {
+      padding: 12px 14px;
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      color: #d9e2fb;
+      font-size: 14px;
+    }
+
+    th {
+      background: rgba(124,156,255,.13);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    pre {
+      background: var(--code);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 16px;
+      padding: 18px;
+      overflow: auto;
+      color: #dfe7ff;
+      font-size: 13px;
+      line-height: 1.55;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    .note {
+      border-left: 4px solid var(--primary);
+      background: rgba(124,156,255,.10);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #e5ebff;
+      margin: 16px 0;
+    }
+
+    .warning {
+      border-left: 4px solid var(--yellow);
+      background: rgba(255,209,102,.10);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #fff0c2;
+      margin: 16px 0;
+    }
+
+    .danger {
+      border-left: 4px solid var(--red);
+      background: rgba(255,107,107,.10);
+      padding: 14px 16px;
+      border-radius: 12px;
+      color: #ffd0d0;
+      margin: 16px 0;
+    }
+
+    .diagram-wrap {
+      width: 100%;
+      overflow-x: auto;
+      padding: 18px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(9,14,29,.96), rgba(20,29,56,.86));
+      border: 1px solid rgba(124,156,255,.18);
+      margin: 18px 0;
+    }
+
+    .diagram {
+      min-width: 1000px;
+      display: block;
+    }
+
+    .footer {
+      color: var(--muted);
+      text-align: center;
+      margin-top: 40px;
+      font-size: 13px;
+    }
+
+    .pill-row { margin-top: 18px; }
+
+    .priority-p0 { color: #c9ffe9; font-weight: 700; }
+    .priority-p1 { color: #fff0c2; font-weight: 700; }
+
+    .big-number {
+      font-size: 38px;
+      font-weight: 800;
+      color: #fff;
+      letter-spacing: -0.04em;
+      margin-bottom: 4px;
+    }
+
+    @media (max-width: 900px) {
+      h1 { font-size: 34px; }
+      .hero { padding: 34px 24px; }
+      section { padding: 24px 18px; }
+      .grid-2, .grid-3, .grid-4, .meta { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: #fff; color: #111; }
+      .hero, section { background: #fff; color: #111; box-shadow: none; border-color: #ddd; }
+      p, li, td { color: #222; }
+      h1, h2, h3, th { color: #111; }
+      .subtitle, .meta span, .footer { color: #555; }
+      .diagram-wrap { background: #fff; border-color: #ddd; }
+      .card { background: #fff; border-color: #ddd; }
+      pre { background: #f6f8fa; color: #111; }
+    }
+  </style>
+</head>
+
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="eyebrow">Product Requirements Document / V0.5</div>
+      <h1>StarMind：主动知识筛选与边界链接同步 Agent</h1>
+      <p class="subtitle">
+        StarMind 面向高频收藏但无力整理的知识工作者。收藏夹已经代表用户做过一次粗筛，因此 StarMind 不做复杂价值评分，
+        只判断内容是否属于知识/干货类。知识类内容进入“原始资料库”，原始资料永久保留、不可被 Agent 删除。
+        增量同步不再依赖时间戳作为主逻辑，而是记录上一次扫描时收藏列表顶部或最后处理到的“边界链接”。下一次扫描时，从最新收藏开始读取，直到遇到已存在于原始资料库或同步账本中的边界链接即停止。
+      </p>
+
+      <div class="meta">
+        <div><span>文档版本</span><strong>V0.5 / 边界链接同步修订版</strong></div>
+        <div><span>评分原则</span><strong>只判断是否为知识</strong></div>
+        <div><span>维护原则</span><strong>只维护派生知识层</strong></div>
+        <div><span>同步原则</span><strong>边界链接停止爬取</strong></div>
+      </div>
+
+      <div class="pill-row">
+        <span class="tag green">Knowledge / Non-knowledge Classifier</span>
+        <span class="tag green">Immutable Raw Sources</span>
+        <span class="tag">Mutable Wiki / SOP</span>
+        <span class="tag">Ingest → Query → Lint</span>
+        <span class="tag yellow">Boundary URL Sync</span>
+      </div>
+    </header>
+
+    <section>
+      <h2>0. 本版核心修订</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>修订项</th>
+            <th>上一版问题</th>
+            <th>V0.3 修订方案</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>评分机制</td>
+            <td>使用多维 KWS 评分，过度复杂，且忽略“用户收藏已经是一次粗筛”。</td>
+            <td>改为单维度判断：是否为知识/干货类内容。知识类直接入库；文娱类剔除。</td>
+          </tr>
+          <tr>
+            <td>知识维护</td>
+            <td>只写了摘要、标签、图谱，缺少可解释的自主迭代逻辑。</td>
+            <td>引入 Karpathy LLM Wiki 模式：Raw Sources → LLM Wiki → Ingest / Query / Lint 循环。</td>
+          </tr>
+          <tr>
+            <td>同步去重</td>
+            <td>没有明确说明定期扫描时如何避免重复读取。</td>
+            <td>新增 Sync Ledger。用平台收藏时间戳/扫描时间戳做增量扫描，不依赖知识库内容做去重。</td>
+          </tr>
+          <tr>
+            <td>知识库删除问题</td>
+            <td>如果用知识库做去重，知识自主迭代删除后会导致旧内容被重复抓取。</td>
+            <td>Wiki/SOP 与 Raw Sources/Sync Ledger 分离。即使派生知识被删除，Raw Sources 和 Sync Ledger 仍能作为稳定停止依据。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>0.1 本版新增核心原则：原始资料不可变，派生知识可迭代</h2>
+      <div class="note">
+        <strong>StarMind 必须把“原始资料”和“沉淀后的方法论/SOP”彻底分层。</strong>
+        用户收藏进来的原始文章、视频逐字稿、图片 OCR、PDF、帖子、网页快照等内容，属于用户的原始资料资产，不应被 Agent 删除、覆盖或重写。
+        Agent 的删除、合并、重写、覆盖、迭代，只能发生在派生知识层，例如主题页、概念页、方法论页、SOP 页、总结页和索引页。
+      </div>
+
+      <h3>为什么必须分层</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>用户预期</th>
+            <th>Agent 权限</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>原始资料层</td>
+            <td>“我收藏过的原始内容应该还在。”</td>
+            <td>只能追加、索引、引用，不能删除或覆盖。</td>
+            <td>原始资料是事实来源和用户资产，用户可能未来还要查看原文、逐字稿、截图或文件。</td>
+          </tr>
+          <tr>
+            <td>派生知识层</td>
+            <td>“帮我把资料沉淀成更好的知识结构。”</td>
+            <td>可以合并、重写、删除、覆盖、重构。</td>
+            <td>方法论、SOP、主题总结本来就是可迭代产物，需要持续优化。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>新的维护边界</h3>
+      <pre>Agent 可以做：
+- 合并两个重复的主题页
+- 重写一个方法论页
+- 更新一个 SOP 步骤
+- 删除过时的总结段落
+- 重构索引和知识图谱关系
+- 把多个来源提炼成新的最佳实践
+
+Agent 不可以做：
+- 删除用户收藏过的原始链接
+- 删除原始文章正文
+- 删除视频逐字稿
+- 覆盖原始 OCR/PDF 文本
+- 修改 Raw Source 的事实内容
+- 因为 Wiki 页面被合并而删除原始资料</pre>
+    </section>
+
+    <section>
+      <h2>1. 产品定位</h2>
+      <div class="note">
+        <strong>StarMind 是一个主动知识筛选与自维护知识库 Agent。</strong>
+        它持续同步用户授权平台中的收藏内容，只过滤掉非知识类、文娱类、低信息量内容；
+        对知识/干货类内容自动转化为不可变 Raw Sources，并由 LLM 编译成持续更新的 Wiki 知识层。
+      </div>
+
+      <h3>一句话定义</h3>
+      <p>
+        <strong>StarMind 把用户分散在各平台收藏夹里的知识类内容，自动筛选、编译并维护成一个持续迭代的个人 LLM Wiki。</strong>
+      </p>
+
+      <h3>产品愿景</h3>
+      <div class="note">
+        <strong>让收藏夹从“沉睡的信息仓库”变成“会自我编译、自我维护、自我进化的知识系统”。</strong>
+        用户只负责收藏和提出问题；StarMind 负责筛选知识、维护结构、更新连接、发现缺口。
+      </div>
+
+      <h3>核心用户</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>用户</th>
+            <th>典型收藏内容</th>
+            <th>核心痛点</th>
+            <th>StarMind 价值</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>学习/研究型用户</td>
+            <td>课程视频、论文解读、公众号文章、知乎回答、B站教程。</td>
+            <td>收藏很多，但无法形成体系。</td>
+            <td>筛出知识类内容，自动形成主题 Wiki。</td>
+          </tr>
+          <tr>
+            <td>产品/创业/商业分析用户</td>
+            <td>行业分析、竞品案例、融资新闻、专家观点。</td>
+            <td>信息分散，难以沉淀为长期洞察。</td>
+            <td>自动编译为行业主题页、案例页和对比页。</td>
+          </tr>
+          <tr>
+            <td>开发者/AI 工具用户</td>
+            <td>GitHub Stars、技术文章、YouTube/B站教程、工具测评。</td>
+            <td>知识源分散，无法持续维护学习路线。</td>
+            <td>把项目、教程、概念、经验链接成知识图谱。</td>
+          </tr>
+          <tr>
+            <td>创作者/内容生产者</td>
+            <td>选题、案例、观点、素材、数据。</td>
+            <td>素材沉睡，产出时找不到。</td>
+            <td>自动变成选题库、观点库、案例库。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>2. 核心问题定义</h2>
+      <div class="grid-4">
+        <div class="card">
+          <div class="big-number">01</div>
+          <strong>收藏夹不是知识库</strong>
+          <p>收藏夹混有知识、娱乐、消费和临时兴趣，不能全量入库。</p>
+        </div>
+        <div class="card">
+          <div class="big-number">02</div>
+          <strong>用户已经做过粗筛</strong>
+          <p>收藏行为本身已经说明用户认为内容可能有用，系统不应再复杂打分。</p>
+        </div>
+        <div class="card">
+          <div class="big-number">03</div>
+          <strong>维护才是长期成本</strong>
+          <p>真正让知识库失效的是后续没人更新、没人去重、没人维护连接。</p>
+        </div>
+        <div class="card">
+          <div class="big-number">04</div>
+          <strong>同步不能依赖知识库</strong>
+          <p>知识页可能被删除、合并、重写，因此不能用知识库内容判断是否已抓取。</p>
+        </div>
+      </div>
+
+      <div class="warning">
+        <strong>关键产品判断：</strong>
+        收藏夹中的知识类/干货类内容应直接进入知识库；评分机制只承担“剔除文娱类、消费类、低信息量内容”的职责。
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 知识分类器：只判断是不是知识</h2>
+      <p>
+        V0.3 不再使用复杂多维评分。系统只输出一个核心字段：<strong>is_knowledge</strong>。
+        可以保留 confidence 作为工程阈值，但它不是“价值评分”，只表示模型对“是否属于知识类内容”的判断置信度。
+      </p>
+
+      <h3>3.1 分类标签</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>标签</th>
+            <th>含义</th>
+            <th>处理策略</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="tag green">knowledge</span></td>
+            <td>知识类、干货类、教程类、方法论类、行业分析类、案例类、资料类内容。</td>
+            <td>直接进入 Raw Sources，并触发 LLM Wiki Ingest。</td>
+          </tr>
+          <tr>
+            <td><span class="tag yellow">uncertain</span></td>
+            <td>可能有知识价值，但标题/元数据不足，或内容偏经验/观点/测评。</td>
+            <td>进入待确认区；也可先轻量归档，不进入核心 Wiki。</td>
+          </tr>
+          <tr>
+            <td><span class="tag red">non_knowledge</span></td>
+            <td>文娱、搞笑、明星、纯消费、抽奖、低信息量、纯情绪表达内容。</td>
+            <td>剔除或归档，不进入知识库。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.2 什么算知识类/干货类</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>知识类型</th>
+            <th>判断标准</th>
+            <th>示例</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>概念解释</td>
+            <td>解释某个概念、框架、原理、机制。</td>
+            <td>“什么是 RAG”“Agentic Workflow 详解”。</td>
+          </tr>
+          <tr>
+            <td>教程/操作方法</td>
+            <td>教用户完成某个任务，包含步骤、流程、配置、工具。</td>
+            <td>“用 n8n 自动同步飞书多维表格”。</td>
+          </tr>
+          <tr>
+            <td>经验总结</td>
+            <td>对某类实践进行复盘、避坑、经验归纳。</td>
+            <td>“小团队做 AI 产品的 10 个坑”。</td>
+          </tr>
+          <tr>
+            <td>行业/商业分析</td>
+            <td>包含趋势判断、案例、数据、商业模式、竞争格局。</td>
+            <td>“2026 年具身智能融资格局”。</td>
+          </tr>
+          <tr>
+            <td>研究资料</td>
+            <td>论文、报告、文档、长访谈、公开课、技术博客。</td>
+            <td>“Karpathy LLM Wiki 思路解析”。</td>
+          </tr>
+          <tr>
+            <td>可复用素材</td>
+            <td>对创作、研究、写作、决策有复用价值。</td>
+            <td>案例库、数据图表、产品截图、竞品拆解。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.3 什么应被剔除</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>判断标准</th>
+            <th>默认处理</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>纯娱乐</td>
+            <td>搞笑、舞蹈、段子、明星动态、综艺切片。</td>
+            <td>non_knowledge，剔除。</td>
+          </tr>
+          <tr>
+            <td>纯消费</td>
+            <td>商品种草、折扣、购物链接、无分析的测评。</td>
+            <td>non_knowledge，归档或剔除。</td>
+          </tr>
+          <tr>
+            <td>低信息量</td>
+            <td>只有情绪表达、口号、标题党，无可复用信息。</td>
+            <td>non_knowledge，剔除。</td>
+          </tr>
+          <tr>
+            <td>短时效资讯</td>
+            <td>无长期价值的临时热点、无分析的新闻快讯。</td>
+            <td>默认剔除；若是行业分析则保留。</td>
+          </tr>
+          <tr>
+            <td>重复搬运</td>
+            <td>同一内容多个平台重复出现且无新增信息。</td>
+            <td>不进入 Raw Sources，记录到 Sync Ledger。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>3.4 分类器输出</h3>
+      <pre>{
+  "candidate_id": "cand_001",
+  "is_knowledge": true,
+  "label": "knowledge",
+  "confidence": 0.91,
+  "knowledge_type": ["教程/操作方法", "经验总结"],
+  "reason": "该内容包含可复用的操作步骤和方法论，不属于文娱或纯消费内容。",
+  "decision": "ingest_to_raw_sources"
+}</pre>
+
+      <h3>3.5 工程阈值</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>置信度</th>
+            <th>标签</th>
+            <th>动作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>confidence ≥ 0.75</td>
+            <td>knowledge</td>
+            <td>自动进入 Raw Sources，触发 Ingest。</td>
+          </tr>
+          <tr>
+            <td>0.45 ≤ confidence &lt; 0.75</td>
+            <td>uncertain</td>
+            <td>进入待确认区，或轻量归档。</td>
+          </tr>
+          <tr>
+            <td>confidence &lt; 0.45</td>
+            <td>non_knowledge</td>
+            <td>剔除，不进入知识库。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>4. Karpathy LLM Wiki 维护逻辑</h2>
+      <p>
+        StarMind 的知识维护不应停留在“摘要 + 标签 + 向量库”。V0.3 采用 Karpathy LLM Wiki 的核心思想：
+        生材料是不可变的 Raw Sources，LLM 将其编译成结构化 Wiki，并通过 Ingest、Query、Lint 三个操作持续迭代。
+      </p>
+
+      <h3>4.1 四层结构</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>内容</th>
+            <th>Agent 是否可修改</th>
+            <th>StarMind 中的实现</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Raw Sources / 原始资料层</td>
+            <td>文章正文、视频逐字稿、图片 OCR、PDF、帖子、网页快照、代码项目元信息。</td>
+            <td><strong>不可修改、不可删除。</strong>只能追加、索引、引用。</td>
+            <td>原始资料文件夹。作为事实底座和用户资产长期保留。</td>
+          </tr>
+          <tr>
+            <td>Source Summary / 来源摘要层</td>
+            <td>每条原始资料对应的摘要、要点、关键词、引用位置。</td>
+            <td>可重新生成，但必须保留版本记录。</td>
+            <td>方便快速阅读原始资料，也为后续 Wiki 编译提供中间层。</td>
+          </tr>
+          <tr>
+            <td>Wiki / Methodology / SOP 派生知识层</td>
+            <td>主题页、概念页、方法论页、SOP、对比页、索引页、最佳实践。</td>
+            <td><strong>可以合并、删除、覆盖、重写、重构。</strong></td>
+            <td>Agent 主要维护对象。Karpathy 式自主迭代只发生在这一层。</td>
+          </tr>
+          <tr>
+            <td>Schema / 规则层</td>
+            <td>页面命名、标签体系、引用规范、合并规则、删除权限、SOP 格式。</td>
+            <td>由人定义，Agent 遵守；重大修改需用户确认。</td>
+            <td>StarMind Knowledge Schema / Agent Instructions。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>4.2 三个核心操作</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>操作</th>
+            <th>含义</th>
+            <th>StarMind 中的具体动作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Ingest</td>
+            <td>将新的 Raw Source 编译进 Wiki。</td>
+            <td>生成 source summary，更新相关主题页/概念页，补充索引，写入操作日志。</td>
+          </tr>
+          <tr>
+            <td>Query</td>
+            <td>用户或 Agent 对 Wiki 提问。</td>
+            <td>基于 Wiki 回答问题；高价值回答可写回 Wiki，成为新页面或补充段落。</td>
+          </tr>
+          <tr>
+            <td>Lint</td>
+            <td>定期健康检查。</td>
+            <td>检查矛盾、过期信息、孤立页面、缺失链接、重复页面、知识缺口，并提出修复。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>4.3 StarMind 的维护循环</h3>
+      <pre>新收藏内容
+→ Knowledge Classifier 判断是否为知识
+→ 知识类内容进入 Raw Sources
+→ Ingest Agent 编译进 Wiki
+→ 更新 Source Summary / Topic Page / Concept Page / Index / Log
+→ 用户提问或系统主动分析
+→ Query 结果中有价值的内容写回 Wiki
+→ 定期 Lint 检查矛盾、过期、孤立、重复、缺口
+→ Repair Agent 自动修复低风险问题，高风险问题进入 Review Queue</pre>
+
+      <div class="warning">
+        <strong>关键原则：</strong>
+        Raw Sources 是事实底座和用户资产，不能被删除、覆盖或重写；Wiki / Methodology / SOP 是 LLM 编译层，可以被更新、合并、删除、重构。
+        因此同步去重不能依赖 Wiki 或知识页是否存在，也不能因为派生知识层被删除而删除原始资料。
+      </div>
+    </section>
+
+    <section>
+      <h2>5. 总体架构图</h2>
+      <div class="diagram-wrap">
+        <svg class="diagram" width="1060" height="720" viewBox="0 0 1060 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="StarMind V0.3 架构图">
+          <defs>
+            <linearGradient id="g1" x1="0" x2="1" y1="0" y2="1">
+              <stop offset="0%" stop-color="#7c9cff"/>
+              <stop offset="100%" stop-color="#a855f7"/>
+            </linearGradient>
+            <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+              <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.32"/>
+            </filter>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#7c9cff"/>
+            </marker>
+            <marker id="arrowY" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L9,3 z" fill="#ffd166"/>
+            </marker>
+          </defs>
+
+          <rect x="20" y="20" width="1020" height="680" rx="26" fill="#0b1020" stroke="#2a365f"/>
+          <text x="50" y="62" fill="#ffffff" font-size="24" font-weight="700">StarMind V0.3：主动采集 → 知识分类 → LLM Wiki 维护</text>
+          <text x="50" y="91" fill="#aab7d8" font-size="14">收藏内容先判断是否为知识；知识进入 Raw Sources；LLM 负责编译和维护 Wiki。</text>
+
+          <!-- Sources -->
+          <rect x="55" y="130" width="160" height="430" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="84" y="162" fill="#3ddc97" font-size="16" font-weight="700">收藏数据源</text>
+          <rect x="80" y="192" width="110" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="108" y="214" fill="#eaf0ff" font-size="13">B站</text>
+          <rect x="80" y="236" width="110" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="108" y="258" fill="#eaf0ff" font-size="13">抖音</text>
+          <rect x="80" y="280" width="110" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="101" y="302" fill="#eaf0ff" font-size="13">小红书</text>
+          <rect x="80" y="324" width="110" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="108" y="346" fill="#eaf0ff" font-size="13">知乎</text>
+          <rect x="80" y="368" width="110" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="100" y="390" fill="#eaf0ff" font-size="13">YouTube</text>
+          <rect x="80" y="412" width="110" height="34" rx="10" fill="#182448" stroke="#33416c"/>
+          <text x="105" y="434" fill="#eaf0ff" font-size="13">X / GitHub</text>
+          <rect x="80" y="480" width="110" height="42" rx="10" fill="#2a1f3d" stroke="#6d4ca1"/>
+          <text x="93" y="506" fill="#fff0c2" font-size="13">微信链接兜底</text>
+
+          <!-- Sync -->
+          <rect x="260" y="130" width="170" height="430" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="302" y="162" fill="#3ddc97" font-size="16" font-weight="700">同步层</text>
+          <rect x="290" y="195" width="110" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="315" y="221" fill="#eaf0ff" font-size="13">Connector</text>
+          <rect x="290" y="265" width="110" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="320" y="291" fill="#eaf0ff" font-size="13">Scheduler</text>
+          <rect x="290" y="335" width="110" height="42" rx="12" fill="#332815" stroke="#ffd166"/>
+          <text x="309" y="361" fill="#fff0c2" font-size="13">Sync Ledger</text>
+          <rect x="290" y="405" width="110" height="42" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="312" y="431" fill="#eaf0ff" font-size="13">Delta Scan</text>
+          <rect x="290" y="475" width="110" height="42" rx="12" fill="#2a1f3d" stroke="#6d4ca1"/>
+          <text x="312" y="501" fill="#fff0c2" font-size="13">Passive API</text>
+
+          <!-- Classifier -->
+          <rect x="475" y="130" width="180" height="430" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="518" y="162" fill="#3ddc97" font-size="16" font-weight="700">知识分类</text>
+          <rect x="505" y="205" width="120" height="50" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="527" y="235" fill="#eaf0ff" font-size="13">Candidate Pool</text>
+          <rect x="505" y="295" width="120" height="50" rx="12" fill="url(#g1)"/>
+          <text x="522" y="325" fill="#ffffff" font-size="13" font-weight="700">Is Knowledge?</text>
+          <rect x="505" y="385" width="120" height="50" rx="12" fill="#103326" stroke="#3ddc97"/>
+          <text x="532" y="415" fill="#c9ffe9" font-size="13">Knowledge</text>
+          <rect x="505" y="475" width="120" height="50" rx="12" fill="#3a171d" stroke="#ff6b6b"/>
+          <text x="521" y="505" fill="#ffd0d0" font-size="13">Non-knowledge</text>
+
+          <!-- LLM Wiki -->
+          <rect x="700" y="130" width="305" height="430" rx="18" fill="#11182d" stroke="#2a365f" filter="url(#shadow)"/>
+          <text x="768" y="162" fill="#3ddc97" font-size="16" font-weight="700">LLM Wiki 知识层</text>
+          <rect x="735" y="190" width="110" height="46" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="753" y="218" fill="#eaf0ff" font-size="13">Raw Sources</text>
+          <rect x="865" y="190" width="110" height="46" rx="12" fill="#1e1740" stroke="#a855f7"/>
+          <text x="891" y="218" fill="#d9ccff" font-size="13">Schema</text>
+          <rect x="735" y="270" width="240" height="46" rx="12" fill="url(#g1)"/>
+          <text x="813" y="298" fill="#ffffff" font-size="13" font-weight="700">Ingest Agent</text>
+          <rect x="735" y="350" width="240" height="46" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="798" y="378" fill="#eaf0ff" font-size="13">Wiki Pages / Index / Log</text>
+          <rect x="735" y="430" width="110" height="46" rx="12" fill="#162245" stroke="#33416c"/>
+          <text x="772" y="458" fill="#eaf0ff" font-size="13">Query</text>
+          <rect x="865" y="430" width="110" height="46" rx="12" fill="#332815" stroke="#ffd166"/>
+          <text x="905" y="458" fill="#fff0c2" font-size="13">Lint</text>
+
+          <!-- Arrows -->
+          <line x1="215" y1="345" x2="260" y2="345" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="430" y1="345" x2="475" y2="345" stroke="#7c9cff" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <line x1="625" y1="410" x2="700" y2="294" stroke="#3ddc97" stroke-width="2.5" marker-end="url(#arrow)"/>
+          <path d="M 625 500 C 655 600, 410 610, 345 520" fill="none" stroke="#ff6b6b" stroke-width="2.5" stroke-dasharray="6 7"/>
+          <text x="420" y="624" fill="#ffd0d0" font-size="13">非知识内容不进入 Raw Sources，只保留同步记录</text>
+          <path d="M 855 396 C 690 610, 940 650, 920 476" fill="none" stroke="#ffd166" stroke-width="2.5" marker-end="url(#arrowY)" stroke-dasharray="6 7"/>
+          <text x="708" y="648" fill="#fff0c2" font-size="13">Query 和 Lint 的高价值结果可写回 Wiki，形成自主迭代</text>
+        </svg>
+      </div>
+    </section>
+
+    
+    <section>
+      <h2>5.1 数据生命周期与删除权限</h2>
+      <p>
+        StarMind 中的“删除”必须分层处理。系统允许 Agent 删除或覆盖派生知识，但不允许 Agent 删除原始资料。
+        只有用户本人可以主动删除原始资料，且删除时需要明确提示这会影响后续可追溯性。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>对象</th>
+            <th>保存位置</th>
+            <th>是否可被 Agent 删除</th>
+            <th>是否可被用户删除</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>原始链接 / 原始文件</td>
+            <td>Raw Sources Folder</td>
+            <td>否</td>
+            <td>是</td>
+            <td>用户资产，长期保留。</td>
+          </tr>
+          <tr>
+            <td>原始正文 / 逐字稿 / OCR / PDF 文本</td>
+            <td>Raw Sources Folder</td>
+            <td>否</td>
+            <td>是</td>
+            <td>事实来源，不参与自动删除。</td>
+          </tr>
+          <tr>
+            <td>Source Summary</td>
+            <td>Source Summary Folder</td>
+            <td>可重新生成，但不直接物理删除</td>
+            <td>是</td>
+            <td>作为原始资料的阅读索引，可保留版本。</td>
+          </tr>
+          <tr>
+            <td>主题页 / 概念页</td>
+            <td>Wiki Folder</td>
+            <td>是</td>
+            <td>是</td>
+            <td>可被合并、重写、删除。</td>
+          </tr>
+          <tr>
+            <td>方法论 / SOP</td>
+            <td>Methodology / SOP Folder</td>
+            <td>是</td>
+            <td>是</td>
+            <td>Agent 自主迭代的核心对象。</td>
+          </tr>
+          <tr>
+            <td>索引 / 知识图谱关系</td>
+            <td>Index / Graph DB</td>
+            <td>是</td>
+            <td>是</td>
+            <td>可根据最新知识结构重构。</td>
+          </tr>
+          <tr>
+            <td>Sync Ledger</td>
+            <td>Sync DB</td>
+            <td>否</td>
+            <td>一般不暴露给用户删除</td>
+            <td>用于增量扫描和去重，独立于知识库。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>维护动作边界</h3>
+      <pre>允许 Agent 自动执行：
+- 合并重复的主题页
+- 删除过时的方法论段落
+- 重写 SOP
+- 将多个零散总结合并为一个最佳实践
+- 重建索引和知识图谱边
+- 标记某个 Source Summary 需要重新生成
+
+不允许 Agent 自动执行：
+- 删除 Raw Source
+- 覆盖 Raw Source 原文
+- 删除用户原始收藏链接
+- 因为内容被判定过时而删除原始资料
+- 因为 SOP 被重写而删除支持它的来源材料</pre>
+
+      <h3>版本化要求</h3>
+      <p>
+        派生知识层的每次重大改写都应该记录版本，包括改写原因、引用了哪些 Raw Sources、删除或合并了哪些旧段落。
+        这样可以让用户知道 SOP 是如何从原始资料中沉淀出来的。
+      </p>
+
+      <pre>{
+  "revision_id": "rev_001",
+  "target_type": "sop",
+  "target_id": "sop_agentic_knowledge_loop",
+  "operation": "rewrite",
+  "reason": "新增 3 条 Raw Sources 后，旧 SOP 的步骤顺序不再合理。",
+  "source_refs": ["raw_001", "raw_009", "raw_018"],
+  "previous_version": "v1",
+  "new_version": "v2",
+  "changed_at": "2026-06-18T11:00:00+09:00",
+  "changed_by": "maintenance_agent"
+}</pre>
+    </section>
+
+
+    <section>
+      <h2>6. 增量同步：从时间戳水位改为边界链接停止爬取</h2>
+      <p>
+        V0.5 将同步策略从“时间戳水位”调整为“边界链接水位”。原因是很多平台收藏页不一定稳定暴露收藏时间，
+        但收藏列表通常会按最近收藏排序。系统可以记录上一次扫描时的边界链接，下次从最新内容开始扫描，
+        一旦遇到已经存在于原始资料库或同步账本中的链接，就停止继续爬取。
+      </p>
+
+      <div class="note">
+        <strong>新的主逻辑：</strong>
+        每轮扫描从收藏页顶部开始读取，逐条标准化 URL。如果发现当前 URL 已存在于 Raw Sources / Sync Ledger，
+        即认为已经扫描到旧内容边界，可以停止继续翻页。新出现的链接进入 Candidate Pool。
+      </div>
+
+      <h3>6.1 为什么可以用原始资料库做停止判断</h3>
+      <p>
+        之前不建议用知识库做去重，是因为 Wiki / SOP / 方法论层会被 Agent 删除、合并、重写。
+        但 V0.4 已经明确：Raw Sources 原始资料层不可被 Agent 删除。因此，Raw Sources 可以作为“已采集原始资料”的稳定判断依据。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>对象</th>
+            <th>是否适合作为同步停止依据</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Wiki 页面 / SOP / 方法论</td>
+            <td>不适合</td>
+            <td>这些内容会被 Agent 删除、合并、覆盖，不能代表原始链接是否采集过。</td>
+          </tr>
+          <tr>
+            <td>Raw Sources 原始资料库</td>
+            <td>适合</td>
+            <td>原始资料不可被 Agent 删除，能稳定记录已采集过的原始链接。</td>
+          </tr>
+          <tr>
+            <td>Sync Ledger 同步账本</td>
+            <td>适合</td>
+            <td>记录所有已扫描过的 external_item_id / canonical_url，即使内容后来被判定为非知识也可避免重复扫描。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>6.2 同步账本从“时间戳水位”改为“边界链接水位”</h3>
+      <pre>{
+  "connector_id": "conn_bilibili_001",
+  "platform": "bilibili",
+  "user_id": "user_001",
+  "last_successful_scan_at": "2026-06-18T09:00:00+09:00",
+  "last_boundary_url": "https://www.bilibili.com/video/BVxxxx",
+  "last_boundary_external_id": "BVxxxx",
+  "last_top_url": "https://www.bilibili.com/video/BVnewest",
+  "scan_mode": "stop_when_seen_existing_raw_source",
+  "max_scan_pages": 20,
+  "status": "active"
+}</pre>
+
+      <h3>6.3 单条扫描记录</h3>
+      <pre>{
+  "scan_item_id": "scan_001",
+  "connector_id": "conn_bilibili_001",
+  "platform": "bilibili",
+  "external_item_id": "BVxxxx",
+  "canonical_url": "https://www.bilibili.com/video/BVxxxx",
+  "raw_url": "https://www.bilibili.com/video/BVxxxx?spm_id_from=...",
+  "first_seen_at": "2026-06-18T09:00:22+09:00",
+  "scan_run_id": "sync_20260618_0900",
+  "classification_label": "knowledge",
+  "raw_source_id": "raw_001",
+  "is_boundary_hit": false
+}</pre>
+
+      <h3>6.4 边界链接扫描逻辑</h3>
+      <pre>For each connector:
+  1. 打开用户收藏页
+  2. 从页面顶部开始读取收藏项
+  3. 对每个 item 提取 external_item_id 和 canonical_url
+  4. 检查 canonical_url / external_item_id 是否存在于：
+     - Raw Sources
+     - Sync Ledger scan_item_log
+  5. 如果存在：
+     - 认为已到达上次扫描边界
+     - 停止继续翻页
+  6. 如果不存在：
+     - 写入 scan_item_log
+     - 进入 Candidate Pool
+  7. 本轮扫描结束后：
+     - 将本轮第一个新链接记录为 last_top_url
+     - 将命中的旧链接记录为 last_boundary_url
+     - 如果本轮没有命中旧链接，则触发安全兜底策略</pre>
+
+      <h3>6.5 URL 标准化规则</h3>
+      <p>
+        使用链接作为边界时，必须做 URL 标准化，否则同一个内容可能因为参数不同被识别为不同链接。
+      </p>
+
+      <pre>canonical_url 规则：
+- 去掉追踪参数：utm_source、spm_id_from、share_source、timestamp 等
+- 统一 http/https
+- 统一移动端/桌面端域名
+- 提取平台稳定 ID：
+  - B站：BV ID
+  - YouTube：video_id
+  - 抖音：aweme_id / video_id
+  - 小红书：note_id
+  - 知乎：answer_id / article_id
+- 优先使用 platform + external_item_id 作为唯一键
+- canonical_url 作为辅助唯一键</pre>
+
+      <h3>6.6 安全兜底策略</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>异常情况</th>
+            <th>风险</th>
+            <th>处理策略</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>本轮一直没有遇到旧链接</td>
+            <td>可能是首次扫描、列表排序变化、平台页面结构变化，或用户大量新增收藏。</td>
+            <td>最多扫描 max_scan_pages；超限后停止，并提示“未命中历史边界”。</td>
+          </tr>
+          <tr>
+            <td>收藏列表排序不是按最近收藏</td>
+            <td>边界链接停止逻辑可能漏抓。</td>
+            <td>该平台降级为固定页数扫描 + scan_item_log 去重。</td>
+          </tr>
+          <tr>
+            <td>旧链接被用户从平台收藏夹删除</td>
+            <td>找不到上次边界。</td>
+            <td>继续扫描到命中任意已存在 Raw Source / Sync Ledger 项，或达到 max_scan_pages。</td>
+          </tr>
+          <tr>
+            <td>同一内容 URL 参数变化</td>
+            <td>重复采集。</td>
+            <td>使用 external_item_id 优先去重，canonical_url 辅助去重。</td>
+          </tr>
+          <tr>
+            <td>内容已扫描但被判定为 non_knowledge</td>
+            <td>Raw Sources 中不存在，若只查 Raw Sources 会重复扫描。</td>
+            <td>必须同时查询 Sync Ledger。Sync Ledger 记录所有扫描过的链接，不管是否入库。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="warning">
+        <strong>最终推荐：</strong>
+        停止爬取时不要只查 Raw Sources，也要查 Sync Ledger。
+        因为有些内容可能被判定为 non_knowledge，没有进入 Raw Sources，但仍然已经被扫描过。
+        最稳的判断是：<strong>canonical_url / external_item_id 存在于 Raw Sources 或 Sync Ledger 任一处，即可停止或跳过。</strong>
+      </div>
+    </section>
+
+    <section>
+      <h2>7. 关键流程</h2>
+
+      <h3>7.1 主动同步流程</h3>
+      <pre>用户勾选平台并授权
+→ Scheduler 定时触发 Connector
+→ Connector 从收藏页顶部开始读取
+→ 遇到 Raw Sources / Sync Ledger 中已存在的边界链接即停止
+→ 写入 scan_item_log
+→ 内容进入 Candidate Pool
+→ Knowledge Classifier 判断是否为知识
+→ knowledge 进入 Raw Sources
+→ Ingest Agent 编译到 LLM Wiki
+→ non_knowledge 被剔除或归档</pre>
+
+      <h3>7.2 被动输入流程</h3>
+      <pre>用户发送公众号文章/链接/文件
+→ Passive API 接收
+→ 写入 scan_item_log，source_type = passive
+→ Knowledge Classifier 判断是否为知识
+→ 知识类内容进入 Raw Sources
+→ Ingest Agent 更新 Wiki
+→ 非知识内容忽略</pre>
+
+      <h3>7.3 LLM Wiki 自主维护流程</h3>
+      <pre>Daily / Weekly Maintenance:
+  1. 读取 wiki/index.md 和最近 log
+  2. 检查新旧页面之间的重复、冲突、孤立节点
+  3. 合并重复主题页
+  4. 给缺少链接的页面补 cross-reference
+  5. 标记过期信息或被新来源覆盖的判断
+  6. 生成“下一步应该研究的问题”
+  7. 只对 Wiki / Methodology / SOP 层执行删除、合并、覆盖
+  8. Raw Sources 永不被 Agent 删除
+  9. 高风险修改进入 Review Queue
+  10. 低风险修复自动写入派生知识层</pre>
+    </section>
+
+    <section>
+      <h2>8. 数据模型</h2>
+
+      <h3>8.1 CandidateItem</h3>
+      <pre>{
+  "candidate_id": "cand_001",
+  "source_type": "active_connector",
+  "platform": "xiaohongshu",
+  "external_item_id": "xhs_note_001",
+  "source_url": "https://...",
+  "title": "一篇关于 AI Agent 工作流的笔记",
+  "author": "作者名",
+  "source_saved_at": "2026-06-18T08:42:11+09:00",
+  "first_seen_at": "2026-06-18T09:00:22+09:00",
+  "sync_run_id": "sync_20260618_0900",
+  "status": "pending_classification"
+}</pre>
+
+      <h3>8.2 KnowledgeClassification</h3>
+      <pre>{
+  "candidate_id": "cand_001",
+  "label": "knowledge",
+  "is_knowledge": true,
+  "confidence": 0.91,
+  "knowledge_type": ["方法论", "工具教程"],
+  "reject_reason": null,
+  "decision": "create_raw_source"
+}</pre>
+
+      <h3>8.3 RawSource</h3>
+      <pre>{
+  "raw_source_id": "raw_001",
+  "candidate_id": "cand_001",
+  "source_url": "https://...",
+  "source_type": "article",
+  "immutable": true,
+  "retention_policy": "keep_forever_unless_user_deletes",
+  "agent_delete_allowed": false,
+  "raw_content": "...",
+  "clean_text": "...",
+  "transcript": null,
+  "ocr_text": null,
+  "created_at": "2026-06-18T09:03:00+09:00",
+  "source_saved_at": "2026-06-18T08:42:11+09:00"
+}</pre>
+
+      <h3>8.4 WikiPage</h3>
+      <pre>{
+  "wiki_page_id": "wiki_agentic_workflow",
+  "page_type": "concept",
+  "title": "Agentic Workflow",
+  "markdown_path": "wiki/concepts/agentic-workflow.md",
+  "source_refs": ["raw_001", "raw_009", "raw_018"],
+  "last_updated_at": "2026-06-18T09:10:00+09:00",
+  "updated_by": "ingest_agent",
+  "status": "active"
+}</pre>
+
+      <h3>8.5 WikiLog</h3>
+      <pre>{
+  "log_id": "log_001",
+  "timestamp": "2026-06-18T09:10:00+09:00",
+  "operation": "ingest",
+  "raw_source_id": "raw_001",
+  "affected_pages": [
+    "wiki/sources/raw_001_summary.md",
+    "wiki/concepts/agentic-workflow.md",
+    "wiki/index.md"
+  ],
+  "summary": "新增一篇 Agent 工作流笔记，更新相关概念页和索引。"
+}</pre>
+    </section>
+
+    <section>
+      <h2>9. Agent 模块</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>职责</th>
+            <th>关键输出</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Connector Agent</td>
+            <td>按照 Sync Ledger 的时间水位扫描新增收藏。</td>
+            <td>CandidateItem、scan_item_log。</td>
+          </tr>
+          <tr>
+            <td>Knowledge Classifier</td>
+            <td>判断内容是否属于知识/干货类。</td>
+            <td>knowledge / uncertain / non_knowledge。</td>
+          </tr>
+          <tr>
+            <td>Extractor Agent</td>
+            <td>抽取正文、逐字稿、OCR、PDF 文本。</td>
+            <td>RawSource clean_text。</td>
+          </tr>
+          <tr>
+            <td>Ingest Agent</td>
+            <td>将 Raw Source 编译进 Wiki。</td>
+            <td>source summary、topic page updates、index、log。</td>
+          </tr>
+          <tr>
+            <td>Query Agent</td>
+            <td>基于 Wiki 回答用户问题，并把高价值回答写回。</td>
+            <td>answer page、comparison page、new concept page。</td>
+          </tr>
+          <tr>
+            <td>Lint Agent</td>
+            <td>周期性维护 Wiki 健康。</td>
+            <td>stale claims、orphan pages、missing links、knowledge gaps。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>10. MVP 范围</h2>
+      <h3>10.1 必做能力</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>功能</th>
+            <th>优先级</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>主动 Connector</td>
+            <td>B站、抖音、小红书、YouTube 中至少 2-3 个。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>知识分类器</td>
+            <td>单维度判断是否知识/干货，剔除文娱类。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>Sync Ledger</td>
+            <td>用 last_boundary_url / canonical_url / external_item_id 做增量扫描。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>Raw Sources</td>
+            <td>保存不可变原文、逐字稿、OCR、PDF 文本。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>Ingest Agent</td>
+            <td>为每个 Raw Source 生成摘要页，并更新 index/log。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+          <tr>
+            <td>被动入口</td>
+            <td>链接输入框或微信/飞书机器人。</td>
+            <td class="priority-p0">P0</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>10.2 MVP Demo 建议</h3>
+      <pre>1. 用户连接 B站、抖音、小红书。
+2. StarMind 定时扫描收藏夹，只抓取上次扫描后的新增内容。
+3. 系统显示：
+   - 新扫描 20 条收藏
+   - 12 条判断为 knowledge，进入 Raw Sources
+   - 5 条 uncertain，进入待确认
+   - 3 条 non_knowledge，被剔除
+4. Ingest Agent 将 12 条知识内容编译成 Wiki：
+   - 12 个 source summary
+   - 3 个 concept/topic pages
+   - 更新 index.md
+   - 写入 log.md
+5. 用户发送一篇公众号文章链接。
+6. 该文章被分类为 knowledge，进入 Raw Sources，并更新已有主题页。
+7. Lint Agent 运行，发现：
+   - 1 个孤立页面
+   - 2 个重复主题
+   - 1 个知识缺口
+8. 系统展示 StarMind 的主动维护报告。</pre>
+    </section>
+
+    <section>
+      <h2>11. 路演话术</h2>
+      <div class="note">
+        <p><strong>StarMind is not trying to save everything. It only turns knowledge-like saves into a self-maintaining LLM Wiki.</strong></p>
+        <p>
+          用户的收藏夹已经经过用户筛选，所以 StarMind 不需要复杂地判断“这个内容值不值得”。
+          我们只判断一个问题：它是不是知识/干货。是知识，就进入 Raw Sources 并由 LLM 编译进 Wiki；
+          不是知识，比如娱乐、消费、低信息量内容，就剔除。后续我们借鉴 Karpathy 的 LLM Wiki 思路，
+          让 LLM 持续维护 index、summary、concept pages 和 log，通过 Ingest、Query、Lint 形成自主迭代。
+          同时，我们用独立 Sync Ledger 做时间戳增量同步，不依赖知识库内容去重，避免知识页被删除或合并后重复抓取。
+        </p>
+      </div>
+    </section>
+
+    <section>
+      <h2>12. 参考来源</h2>
+      <ul>
+        <li>Andrej Karpathy, “LLM Wiki” GitHub Gist: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f</li>
+        <li>DevelopersIO 对 Karpathy LLM Knowledge Base 的整理： https://dev.classmethod.jp/articles/karpathy-llm-knowledge-base/</li>
+        <li>Zenn 对 LLM Wiki 运行方式的整理： https://zenn.dev/tsurubee/articles/llm-wiki-connecting-knowledge</li>
+      </ul>
+    </section>
+
+    <footer class="footer">
+      StarMind PRD V0.4｜Raw Sources 永久保留，方法论/SOP 层自主迭代，Boundary URL Sync 负责增量停止爬取
+    </footer>
+  </main>
+</body>
+</html>
