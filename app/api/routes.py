@@ -1785,7 +1785,8 @@ async def distill_profile(request: Request, db: Session = Depends(get_db)):
         transcript_failures: list[dict[str, str]] = []
         try:
             await douyin_browser_collector.open(douyin_profile_base_url(profile_url))
-            items = await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=False)
+            fallback_item = douyin_profile_vid_fallback(profile_url, target_name)
+            items = [fallback_item] if fallback_item else await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=False)
             if truthy(data.get("transcribe"), True):
                 cookies_file = await douyin_browser_collector.export_cookies() if hasattr(douyin_browser_collector, "export_cookies") else None
                 items, transcript_failures = enrich_douyin_items_with_report(
@@ -1795,18 +1796,7 @@ async def distill_profile(request: Request, db: Session = Depends(get_db)):
                     require_transcript=truthy(data.get("require_transcript"), True),
                 )
                 if not items:
-                    fallback_item = douyin_profile_vid_fallback(profile_url, target_name)
-                    if fallback_item:
-                        fallback_items, fallback_failures = enrich_douyin_items_with_report(
-                            [fallback_item],
-                            DouyinTranscriptService(cookies_file=cookies_file),
-                            limit=1,
-                            require_transcript=truthy(data.get("require_transcript"), True),
-                        )
-                        transcript_failures.extend(fallback_failures)
-                        items = fallback_items
-                    if not items:
-                        raise DouyinTranscriptError(json.dumps(transcript_failures, ensure_ascii=False))
+                    raise DouyinTranscriptError(json.dumps(transcript_failures, ensure_ascii=False))
         except (BrowserDependencyMissing, DouyinPageNotReady, DouyinTranscriptError) as exc:
             if wants_html(request):
                 return RedirectResponse(html_redirect_target(data, "/ui/distill?created=distill-profile-failed"), status_code=303)
