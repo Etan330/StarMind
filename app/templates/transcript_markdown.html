@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% set title = "逐字稿 Markdown" %}
+
+{% block content %}
+<section class="v31-page-head">
+  <div>
+    <span class="section-kicker">Markdown Transcript</span>
+    <h1>逐字稿：{{ item.title if item else transcript.id }}</h1>
+    <p>连续 Markdown 文本，不展示时间轴、波形或逐句定位。</p>
+  </div>
+  <a class="btn secondary" href="/ui/import-result/{{ task.id if task else transcript.task_id }}">回导入结果</a>
+</section>
+
+<section class="transcript-meta-strip">
+  <div><span>来源</span><strong>{{ item.canonical_url if item else "未知" }}</strong></div>
+  <div><span>转写状态</span><strong>{{ transcript.status }}</strong></div>
+  <div><span>Provider</span><strong>{{ transcript.provider }}</strong></div>
+  <div><span>质量</span><strong>{{ (transcript.quality_score * 100) | round | int if transcript.quality_score else "待核对" }}%</strong></div>
+</section>
+
+<div class="notice warning">当前逐字稿由 {{ transcript.provider }} 生成；如果 provider 为 mock，它只用于产品闭环验证，不代表真实转写质量。</div>
+
+<section class="transcript-toolbar">
+  <button class="btn primary" type="button">复制 Markdown</button>
+  <button class="btn secondary" type="button">下载 .md</button>
+  <a class="btn secondary" href="/ui/wiki">打开知识条目</a>
+</section>
+
+<article class="surface-panel markdown-document">
+  <div class="markdown-body">{{ markdown_html | safe }}</div>
+</article>
+{% endblock %}

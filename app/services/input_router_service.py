@@ -17,6 +17,8 @@ PROFILE_HOST_HINTS = (
     "weibo.com/",
 )
 
+URL_PATTERN = re.compile(r"https?://[^\s<>'\"，。；、]+", re.IGNORECASE)
+
 
 V3_ENTRY_MODES: dict[str, dict[str, str]] = {
     "favorites": {
@@ -91,6 +93,19 @@ def looks_like_url(content: str) -> bool:
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
+def extract_urls(content: str | None) -> list[str]:
+    if not content:
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+    for match in URL_PATTERN.findall(content):
+        url = match.rstrip(").]}>）】》")
+        if url and url not in seen:
+            urls.append(url)
+            seen.add(url)
+    return urls
+
+
 def looks_like_profile(content: str) -> bool:
     value = content.strip().lower()
     if value.startswith("@") and len(value) > 1:
@@ -117,6 +132,7 @@ def normalize_entry_mode(entry_mode: str | None) -> str:
 def classify_v3_input(content: str | None, entry_mode: str | None = None) -> V3InputRoute:
     clean_content = (content or "").strip()
     selected_mode = normalize_entry_mode(entry_mode)
+    urls = extract_urls(clean_content)
 
     if selected_mode == "favorites":
         input_type = "favorites"
@@ -130,9 +146,9 @@ def classify_v3_input(content: str | None, entry_mode: str | None = None) -> V3I
         input_type = "profile"
         mode = "creator"
         title = clean_content[:80]
-    elif selected_mode == "link" or looks_like_url(clean_content):
-        input_type = "link" if looks_like_url(clean_content) else "text"
-        mode = "link" if looks_like_url(clean_content) else "idea"
+    elif urls or selected_mode == "link" or looks_like_url(clean_content):
+        input_type = "link_batch" if len(urls) > 1 else "link" if urls or looks_like_url(clean_content) else "text"
+        mode = "link" if urls or looks_like_url(clean_content) else "idea"
         title = clean_content[:80]
     else:
         input_type = "idea"
@@ -152,4 +168,3 @@ def classify_v3_input(content: str | None, entry_mode: str | None = None) -> V3I
         input_hint=config["input_hint"],
         output_hint=config["output_hint"],
     )
-

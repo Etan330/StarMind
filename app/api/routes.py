@@ -48,7 +48,21 @@ from app.llm import (
     test_active_connection,
     test_model_connection,
 )
-from app.models import CandidateItem, Connector, KnowledgeClassification, RawSource, RecycleBinItem, ScanLog, SyncLedgerItem, WikiPage
+from app.models import (
+    CandidateItem,
+    Connector,
+    ImportedItem,
+    ImportTask,
+    KnowledgeClassification,
+    RawSource,
+    RecycleBinItem,
+    ScanLog,
+    SourceConnection,
+    SyncLedgerItem,
+    TranscriptRecord,
+    WikiPage,
+    WorkflowRunLog,
+)
 from app.services import (
     ClassifierService,
     RawSourceService,
@@ -59,6 +73,7 @@ from app.services import (
     WikiMaintenanceService,
     classify_v3_input,
     compute_page_quality,
+    extract_urls,
     generation_label,
     get_demo_result,
     get_v3_home_preview,
@@ -70,6 +85,7 @@ from app.services import (
     transcript_label,
     normalize_url,
 )
+from app.services.v3_1_workflow_service import V31WorkflowService
 from app.services.markdown_renderer import render_markdown
 from app.services.douyin_transcript_service import DouyinTranscriptError, DouyinTranscriptService
 from app.services.statuses import (
@@ -368,6 +384,10 @@ FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
 
 def wants_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "")
+
+
+def wants_ui_redirect(request: Request) -> bool:
+    return "application/json" not in request.headers.get("accept", "")
 
 
 async def request_data(request: Request) -> dict[str, Any]:
@@ -1060,6 +1080,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             selected_model_profile_id=selected_profile_id,
             pages=db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(3).all(),
             sources=db.query(RawSource).order_by(RawSource.created_at.desc()).limit(3).all(),
+            recent_import_tasks=db.query(ImportTask).order_by(ImportTask.created_at.desc()).limit(3).all(),
             task_cards=task_cards_for_history(db, recent_candidates, classifications),
             demo=get_demo_result(),
             demo_results=list_demo_results(),
@@ -1138,6 +1159,179 @@ def create_task_page(request: Request, db: Session = Depends(get_db)):
             demo_results=list_demo_results(),
         ),
     )
+
+
+@router.get("/ui/source-management", response_class=HTMLResponse)
+def source_management_page(request: Request, db: Session = Depends(get_db)):
+    service = V31WorkflowService(db)
+    service.ensure_source("douyin", "favorites", "抖音收藏夹")
+    service.ensure_source("general_link", "link_import", "通用链接")
+    service.ensure_source("manual_idea", "idea", "手动 Idea")
+    sources = db.query(SourceConnection).order_by(SourceConnection.platform.asc(), SourceConnection.type.asc()).all()
+    tasks = db.query(ImportTask).order_by(ImportTask.created_at.desc()).all()
+    rows = []
+    for source in sources:
+        source_tasks = [task for task in tasks if task.source_id == source.id]
+        latest_task = source_tasks[0] if source_tasks else None
+        imported = sum(task.imported_count for task in source_tasks[:5])
+        saved = sum(task.saved_count for task in source_tasks[:5])
+        discarded = sum(task.discarded_count for task in source_tasks[:5])
+        failed = sum(task.failed_count for task in source_tasks[:5])
+        rows.append(
+            {
+                "source": source,
+                "latest_task": latest_task,
+                "task_count": len(source_tasks),
+                "imported": imported,
+                "saved": saved,
+                "discarded": discarded,
+                "failed": failed,
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "source_management.html",
+        template_context(
+            request,
+            "sources",
+            db,
+            rows=rows,
+            saved=request.query_params.get("saved"),
+        ),
+    )
+
+
+@router.post("/v3-1/import-links")
+async def v3_1_import_links(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    urls = extract_urls(str(data.get("links") or data.get("content") or ""))
+    if not urls:
+        if wants_ui_redirect(request):
+            return RedirectResponse("/?input_error=no_links", status_code=303)
+        raise HTTPException(status_code=400, detail="links are required")
+    task = V31WorkflowService(db).create_link_import_task(urls)
+    track_event(db, "v3_1_task_created", {"task_type": "link_import", "url_count": len(urls)})
+    if wants_ui_redirect(request):
+        return RedirectResponse(f"/ui/import-result/{task.id}", status_code=303)
+    return {"status": "created", "task_id": task.id}
+
+
+@router.post("/v3-1/favorites/sync")
+async def v3_1_sync_favorites(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    service = V31WorkflowService(db)
+    source = service.ensure_source("douyin", "favorites", "抖音收藏夹")
+    latest_count = parse_collection_limit(data, 10) or 10
+    task = service.create_favorites_sync_task(source.id, latest_count=latest_count)
+    track_event(db, "v3_1_task_created", {"task_type": "favorites_sync", "latest_count": latest_count})
+    if wants_ui_redirect(request):
+        return RedirectResponse(f"/ui/import-result/{task.id}", status_code=303)
+    return {"status": "created", "task_id": task.id}
+
+
+@router.post("/v3-1/creator-distill")
+async def v3_1_creator_distill(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    name = str(data.get("creator_name") or data.get("target_name") or "").strip()
+    profile_url = str(data.get("profile_url") or "").strip()
+    if not name and not profile_url:
+        if wants_ui_redirect(request):
+            return RedirectResponse("/?input_error=creator_required", status_code=303)
+        raise HTTPException(status_code=400, detail="creator name or profile URL is required")
+    task = V31WorkflowService(db).create_creator_distill_task(
+        creator_name=name,
+        profile_url=profile_url,
+        latest_count=parse_collection_limit(data, 10) or 10,
+        topic=str(data.get("topic") or "").strip(),
+    )
+    track_event(db, "v3_1_task_created", {"task_type": "creator_distill", "experimental": True})
+    if wants_ui_redirect(request):
+        return RedirectResponse(f"/ui/import-result/{task.id}", status_code=303)
+    return {"status": "created", "task_id": task.id}
+
+
+@router.post("/v3-1/idea-capture")
+async def v3_1_idea_capture(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    content = str(data.get("content") or "").strip()
+    if not content:
+        if wants_ui_redirect(request):
+            return RedirectResponse("/?input_error=empty_idea", status_code=303)
+        raise HTTPException(status_code=400, detail="idea content is required")
+    task = V31WorkflowService(db).create_idea_task(
+        content=content,
+        output_type=str(data.get("output_type") or "knowledge").strip(),
+        tags=str(data.get("tags") or "").strip(),
+    )
+    track_event(db, "v3_1_task_created", {"task_type": "idea_capture"})
+    if wants_ui_redirect(request):
+        return RedirectResponse(f"/ui/import-result/{task.id}", status_code=303)
+    return {"status": "created", "task_id": task.id}
+
+
+@router.get("/ui/import-result/{task_id}", response_class=HTMLResponse)
+def import_result_page(task_id: int, request: Request, db: Session = Depends(get_db)):
+    task = db.get(ImportTask, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="import task not found")
+    items = db.query(ImportedItem).filter(ImportedItem.task_id == task.id).order_by(ImportedItem.created_at.asc()).all()
+    transcripts = {
+        transcript.imported_item_id: transcript
+        for transcript in db.query(TranscriptRecord).filter(TranscriptRecord.task_id == task.id).all()
+    }
+    logs = db.query(WorkflowRunLog).filter(WorkflowRunLog.task_id == task.id).order_by(WorkflowRunLog.created_at.asc()).all()
+    result = safe_json(task.result_json)
+    return templates.TemplateResponse(
+        request,
+        "import_result.html",
+        template_context(
+            request,
+            "sources",
+            db,
+            task=task,
+            items=items,
+            transcripts=transcripts,
+            logs=logs,
+            result=result,
+            source=db.get(SourceConnection, task.source_id) if task.source_id else None,
+            saved=request.query_params.get("saved"),
+        ),
+    )
+
+
+@router.get("/ui/transcripts/{transcript_id}", response_class=HTMLResponse)
+def transcript_page(transcript_id: int, request: Request, db: Session = Depends(get_db)):
+    transcript = db.get(TranscriptRecord, transcript_id)
+    if transcript is None:
+        raise HTTPException(status_code=404, detail="transcript not found")
+    item = db.get(ImportedItem, transcript.imported_item_id) if transcript.imported_item_id else None
+    task = db.get(ImportTask, transcript.task_id)
+    return templates.TemplateResponse(
+        request,
+        "transcript_markdown.html",
+        template_context(
+            request,
+            "sources",
+            db,
+            transcript=transcript,
+            item=item,
+            task=task,
+            markdown_html=render_markdown(transcript.edited_content or transcript.content),
+        ),
+    )
+
+
+@router.post("/v3-1/tasks/{task_id}/save-to-kb")
+async def v3_1_save_task_to_kb(task_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        pages = V31WorkflowService(db).save_task_to_knowledge(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    track_event(db, "v3_1_task_saved_to_kb", {"task_id": task_id, "page_count": len(pages)})
+    first_page = pages[0].page_id if pages else ""
+    if wants_ui_redirect(request):
+        return RedirectResponse(f"/ui/wiki?created=v3-1-task&page_id={first_page}", status_code=303)
+    return {"status": "saved", "page_ids": [page.page_id for page in pages]}
 
 
 @router.get("/ui/demo", response_class=HTMLResponse)

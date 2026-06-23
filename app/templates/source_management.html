@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% set title = "来源管理" %}
+
+{% block content %}
+<section class="v31-page-head">
+  <div>
+    <span class="section-kicker">V3.1 Source Management</span>
+    <h1>来源管理</h1>
+    <p>一横条一个平台。管理连接状态、同步范围、后台导入和入库结果。</p>
+  </div>
+  <a class="btn secondary" href="/">回首页</a>
+</section>
+
+<section class="source-summary-strip" aria-label="来源状态摘要">
+  <div><strong>{{ rows | selectattr("source.status", "equalto", "connected") | list | length }}</strong><span>已连接平台</span></div>
+  <div><strong>{{ rows | selectattr("latest_task") | list | length }}</strong><span>有导入记录</span></div>
+  <div><strong>{{ rows | sum(attribute="failed") }}</strong><span>需要处理</span></div>
+</section>
+
+<section class="source-row-table" aria-label="平台来源列表">
+  <header class="source-row header">
+    <span>平台</span>
+    <span>连接状态</span>
+    <span>同步状态</span>
+    <span>默认范围</span>
+    <span>最新结果</span>
+    <span>操作</span>
+  </header>
+  {% for row in rows %}
+    {% set source = row.source %}
+    {% set latest = row.latest_task %}
+    <article class="source-row">
+      <div class="source-platform">
+        <span class="source-logo">{{ "抖" if source.platform == "douyin" else "链" if source.platform == "general_link" else "I" }}</span>
+        <div>
+          <strong>{{ source.name }}</strong>
+          <small>{{ "抖音平台" if source.platform == "douyin" else "本地输入来源" }}</small>
+        </div>
+      </div>
+      <div>
+        <span class="status-chip {{ 'success' if source.status == 'connected' else 'warning' }}">{{ "已连接" if source.status == "connected" else "待授权" if source.status == "needs_auth" else source.status }}</span>
+        <small>{{ source.auth_status }}</small>
+      </div>
+      <div>
+        {% if latest %}
+          <span class="status-chip {{ 'success' if latest.status == 'saved_to_kb' else 'ai' }}">{{ latest.current_step }}</span>
+          <small>更新于 {{ latest.updated_at.strftime("%m-%d %H:%M") }}</small>
+        {% else %}
+          <span class="status-chip">空闲</span>
+          <small>还没有导入任务</small>
+        {% endif %}
+      </div>
+      <div>
+        <strong>{{ "最新 10 条" if source.platform == "douyin" else "全部内容" }}</strong>
+        <small>跳过重复 · 后台知识评分</small>
+      </div>
+      <div class="source-result-mini">
+        <span>导入 {{ row.imported }}</span>
+        <span>入库 {{ row.saved }}</span>
+        <span>丢弃 {{ row.discarded }}</span>
+        <span>失败 {{ row.failed }}</span>
+      </div>
+      <div class="source-actions">
+        {% if source.platform == "douyin" and source.type == "favorites" %}
+          <form method="post" action="/v3-1/favorites/sync">
+            <input type="hidden" name="limit" value="10">
+            <button class="btn primary small" type="submit" data-busy-text="正在创建任务...">同步最新 10 条</button>
+          </form>
+          <button class="btn secondary small" type="button">重新授权</button>
+        {% elif latest %}
+          <a class="btn primary small" href="/ui/import-result/{{ latest.id }}">查看结果</a>
+        {% else %}
+          <a class="btn secondary small" href="/">从首页开始</a>
+        {% endif %}
+      </div>
+    </article>
+    {% if source.platform == "douyin" %}
+      <section class="source-row-detail">
+        <div>
+          <strong>收藏夹</strong>
+          <span>默认同步最新 10 条；真实抖音授权未接入，当前使用明确标注的 mock adapter。</span>
+        </div>
+        <div>
+          <strong>链接导入</strong>
+          <span>从首页“导入链接”弹窗创建后台任务。</span>
+        </div>
+        <div>
+          <strong>博主来源</strong>
+          <span>实验能力；失败不会自动打开浏览器或第三方 App。</span>
+        </div>
+      </section>
+    {% endif %}
+  {% endfor %}
+</section>
+{% endblock %}

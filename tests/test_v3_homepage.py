@@ -30,12 +30,13 @@ def test_v3_homepage_is_input_first():
         response = client.get("/")
 
         assert response.status_code == 200
-        assert "输入信息，沉淀成可追问的知识。" in response.text
-        assert "粘贴链接、博主主页，或写下一个想法" in response.text
+        assert "别让收藏夹吃灰，把碎片内容变成可追问的知识" in response.text
+        assert "问问你的知识库" in response.text
         assert "同步收藏夹" in response.text
         assert "导入链接" in response.text
         assert "蒸馏博主" in response.text
-        assert "记录 Idea" in response.text
+        assert "实时记录 Idea" in response.text
+        assert "导入后会发生什么" in response.text
         assert "V2 Local Knowledge Workbench" not in response.text
         assert db.query(ProductEvent).filter(ProductEvent.event_name == "v3_home_viewed").count() == 1
     finally:
@@ -112,4 +113,3 @@ def test_v3_ui_event_adapter_records_safe_event():
         assert "idea" in event.properties_json
     finally:
         app.dependency_overrides.clear()
-

@@ -207,3 +207,128 @@ class ScanLog(Base):
     level: Mapped[str] = mapped_column(String(40), nullable=False, default="info")
     message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class SourceConnection(Base):
+    __tablename__ = "source_connections"
+    __table_args__ = (Index("ix_source_connection_platform_type", "platform", "type"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    type: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    platform: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="not_connected")
+    auth_status: Mapped[str] = mapped_column(String(80), nullable=False, default="not_configured")
+    sync_settings_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    tasks = relationship("ImportTask", back_populates="source")
+
+
+class ImportTask(Base):
+    __tablename__ = "import_tasks"
+    __table_args__ = (
+        Index("ix_import_task_status", "status"),
+        Index("ix_import_task_type", "type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("source_connections.id"), nullable=True)
+    type: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="queued")
+    current_step: Mapped[str] = mapped_column(String(120), nullable=False, default="queued")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    title: Mapped[str] = mapped_column(String(300), nullable=False, default="导入任务")
+    provider: Mapped[str] = mapped_column(String(120), nullable=False, default="mock_import_adapter")
+    scope_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    input_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    logs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    imported_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    saved_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    discarded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    external_popup_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    source = relationship("SourceConnection", back_populates="tasks")
+    imported_items = relationship("ImportedItem", back_populates="task")
+    transcripts = relationship("TranscriptRecord", back_populates="task")
+    workflow_logs = relationship("WorkflowRunLog", back_populates="task")
+
+
+class ImportedItem(Base):
+    __tablename__ = "imported_items"
+    __table_args__ = (Index("ix_imported_item_task_id", "task_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("import_tasks.id"), nullable=False)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("source_connections.id"), nullable=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    raw_content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    author: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    content_type: Mapped[str] = mapped_column(String(80), nullable=False, default="video")
+    selected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="ready")
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    discard_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    task = relationship("ImportTask", back_populates="imported_items")
+    transcripts = relationship("TranscriptRecord", back_populates="imported_item")
+
+
+class TranscriptRecord(Base):
+    __tablename__ = "transcript_records"
+    __table_args__ = (Index("ix_transcript_imported_item_id", "imported_item_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("import_tasks.id"), nullable=False)
+    source_id: Mapped[int | None] = mapped_column(ForeignKey("source_connections.id"), nullable=True)
+    imported_item_id: Mapped[int | None] = mapped_column(ForeignKey("imported_items.id"), nullable=True)
+    provider: Mapped[str] = mapped_column(String(120), nullable=False, default="mock_transcript_adapter")
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="generated")
+    quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    edited_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    editable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    logs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    task = relationship("ImportTask", back_populates="transcripts")
+    imported_item = relationship("ImportedItem", back_populates="transcripts")
+
+
+class WorkflowRunLog(Base):
+    __tablename__ = "workflow_run_logs"
+    __table_args__ = (Index("ix_workflow_log_task_id", "task_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("import_tasks.id"), nullable=False)
+    step: Mapped[str] = mapped_column(String(120), nullable=False)
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="completed")
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    task = relationship("ImportTask", back_populates="workflow_logs")
+
+
+class ActivationResult(Base):
+    __tablename__ = "activation_results"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    knowledge_page_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(80), nullable=False, default="reuse")
+    status: Mapped[str] = mapped_column(String(80), nullable=False, default="draft")
+    result: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

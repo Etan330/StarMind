@@ -1,6 +1,6 @@
 from app.services.classifier_service import ClassificationResult, ClassifierService
 from app.services.demo_service import get_demo_result, get_v3_home_preview, list_demo_results
-from app.services.input_router_service import V3_ENTRY_MODES, V3InputRoute, classify_v3_input
+from app.services.input_router_service import V3_ENTRY_MODES, V3InputRoute, classify_v3_input, extract_urls
 from app.services.quality_service import (
     compute_page_quality,
     compute_quality,
@@ -32,6 +32,7 @@ __all__ = [
     "classify_v3_input",
     "compute_page_quality",
     "compute_quality",
+    "extract_urls",
     "generation_label",
     "get_demo_result",
     "get_v3_home_preview",

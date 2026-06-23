@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% set title = "导入结果摘要" %}
+
+{% block content %}
+<section class="v31-page-head">
+  <div>
+    <span class="section-kicker">Import Result</span>
+    <h1>导入结果摘要</h1>
+    <p>{{ task.title }} · {{ source.name if source else "本地任务" }}</p>
+  </div>
+  <a class="btn secondary" href="/ui/source-management">回来源管理</a>
+</section>
+
+<section class="import-result-hero">
+  <div>
+    <span>导入</span>
+    <strong>{{ task.imported_count }}</strong>
+    <small>条</small>
+  </div>
+  <div>
+    <span>可入库</span>
+    <strong>{{ task.saved_count if task.type == "favorites_sync" else items | selectattr("selected") | list | length }}</strong>
+    <small>条</small>
+  </div>
+  <div>
+    <span>后台丢弃</span>
+    <strong>{{ task.discarded_count }}</strong>
+    <small>条</small>
+  </div>
+  <div>
+    <span>失败</span>
+    <strong>{{ task.failed_count }}</strong>
+    <small>条</small>
+  </div>
+</section>
+
+<div class="notice warning">
+  {{ result.adapter_notice or "当前任务由本地 mock adapter 生成，用于跑通 V3.1 产品闭环；不代表真实第三方同步或转写已经接入。" }}
+</div>
+
+<section class="import-actions-row">
+  <form method="post" action="/v3-1/tasks/{{ task.id }}/save-to-kb">
+    <button class="btn primary" type="submit" data-busy-text="正在保存...">确认并保存到知识库</button>
+  </form>
+  {% set first_transcript = transcripts.values() | list | first %}
+  {% if first_transcript %}
+    <a class="btn secondary" href="/ui/transcripts/{{ first_transcript.id }}">查看逐字稿 Markdown</a>
+  {% endif %}
+  <button class="btn ghost" type="button">查看失败项</button>
+  <button class="btn ghost" type="button">查看丢弃原因</button>
+</section>
+
+<section class="v31-two-column">
+  <article class="surface-panel">
+    <h2>已导入内容</h2>
+    <div class="v31-item-list">
+      {% for item in items %}
+        {% set transcript = transcripts.get(item.id) %}
+        <article class="v31-item-row {{ item.status }}">
+          <div>
+            <strong>{{ item.title }}</strong>
+            <p>{{ item.summary }}</p>
+            <small>{{ item.canonical_url }}</small>
+          </div>
+          <div class="v31-item-meta">
+            <span class="status-chip {{ 'success' if item.selected else 'warning' if item.status == 'discarded' else 'error' if item.status == 'failed' else '' }}">
+              {{ "可入库" if item.selected else "后台丢弃" if item.status == "discarded" else "失败" if item.status == "failed" else item.status }}
+            </span>
+            {% if transcript %}
+              <a href="/ui/transcripts/{{ transcript.id }}">Markdown</a>
+            {% endif %}
+            {% if item.discard_reason %}
+              <small>{{ item.discard_reason }}</small>
+            {% endif %}
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  </article>
+  <aside class="surface-panel">
+    <h2>任务状态</h2>
+    <div class="task-timeline">
+      {% for log in logs %}
+        <div>
+          <span></span>
+          <p><strong>{{ log.step }}</strong>{{ log.message }}</p>
+        </div>
+      {% endfor %}
+    </div>
+    <div class="notice">
+      默认不会打开浏览器、豆包 App 或第三方窗口。需要真实授权时，会在来源管理中显式提示。
+    </div>
+  </aside>
+</section>
+{% endblock %}
