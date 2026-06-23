@@ -27,6 +27,8 @@ class Connector(Base):
     last_top_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     scan_mode: Mapped[str] = mapped_column(String(120), nullable=False, default="stop_when_seen_existing_raw_source_or_ledger")
     max_scan_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_sync_cron: Mapped[str | None] = mapped_column(String(40), nullable=True, default="0 0 * * *")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -206,4 +208,58 @@ class ScanLog(Base):
     scan_run_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     level: Mapped[str] = mapped_column(String(40), nullable=False, default="info")
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class OnboardingStatus(Base):
+    __tablename__ = "onboarding_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    current_step: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    skipped: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    domain: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    score: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PushSettings(Base):
+    __tablename__ = "push_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    start_time: Mapped[str] = mapped_column(String(5), default="08:00", nullable=False)
+    end_time: Mapped[str] = mapped_column(String(5), default="22:00", nullable=False)
+    frequency_hours: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
+    items_per_push: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class PushHistory(Base):
+    __tablename__ = "push_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    raw_source_id: Mapped[int] = mapped_column(ForeignKey("raw_sources.id"), nullable=False)
+    pushed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    feedback_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class KnowledgeGraphEdge(Base):
+    __tablename__ = "knowledge_graph_edges"
+    __table_args__ = (
+        Index("ux_graph_edge", "source_id", "target_id", "relation", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("raw_sources.id"), nullable=False)
+    target_id: Mapped[int] = mapped_column(ForeignKey("raw_sources.id"), nullable=False)
+    relation: Mapped[str] = mapped_column(String(80), nullable=False)
+    weight: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    shared_concepts_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

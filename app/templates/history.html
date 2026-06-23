@@ -5,6 +5,16 @@
 {% block content %}
 {{ ui.page_header("历史记录", "继续未完成处理、复用已确认结果，或回看最近沉淀内容。") }}
 
+{% if request.query_params.get("cleared") %}
+  <div class="notice ok centered-notice">已清空 {{ request.query_params.get("cleared") }} 条历史记录。</div>
+{% endif %}
+
+<div style="margin-bottom:16px;text-align:right;">
+  <form method="post" action="/api/history/clear" onsubmit="return confirm('确定清空所有历史记录？此操作不可恢复。')" style="display:inline;">
+    <button class="btn secondary small" type="submit" style="color:#E85D75;border-color:#E85D75;">🗑 清空历史记录</button>
+  </form>
+</div>
+
 <section class="history-v2-layout">
   <article class="glass-card history-task-center">
     <div class="panel-title-row">

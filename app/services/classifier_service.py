@@ -209,36 +209,57 @@ class ClassifierService:
             "ai",
             "agent",
             "教程",
-            "方法",
+            "方法论",
             "技巧",
             "指南",
             "架构",
             "复盘",
-            "面试",
-            "职业",
             "coding",
             "sop",
             "rag",
+            "编程",
+            "算法",
+            "设计模式",
+            "源码",
+            "论文",
+            "研究",
+            "原理",
+            "认知",
+            "思维模型",
+            "商业模式",
+            "策略",
         ]
-        low_value_markers = ["抽奖", "搞笑", "明星", "娱乐", "颜值", "减肥", "穿搭", "吐槽"]
-        if any(marker in text for marker in knowledge_markers):
-            return {
-                "is_knowledge": True,
-                "label": "knowledge",
-                "confidence": 0.78,
-                "knowledge_type": ["启发/方法"],
-                "reason": "标题或页面文本包含方法、教程、职业或 AI 等知识信号。",
-                "decision": "ingest_to_raw_sources",
-            }
-        if any(marker in text for marker in low_value_markers):
+        low_value_markers = [
+            "抽奖", "搞笑", "明星", "娱乐", "颜值", "减肥", "穿搭", "吐槽",
+            "甄嬛传", "电视剧", "追剧", "惊险一幕", "监控拍下", "瘦身", "苗条",
+            "作文", "高考", "提分", "满分作文", "个税", "报税", "退税",
+            "扭扭捏捏", "性格", "情绪", "崩溃", "懂事", "隐忍",
+            "火灾", "起火", "阴燃", "充电线",
+        ]
+        # Require stronger knowledge signals — single keyword like "面试" alone is not enough
+        knowledge_hits = [m for m in knowledge_markers if m in text]
+        low_hits = [m for m in low_value_markers if m in text]
+
+        # If both knowledge and low-value markers present, prefer filtering out
+        if low_hits:
             return {
                 "is_knowledge": False,
                 "label": "non_knowledge",
                 "confidence": 0.82,
                 "knowledge_type": [],
-                "reason": "内容更像生活娱乐或低信息量收藏，先放入可恢复回收站。",
+                "reason": f"内容包含非知识类信号（{', '.join(low_hits[:3])}），先放入可恢复回收站。",
                 "decision": "archive_to_recycle_bin",
             }
+        if len(knowledge_hits) >= 2 or any(m in text for m in ["ai", "agent", "rag", "sop", "编程", "算法", "架构", "论文"]):
+            return {
+                "is_knowledge": True,
+                "label": "knowledge",
+                "confidence": 0.78,
+                "knowledge_type": ["启发/方法"],
+                "reason": f"标题包含知识信号（{', '.join(knowledge_hits[:3])}）。",
+                "decision": "ingest_to_raw_sources",
+            }
+        # Default: uncertain — needs user review, not auto-ingest
         return {
             "is_knowledge": False,
             "label": "uncertain",
@@ -260,3 +281,49 @@ class ClassifierService:
         if not Path(path).exists():
             return "判断收藏内容是否为知识内容，只输出 JSON。"
         return path.read_text(encoding="utf-8")
+
+    async def batch_classify_titles(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        """Classify a batch of titles into domain categories using LLM."""
+        settings = get_model_settings()
+        task = settings.get("task_models", {}).get("classifier_model", {})
+        provider, model, _config = get_provider_runtime(task.get("provider"), task.get("model"))
+
+        # Process in batches of 20
+        all_classified: list[dict[str, Any]] = []
+        for i in range(0, len(items), 20):
+            batch = items[i:i + 20]
+            titles_text = "\n".join(f"{idx+1}. {item.get('title', '')} ({item.get('url', '')})" for idx, item in enumerate(batch))
+            prompt = (
+                "请将以下收藏内容按知识领域分类。对每条内容输出其所属领域（如：AI/大模型、产品设计、编程开发、搞笑视频、美食探店等）。\n"
+                "输出 JSON 数组，每个元素包含 index(从1开始)、domain(领域名)。\n\n"
+                f"内容列表：\n{titles_text}"
+            )
+            try:
+                result = await provider.json_chat(
+                    [{"role": "user", "content": prompt}],
+                    model=model,
+                )
+                classified = result if isinstance(result, list) else result.get("items", result.get("classifications", []))
+                for item_result in classified:
+                    idx = int(item_result.get("index", 0)) - 1
+                    if 0 <= idx < len(batch):
+                        batch[idx]["domain"] = item_result.get("domain", "未分类")
+                all_classified.extend(batch)
+            except Exception:
+                # Fallback: assign "未分类"
+                for item in batch:
+                    item.setdefault("domain", "未分类")
+                all_classified.extend(batch)
+
+        # Group by domain
+        categories: dict[str, list[dict[str, Any]]] = {}
+        for item in all_classified:
+            domain = item.get("domain", "未分类")
+            categories.setdefault(domain, []).append(item)
+
+        return {
+            "categories": [
+                {"domain": domain, "count": len(items_list), "items": items_list}
+                for domain, items_list in sorted(categories.items(), key=lambda x: -len(x[1]))
+            ]
+        }

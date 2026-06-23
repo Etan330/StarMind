@@ -14,6 +14,8 @@ from app.llm import get_provider_runtime
 
 
 class AgentRunner:
+    """Main agent orchestrator — dispatches to sub-agents (Lint, Push, Graph) and handles Q&A."""
+
     def __init__(self, db: Session) -> None:
         self.db = db
         self.guardrails = AgentGuardrails()
@@ -35,6 +37,18 @@ class AgentRunner:
             self.tracer.log("guardrail_block", {"run_id": run_id, "question": question, "reason": answer})
             return AgentAnswer(run_id=run_id, answer=answer, sources=[], model=model or "", provider=provider_id or "")
 
+        # Route to sub-agents if intent matches
+        intent = self._detect_intent(question)
+        if intent == "lint":
+            return await self._run_lint(run_id, question, provider_id, model, model_profile_name)
+        if intent == "push":
+            return await self._run_push(run_id, question, provider_id, model, model_profile_name)
+        if intent == "graph":
+            return await self._run_graph(run_id, question, provider_id, model, model_profile_name)
+        if intent == "sync":
+            return await self._run_sync(run_id, question, provider_id, model, model_profile_name)
+
+        # Default: knowledge Q&A
         search = KnowledgeSearchTool(self.db).run(question)
         provider, resolved_model, provider_config = get_provider_runtime(provider_id, model)
         resolved_provider = provider.provider_name
@@ -80,3 +94,91 @@ class AgentRunner:
             provider=resolved_provider,
             profile=model_profile_name,
         )
+
+    # --- Sub-agent dispatch ---
+
+    def _detect_intent(self, question: str) -> str | None:
+        q = question.lower()
+        if any(kw in q for kw in ["检查", "lint", "健康", "诊断", "孤立", "过期", "重复"]):
+            return "lint"
+        if any(kw in q for kw in ["推送", "push", "推荐", "今日推荐"]):
+            return "push"
+        if any(kw in q for kw in ["图谱", "星链", "关联", "graph", "连接关系"]):
+            return "graph"
+        if any(kw in q for kw in ["同步", "sync", "采集", "抓取", "收藏夹"]):
+            return "sync"
+        return None
+
+    async def _run_lint(self, run_id: str, question: str, provider_id, model, profile) -> AgentAnswer:
+        from app.agent.lint_agent import LintAgent
+        self.tracer.log("sub_agent_dispatch", {"run_id": run_id, "agent": "lint"})
+        report = await LintAgent(self.db).run_full_check()
+        findings = report.get("findings", [])
+        if not findings:
+            answer = "✅ 知识库健康检查通过，没有发现问题。"
+        else:
+            lines = [f"🔍 知识库检查发现 {len(findings)} 个问题：\n"]
+            for f in findings[:10]:
+                icon = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}.get(f["severity"], "•")
+                lines.append(f"{icon} **{f['check_type']}** — {f['message']}")
+                lines.append(f"  → {f['suggestion']}")
+            if len(findings) > 10:
+                lines.append(f"\n...还有 {len(findings) - 10} 个问题")
+            answer = "\n".join(lines)
+        self.memory.remember_run(run_id, question, answer)
+        return AgentAnswer(run_id=run_id, answer=answer, sources=[], model=model or "", provider=provider_id or "", profile=profile)
+
+    async def _run_push(self, run_id: str, question: str, provider_id, model, profile) -> AgentAnswer:
+        from app.services.push_service import PushService
+        self.tracer.log("sub_agent_dispatch", {"run_id": run_id, "agent": "push"})
+        items = await PushService(self.db).generate_push()
+        if not items:
+            answer = "当前没有可推送的内容。可能是推送已暂停、不在推送时间窗口内、或知识库为空。"
+        else:
+            lines = ["📌 **今日推荐**\n"]
+            for item in items:
+                lines.append(f"- 《{item['title']}》— {item['platform']}")
+            answer = "\n".join(lines)
+        self.memory.remember_run(run_id, question, answer)
+        return AgentAnswer(run_id=run_id, answer=answer, sources=[], model=model or "", provider=provider_id or "", profile=profile)
+
+    async def _run_graph(self, run_id: str, question: str, provider_id, model, profile) -> AgentAnswer:
+        from app.services.graph_service import GraphService
+        self.tracer.log("sub_agent_dispatch", {"run_id": run_id, "agent": "graph"})
+        data = GraphService(self.db).get_graph_data()
+        nodes = data.get("nodes", [])
+        edges = data.get("edges", [])
+        orphans = GraphService(self.db).detect_orphans()
+        lines = [
+            f"🌐 **知识图谱概览**\n",
+            f"- 节点数：{len(nodes)}",
+            f"- 连接数：{len(edges)}",
+            f"- 孤立节点：{len(orphans)} 个",
+        ]
+        if edges:
+            domains = set(n.get("domain") for n in nodes)
+            lines.append(f"- 覆盖领域：{', '.join(sorted(d for d in domains if d))}")
+        lines.append("\n打开 [知识星链页面](/ui/graph) 查看可视化图谱。")
+        answer = "\n".join(lines)
+        self.memory.remember_run(run_id, question, answer)
+        return AgentAnswer(run_id=run_id, answer=answer, sources=[], model=model or "", provider=provider_id or "", profile=profile)
+
+    async def _run_sync(self, run_id: str, question: str, provider_id, model, profile) -> AgentAnswer:
+        from app.models import Connector, SyncLedgerItem
+        self.tracer.log("sub_agent_dispatch", {"run_id": run_id, "agent": "sync"})
+        connectors = self.db.query(Connector).all()
+        ledger_count = self.db.query(SyncLedgerItem).count()
+        auto_enabled = [c for c in connectors if c.auto_sync_enabled]
+        lines = [
+            f"📡 **同步状态**\n",
+            f"- 已连接平台：{len(connectors)} 个",
+            f"- 自动同步已启用：{len(auto_enabled)} 个",
+            f"- Sync Ledger 总记录：{ledger_count} 条",
+        ]
+        for c in connectors[:5]:
+            status = "✅ 自动同步" if c.auto_sync_enabled else "手动"
+            lines.append(f"  - {c.name} ({c.platform}) — {status}")
+        lines.append("\n如需手动触发同步，请到 [连接来源](/ui/connectors) 页面操作。")
+        answer = "\n".join(lines)
+        self.memory.remember_run(run_id, question, answer)
+        return AgentAnswer(run_id=run_id, answer=answer, sources=[], model=model or "", provider=provider_id or "", profile=profile)

@@ -3,7 +3,27 @@
 {% set title = "来源证据" %}
 
 {% block content %}
-{{ ui.page_header("来源证据", "这里保存原始链接、文本和逐字稿状态。AI 可以引用并生成派生页面，但不会覆盖或删除来源证据。", "不可变证据") }}
+{{ ui.page_header("来源证据", "这里保存原始链接、文本和逐字稿状态。勾选后可批量删除。", "知识库管理") }}
+
+{% if request.query_params.get("deleted") %}
+  <div class="notice ok centered-notice">已删除 {{ request.query_params.get("deleted") }} 条原始资料。</div>
+{% endif %}
+
+<!-- Batch delete toolbar -->
+<div id="batch-toolbar" style="display:none;position:sticky;top:0;z-index:100;background:#fff;border-bottom:1px solid #eee;padding:12px 24px;margin-bottom:16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
+  <form method="post" action="/api/sources/batch-delete" id="batch-form" onsubmit="return confirm('确定删除选中的内容？删除后进入回收站，30天内可恢复。')">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <label style="cursor:pointer;"><input type="checkbox" id="select-all" onchange="toggleAll(this.checked)"> 全选</label>
+      <span id="selected-count" style="color:#666;">已选 0 条</span>
+      <button type="submit" class="btn secondary" style="color:#E85D75;border-color:#E85D75;margin-left:auto;">🗑 批量删除</button>
+      <button type="button" class="btn secondary" onclick="exitBatchMode()">取消</button>
+    </div>
+  </form>
+</div>
+
+<div style="margin-bottom:12px;">
+  <button type="button" class="btn secondary small" id="enter-batch-btn" onclick="enterBatchMode()">☑ 批量管理</button>
+</div>
 
 <section class="raw-source-layout">
   <div class="source-groups">
@@ -12,10 +32,13 @@
         <summary><span>收藏夹<small>点击展开 / 收起</small></span><b>{{ favorite_sources | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
           {% for source in favorite_sources %}
-            <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-expand-item>
-              <strong>{{ source.title }}</strong>
-              <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
-            </a>
+            <div class="source-line-wrapper" style="display:flex;align-items:center;gap:8px;" data-expand-item>
+              <input type="checkbox" class="batch-checkbox" value="{{ source.id }}" name="ids" form="batch-form" style="display:none;width:18px;height:18px;cursor:pointer;">
+              <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" style="flex:1;">
+                <strong>{{ source.title }}</strong>
+                <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+              </a>
+            </div>
           {% else %}
             {{ ui.empty_state("还没有来自收藏夹的资料", "先同步一次收藏夹。") }}
           {% endfor %}
@@ -34,7 +57,7 @@
               <span>{{ item.platform }} · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
             </a>
           {% else %}
-            {{ ui.empty_state("还没有单独导入的链接", "用“导入链接”功能加入第一条。") }}
+            {{ ui.empty_state("还没有单独导入的链接", "用导入链接功能加入第一条。") }}
           {% endfor %}
         </div>
         {% if link_items | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
@@ -51,7 +74,7 @@
               <span>手动录入 · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
             </a>
           {% else %}
-            {{ ui.empty_state("还没有手动想法", "用“记录想法”功能把临时 idea 写进来。") }}
+            {{ ui.empty_state("还没有手动想法", "用记录想法功能把临时 idea 写进来。") }}
           {% endfor %}
         </div>
         {% if idea_items | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
@@ -67,45 +90,31 @@
         <span class="status-chip primary">{{ selected_source_type_label }}</span>
       </header>
       <section class="raw-meta-grid">
-        <div>
-          <span>来源平台</span>
-          <strong>{{ selected_source.platform }}</strong>
-        </div>
-        <div>
-          <span>作者</span>
-          <strong>{{ selected_source.author or "未知" }}</strong>
-        </div>
-        <div>
-          <span>逐字稿状态</span>
-          <strong>{{ selected_metadata.transcript_status or "audio_asr_pending" }}</strong>
-        </div>
-        <div>
-          <span>不可变</span>
-          <strong>{{ "是" if selected_source.immutable else "否" }}</strong>
-        </div>
-        <div>
-          <span>入库时间</span>
-          <strong>{{ selected_source.created_at.strftime("%Y/%m/%d %H:%M") }}</strong>
-        </div>
+        <div><span>来源平台</span><strong>{{ selected_source.platform }}</strong></div>
+        <div><span>作者</span><strong>{{ selected_source.author or "未知" }}</strong></div>
+        <div><span>逐字稿状态</span><strong>{{ selected_metadata.transcript_status or "audio_asr_pending" }}</strong></div>
+        <div><span>入库时间</span><strong>{{ selected_source.created_at.strftime("%Y/%m/%d %H:%M") }}</strong></div>
       </section>
       <section class="transcript-panel raw-transcript-card">
         <div class="panel-label">逐字稿 / 页面可见文本</div>
-        <pre>{{ selected_transcript or selected_raw_text or "当前还没有拿到平台字幕或音频 ASR 文本。已先保存链接、标题和页面信息，等待后续 ASR 任务补全。" }}</pre>
+        <pre>{{ selected_transcript or selected_raw_text or "当前还没有拿到逐字稿。已保存链接和标题信息。" }}</pre>
       </section>
-      <div class="v1-callout v1-warning">如果文本状态是 `audio_asr_pending`，生成页会使用兜底模板或页面可见文本，并在草稿中标记待补全。</div>
       <div class="source-preview-actions">
         <form method="post" action="/agent/raw-sources/{{ selected_source.id }}/create-page">
           <input type="hidden" name="page_type" value="knowledge">
           <input type="hidden" name="force" value="1">
-          <button class="btn primary full" type="submit" data-busy-text="正在生成草稿...">生成知识页草稿</button>
+          <button class="btn primary full" type="submit">生成知识页草稿</button>
         </form>
         <a class="btn secondary full" href="{{ selected_source.canonical_url }}" target="_blank" rel="noreferrer">打开原始链接</a>
+        <form method="post" action="/api/sources/{{ selected_source.id }}/delete" onsubmit="return confirm('确定删除？')">
+          <button class="btn secondary full" type="submit" style="color:#E85D75;border-color:#E85D75;">🗑 删除此条</button>
+        </form>
       </div>
     {% else %}
       <div class="wiki-overview">
         <span class="section-kicker">来源证据</span>
         <h2>选择左侧资料查看详情</h2>
-        <p>StarMind 会优先展示作者、来源、逐字稿和本地文本。原始链接会作为单独按钮提供，不会直接跳走。</p>
+        <p>点击左侧条目查看详情，或点击「批量管理」进入多选模式。</p>
       </div>
     {% endif %}
   </aside>
@@ -114,26 +123,54 @@
 
 {% block scripts %}
 <script>
+  // Batch mode
+  let batchMode = false;
+
+  function enterBatchMode() {
+    batchMode = true;
+    document.getElementById('batch-toolbar').style.display = 'block';
+    document.getElementById('enter-batch-btn').style.display = 'none';
+    document.querySelectorAll('.batch-checkbox').forEach(cb => { cb.style.display = 'block'; });
+    // Show all items so checkboxes are visible for all
+    document.querySelectorAll('[data-expand-item]').forEach(item => { item.hidden = false; });
+    document.querySelectorAll('[data-expand-button]').forEach(btn => { btn.hidden = true; });
+    updateCount();
+  }
+
+  function exitBatchMode() {
+    batchMode = false;
+    document.getElementById('batch-toolbar').style.display = 'none';
+    document.getElementById('enter-batch-btn').style.display = '';
+    document.querySelectorAll('.batch-checkbox').forEach(cb => { cb.style.display = 'none'; cb.checked = false; });
+    document.getElementById('select-all').checked = false;
+    updateCount();
+  }
+
+  function toggleAll(checked) {
+    document.querySelectorAll('.batch-checkbox').forEach(cb => { cb.checked = checked; });
+    updateCount();
+  }
+
+  function updateCount() {
+    const count = document.querySelectorAll('.batch-checkbox:checked').length;
+    document.getElementById('selected-count').textContent = `已选 ${count} 条`;
+  }
+
+  document.addEventListener('change', (e) => { if (e.target.classList.contains('batch-checkbox')) updateCount(); });
+
+  // Expand/collapse
   document.querySelectorAll("[data-expand-list]").forEach((list) => {
     const items = Array.from(list.querySelectorAll("[data-expand-item]"));
     const button = list.parentElement.querySelector("[data-expand-button]");
     let visible = 5;
     const render = () => {
-      items.forEach((item, index) => {
-        item.hidden = index >= visible;
-      });
+      items.forEach((item, index) => { item.hidden = index >= visible; });
       if (button) {
         button.hidden = visible >= items.length;
-        const next = Math.min(visible + 5, items.length);
-        button.textContent = `显示更多（${next}/${items.length}）`;
+        button.textContent = `显示更多（${Math.min(visible + 5, items.length)}/${items.length}）`;
       }
     };
-    if (button) {
-      button.addEventListener("click", () => {
-        visible += 5;
-        render();
-      });
-    }
+    if (button) button.addEventListener("click", () => { visible += 5; render(); });
     render();
   });
 </script>

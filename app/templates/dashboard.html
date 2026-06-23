@@ -3,139 +3,140 @@
 {% set title = "StarMind 首页" %}
 
 {% block content %}
-<section class="home-workspace">
-  <header class="home-hero">
-    <span class="hero-mark" aria-hidden="true">S</span>
-    <h1>{{ home_copy.title }}</h1>
-    <p>{{ home_copy.subtitle }}</p>
-  </header>
+<!-- 知识星链图谱 -->
+<section class="glass-card" style="padding:16px;margin-bottom:24px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+    <h2 style="margin:0;font-size:1.2rem;">✨ 知识星链</h2>
+    <a href="/ui/graph" style="font-size:0.85rem;color:#4A90D9;">全屏查看 →</a>
+  </div>
+  <div id="home-graph" style="width:100%;height:320px;border-radius:8px;background:#1a1a2e;"></div>
+</section>
 
-  {% if input_error == "empty" %}
-    <div class="notice bad centered-notice">先粘贴一个链接、输入博主主页，或写下一个想法。同步收藏夹可以直接选择对应入口。</div>
-  {% endif %}
-  {% if created == "passive-link" %}
-    <div class="notice ok centered-notice">链接已进入蒸馏流程。你可以在历史中查看处理进度。</div>
-  {% elif created == "manual-idea" %}
-    <div class="notice ok centered-notice">想法已保存，下一步可以整理成可复用内容。</div>
-  {% endif %}
-
-  <form class="v3-composer" method="post" action="/ui/v3/input" data-v3-composer>
-    <input type="hidden" name="entry_mode" value="{{ entry_mode }}" data-v3-entry-input>
-    <textarea
-      name="content"
-      rows="4"
-      maxlength="3000"
-      placeholder="粘贴链接、博主主页，或写下一个想法..."
-      data-v3-main-input
-    ></textarea>
-    <div class="composer-footer">
-      <div class="composer-tools" aria-label="输入辅助">
-        <button type="button" data-v3-entry-shortcut="link">粘贴链接</button>
-        <button type="button" data-v3-entry-shortcut="creator">输入博主</button>
-        <button type="button" data-v3-entry-shortcut="idea">写想法</button>
-      </div>
-      <span class="char-count"><span data-v3-char-count>0</span>/3000</span>
-      <button class="btn primary composer-submit" type="submit" data-busy-text="正在准备确认...">开始蒸馏</button>
-    </div>
+<!-- 向知识库提问 -->
+<section class="glass-card" style="padding:24px;margin-bottom:24px;">
+  <h2 style="margin:0 0 12px;font-size:1.1rem;">🔍 向知识库提问</h2>
+  <form method="get" action="/" style="display:flex;gap:8px;">
+    <input name="q" type="text" placeholder="问问你的知识库，比如：最近收藏里关于 Agent 的核心观点是什么？" value="{{ question or '' }}" style="flex:1;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:1rem;">
+    <button type="submit" class="btn primary" style="white-space:nowrap;">提问</button>
   </form>
 
-  <section class="entry-grid" aria-label="四种开始方式">
-    {% for item in v3_entries %}
-      <button class="entry-card {{ 'active' if item.mode == entry_mode else '' }}" type="button" data-v3-entry="{{ item.mode }}" data-v3-entry-label="{{ item.label }}">
-        <span class="entry-icon" aria-hidden="true">
-          {% if item.mode == "favorites" %}
-            <svg viewBox="0 0 24 24"><path d="M6 4h12v16l-6-3-6 3z"></path></svg>
-          {% elif item.mode == "link" %}
-            <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"></path><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"></path></svg>
-          {% elif item.mode == "creator" %}
-            <svg viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"></path><path d="M4 21a8 8 0 0 1 16 0"></path></svg>
-          {% else %}
-            <svg viewBox="0 0 24 24"><path d="M9 18h6"></path><path d="M10 22h4"></path><path d="M8 14a6 6 0 1 1 8 0c-.7.7-1 1.4-1 2H9c0-.6-.3-1.3-1-2z"></path></svg>
-          {% endif %}
-        </span>
-        <strong>{{ item.label }}</strong>
-        <span>{{ item.description }}</span>
-      </button>
-    {% endfor %}
-  </section>
-
-  <section class="onboarding-strip" data-v3-onboarding>
-    <div>
-      <strong>新用户可以这样开始</strong>
-      <span>输入一条信息 -> StarMind 提炼摘要、观点和来源 -> 你确认后保存并继续追问。</span>
+  {% if agent_response %}
+    <div class="agent-answer" style="margin-top:20px;padding:16px;background:#f8f9fa;border-radius:8px;border-left:4px solid #4A90D9;">
+      <div style="font-size:0.85rem;color:#666;margin-bottom:8px;">StarMind 回答：</div>
+      <div class="markdown-body">{{ agent_response_html | safe }}</div>
+      {% if agent_response.sources %}
+        <div style="margin-top:12px;font-size:0.8rem;color:#888;">
+          来源：{{ agent_response.sources | length }} 条本地资料
+        </div>
+      {% endif %}
     </div>
-    <button class="btn ghost small" type="button" data-v3-onboarding-dismiss>我知道了</button>
-  </section>
-
-  <section class="home-preview">
-    <div class="preview-head">
-      <div>
-        <span class="section-kicker">示例预览</span>
-        <h2>输入后你会得到什么</h2>
-      </div>
-      <a href="/ui/demo?demo_id={{ home_preview.demo_id }}" data-v3-demo-link>查看完整示例</a>
-    </div>
-    <div class="preview-grid">
-      <section>
-        <span>{{ home_preview.input_label }}</span>
-        <strong>{{ home_preview.input_title }}</strong>
-        <p>{{ home_preview.input_url }}</p>
-      </section>
-      <section>
-        <span>摘要</span>
-        <p>{{ home_preview.summary }}</p>
-      </section>
-      <section>
-        <span>关键观点</span>
-        <ul>
-          {% for point in home_preview.key_points %}
-            <li>{{ point }}</li>
-          {% endfor %}
-        </ul>
-      </section>
-      <section>
-        <span>来源证据</span>
-        <ul>
-          {% for evidence in home_preview.source_evidence %}
-            <li>{{ evidence }}</li>
-          {% endfor %}
-        </ul>
-      </section>
-    </div>
-    <div class="question-row">
-      {% for question in home_preview.questions %}
-        <a href="/ui/demo?demo_id={{ home_preview.demo_id }}">{{ question }}</a>
-      {% endfor %}
-    </div>
-  </section>
-
-  <footer class="trust-line">
-    <span>资料保存在本机</span>
-    <span>结论附带来源证据</span>
-    <span>AI 输出需要你确认后才会进入知识库</span>
-  </footer>
+  {% endif %}
 </section>
 
-<section class="returning-panel">
-  <div class="panel-title-row">
-    <div>
-      <span class="section-kicker">回访入口</span>
-      <h2>继续沉淀最近内容</h2>
-    </div>
-    <a class="btn secondary small" href="/ui/history">查看历史</a>
-  </div>
-  <div class="task-card-row">
-    {% for card in task_cards[:3] %}
-      <a class="task-mini-card" href="/ui/task/candidate/{{ card.candidate.id }}">
-        <strong>{{ card.candidate.title }}</strong>
-        <span>{{ card.primary_action }}</span>
-      </a>
-    {% else %}
-      <div class="empty-state wide">
-        <strong>还没有沉淀内容</strong>
-        <p>先从上方输入一条链接、博主主页或想法开始。</p>
-      </div>
-    {% endfor %}
+<!-- 四个快捷入口 -->
+<section class="glass-card" style="padding:24px;margin-bottom:24px;">
+  <h2 style="margin:0 0 16px;font-size:1.1rem;">📥 导入内容到知识库</h2>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+    <button onclick="document.getElementById('modal-sync').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
+      <span style="font-size:1.5rem;">📂</span>
+      <strong style="display:block;margin-top:8px;">同步收藏</strong>
+    </button>
+    <button onclick="document.getElementById('modal-link').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
+      <span style="font-size:1.5rem;">🔗</span>
+      <strong style="display:block;margin-top:8px;">粘贴链接</strong>
+    </button>
+    <button onclick="document.getElementById('modal-creator').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
+      <span style="font-size:1.5rem;">👤</span>
+      <strong style="display:block;margin-top:8px;">输入博主</strong>
+    </button>
+    <button onclick="document.getElementById('modal-idea').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
+      <span style="font-size:1.5rem;">💡</span>
+      <strong style="display:block;margin-top:8px;">写想法</strong>
+    </button>
   </div>
 </section>
+
+<!-- 弹窗：同步收藏 -->
+<dialog id="modal-sync" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+  <h3 style="margin:0 0 12px;">📂 同步收藏夹</h3>
+  <p style="color:#666;font-size:0.9rem;">选择平台进入收藏管理页面。</p>
+  <div style="display:flex;flex-direction:column;gap:8px;margin:16px 0;">
+    <a href="/ui/source-setup/douyin" class="btn secondary" style="text-align:center;">抖音</a>
+    <a href="/ui/source-setup/bilibili" class="btn secondary" style="text-align:center;">B站</a>
+    <a href="/ui/source-setup/xiaohongshu" class="btn secondary" style="text-align:center;">小红书</a>
+    <a href="/ui/sync" class="btn secondary" style="text-align:center;">更多平台...</a>
+  </div>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;">取消</button>
+</dialog>
+
+<!-- 弹窗：粘贴链接 -->
+<dialog id="modal-link" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+  <h3 style="margin:0 0 12px;">🔗 粘贴链接</h3>
+  <form method="post" action="/passive/link">
+    <input name="url" type="url" placeholder="粘贴视频或文章链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <input name="title" type="text" placeholder="标题（可选）" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <input type="hidden" name="process_now" value="true">
+    <input type="hidden" name="transcribe" value="false">
+    <button type="submit" class="btn primary" style="width:100%;">导入到知识库</button>
+  </form>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
+</dialog>
+
+<!-- 弹窗：输入博主 -->
+<dialog id="modal-creator" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+  <h3 style="margin:0 0 12px;">👤 输入博主主页</h3>
+  <form method="post" action="/distill/profile">
+    <input name="profile_url" type="url" placeholder="博主主页链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <input name="target_name" type="text" placeholder="博主名称" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <input name="platform" type="text" placeholder="平台（如：抖音）" value="社交媒体" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <button type="submit" class="btn primary" style="width:100%;">开始蒸馏</button>
+  </form>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
+</dialog>
+
+<!-- 弹窗：写想法 -->
+<dialog id="modal-idea" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+  <h3 style="margin:0 0 12px;">💡 记录想法</h3>
+  <form method="post" action="/manual/idea">
+    <input name="title" type="text" placeholder="想法标题" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <textarea name="content" rows="4" placeholder="写下你的想法..." required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;resize:vertical;"></textarea>
+    <input type="hidden" name="process_now" value="true">
+    <button type="submit" class="btn primary" style="width:100%;">保存到知识库</button>
+  </form>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
+</dialog>
+
+<!-- ECharts 知识星链 -->
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script>
+const chart = echarts.init(document.getElementById('home-graph'));
+const PALETTE = ['#4A90D9','#E85D75','#50C878','#F5A623','#9B59B6','#1ABC9C','#E67E22','#3498DB'];
+const domainColors = {};
+let ci = 0;
+function dc(d) { if (!domainColors[d]) domainColors[d] = PALETTE[ci++ % PALETTE.length]; return domainColors[d]; }
+
+fetch('/api/graph').then(r => r.json()).then(data => {
+  const nodes = data.nodes.map(n => ({
+    id: String(n.id), name: n.label, symbolSize: Math.max(10, n.size * 6),
+    itemStyle: {color: dc(n.domain)}, category: n.domain
+  }));
+  const edges = data.edges.map(e => ({source: String(e.source), target: String(e.target), lineStyle: {width: Math.max(1, e.weight * 3), opacity: 0.4}}));
+  const categories = [...new Set(data.nodes.map(n => n.domain))].map(d => ({name: d}));
+
+  chart.setOption({
+    backgroundColor: '#1a1a2e',
+    tooltip: {trigger: 'item', formatter: p => p.data?.name || ''},
+    legend: {data: categories.map(c=>c.name), top: 8, textStyle: {color: '#aaa', fontSize: 10}},
+    series: [{
+      type: 'graph', layout: 'force', roam: true, draggable: true,
+      force: {repulsion: 80, gravity: 0.06, edgeLength: [40, 160]},
+      data: nodes, links: edges, categories,
+      label: {show: true, position: 'right', fontSize: 9, color: '#ccc'},
+      lineStyle: {color: 'source'},
+      emphasis: {focus: 'adjacency'}
+    }]
+  });
+});
+window.addEventListener('resize', () => chart.resize());
+</script>
 {% endblock %}

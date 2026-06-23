@@ -52,16 +52,22 @@ def test_source_setup_pages_show_only_supported_extract_controls():
         client = TestClient(app)
         douyin = client.get("/ui/source-setup/douyin")
         xiaohongshu = client.get("/ui/source-setup/xiaohongshu")
+        bilibili = client.get("/ui/source-setup/bilibili")
 
         assert douyin.status_code == 200
-        assert "/douyin/browser/open" in douyin.text
-        assert "/douyin/favorites/extract" in douyin.text
-        assert "打开抖音内置浏览器" in douyin.text
+        assert "/api/collect-and-extract/douyin" in douyin.text
+        assert "一键采集" in douyin.text
 
         assert xiaohongshu.status_code == 200
-        assert "/xiaohongshu/browser/open" in xiaohongshu.text
-        assert "/xiaohongshu/favorites/extract" not in xiaohongshu.text
-        assert "暂未实现收藏解析" in xiaohongshu.text
+        assert "/api/collect-and-extract/xiaohongshu" in xiaohongshu.text
+
+        assert bilibili.status_code == 200
+        assert "/api/collect-and-extract/bilibili" in bilibili.text
+
+        # Unsupported platform should show "待接入"
+        reddit = client.get("/ui/source-setup/reddit")
+        assert reddit.status_code == 200
+        assert "待接入" in reddit.text
     finally:
         app.dependency_overrides.clear()
 

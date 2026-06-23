@@ -117,6 +117,13 @@
       {% endfor %}
     </div>
     <div class="item-list" data-tab-panel="recycled" {{ "hidden" if default_tab != "recycled" else "" }}>
+      {% if recycle_items %}
+        <div style="margin-bottom:12px;text-align:right;">
+          <form method="post" action="/api/recycle/clear-all" onsubmit="return confirm('确定清空回收站？此操作不可恢复。')" style="display:inline;">
+            <button class="btn secondary small" type="submit" style="color:#E85D75;border-color:#E85D75;">🗑 一键清空回收站</button>
+          </form>
+        </div>
+      {% endif %}
       {% for item in recycle_items %}
         <article class="content-item"
           data-preview-type="recycled"

@@ -90,7 +90,7 @@ class OpenAICompatibleProvider(LLMProvider):
     async def chat(self, messages: list[dict[str, str]], model: str, temperature: float = 0.2) -> str:
         if not self.api_key:
             raise ValueError(f"{self.provider_name} API key is not configured")
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             response = await client.post(
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(),

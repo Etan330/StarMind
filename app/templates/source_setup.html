@@ -4,98 +4,92 @@
 
 {% block content %}
 <header class="flow-header">
-  <a class="breadcrumb" href="/ui/sync">同步收藏夹</a>
-  <span>{{ preset.name }} 管理</span>
-  <h1>{{ preset.name }} 收藏来源管理</h1>
+  <a class="breadcrumb" href="/ui/sync">← 收藏来源列表</a>
+  <h1>{{ preset.name }} 收藏管理</h1>
   <p>{{ preset.reason }}</p>
 </header>
 
 {% if saved == "1" %}<div class="notice ok centered-notice">本地接入配置已保存。</div>{% endif %}
 {% if saved == "browser-opened" %}
-  <div class="notice ok centered-notice">本地浏览器窗口已打开。请登录账号，并进入收藏 / 喜欢页面。</div>
+  <div class="notice ok centered-notice">浏览器已打开目标页面。</div>
 {% elif saved and saved.startswith("extracted-") %}
-  <div class="notice ok centered-notice">已提取 {{ saved.replace("extracted-", "") }} 条新视频链接到待处理。</div>
-{% elif saved and saved.startswith("processed-") %}
-  {% set parts = saved.split("-") %}
-  <div class="notice ok centered-notice">已提取 {{ parts[1] }} 条新视频链接，并生成 {{ parts[2] }} 条原始资料和知识页。</div>
-{% elif saved == "transcript-failed" %}
-  <div class="notice bad centered-notice">抖音视频转写失败，StarMind 没有生成占位原始资料。请稍后重试或检查 yt-dlp / ASR 环境。</div>
+  <div class="notice ok centered-notice">已提取 {{ saved.replace("extracted-", "") }} 条链接。</div>
+{% elif saved and saved.startswith("collected-") %}
+  {% set parts = saved.replace("collected-", "").split("-") %}
+  <div class="notice ok centered-notice">✅ 完成！采集 {{ parts[0] }} 条 → 已写入知识库 {{ parts[1] }} 条。<br><small>豆包逐字稿提取需要开启 CDP 远程调试并登录豆包。未提取到逐字稿的条目已保留链接信息入库。</small></div>
+{% elif saved == "collect-failed" %}
+  <div class="notice bad centered-notice">采集失败。请确认 CDP Proxy 已运行且浏览器已开启远程调试。</div>
+{% elif saved == "doubao-login-required" %}
+  <div class="notice bad centered-notice">豆包未登录。请在浏览器中打开 doubao.com 完成登录后重试。</div>
 {% elif saved == "page-not-ready" %}
-  <div class="notice bad centered-notice">没有识别到收藏页的视频卡片。请确认窗口已登录，并停留在收藏 / 喜欢列表页面后再提取。</div>
+  <div class="notice bad centered-notice">未识别到收藏内容。请确认浏览器已登录并停留在收藏页面。</div>
 {% elif saved == "browser-missing" %}
-  <div class="notice bad centered-notice">Playwright 未安装或浏览器无法启动，请先安装项目依赖。</div>
+  <div class="notice bad centered-notice">CDP Proxy 未运行。请运行: node ~/.claude/skills/web-access/scripts/check-deps.mjs</div>
 {% endif %}
 
 <section class="v1-page-grid">
   <article class="glass-card">
     <div class="panel-title-row">
       <div>
-        <span class="section-kicker">管理流程</span>
-        <h2>先登录，再打开收藏页，最后提取</h2>
+        <span class="section-kicker">一键流程</span>
+        <h2>采集收藏 → 豆包提取 → 写入知识库</h2>
       </div>
-      {% if preset.platform == "douyin" %}
-        {{ ui.status_chip("已支持提取", "success") }}
-      {% elif preset.platform == "xiaohongshu" %}
-        {{ ui.status_chip("可登录，待解析", "warning") }}
+      {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
+        {{ ui.status_chip("可执行", "success") }}
       {% else %}
         {{ ui.status_chip("待接入", "neutral") }}
       {% endif %}
     </div>
+
     <ol class="process-steps">
-      <li><strong>打开本地浏览器</strong><span>StarMind 使用本机浏览器会话，不收集你的账号密码。</span></li>
-      <li><strong>登录平台账号</strong><span>如果平台要求登录或验证码，请你在浏览器里手动完成。</span></li>
-      <li><strong>进入收藏 / 喜欢页面</strong><span>采集范围只来自当前页面可见内容，不绕过平台限制。</span></li>
-      <li><strong>提取并进入待处理</strong><span>只有已接入解析器的平台才会显示提取按钮。</span></li>
+      <li><strong>Web Access 打开收藏页</strong><span>通过 CDP Proxy 直连浏览器，后台 tab 打开收藏/喜欢页面。</span></li>
+      <li><strong>提取链接列表</strong><span>自动滚动加载，提取视频/笔记链接。</span></li>
+      <li><strong>豆包网页版提取内容</strong><span>打开 doubao.com，逐条发送链接，获取逐字稿或正文。</span></li>
+      <li><strong>写入原始知识库</strong><span>内容保存为 RawSource，进入知识库主链路。</span></li>
     </ol>
 
-    {% if preset.platform == "douyin" %}
-      <div class="mode-form">
-        <form method="post" action="/douyin/browser/open">
-          <input type="hidden" name="url" value="{{ connection.homepage_url or 'https://www.douyin.com/user/self?showTab=favorite_collection' }}">
-          <button class="btn primary full" type="submit">打开抖音内置浏览器</button>
-        </form>
-        <form class="mode-form" method="post" action="/douyin/favorites/extract">
-          <label>收集数量
-            <select name="collection_limit">
-              <option value="10">10 条</option>
-              <option value="100">100 条</option>
-              <option value="all">全部</option>
-              <option value="custom">自定义</option>
-            </select>
-          </label>
-          <label>自定义数量
-            <input name="custom_limit" inputmode="numeric" placeholder="比如 30">
-          </label>
-          <input type="hidden" name="process_first_ten" value="on">
-          <button class="btn secondary full" type="submit" data-busy-text="正在提取可见收藏...">提取并处理前 10 条</button>
-        </form>
-      </div>
-    {% elif preset.platform == "xiaohongshu" %}
-      <div class="mode-form">
-        <div class="v1-callout v1-warning">小红书当前只支持打开本地浏览器并保存登录会话；暂未实现收藏解析，所以这里不会显示“立即同步”。</div>
-        <form method="post" action="/xiaohongshu/browser/open">
-          <input type="hidden" name="url" value="{{ connection.homepage_url or 'https://www.xiaohongshu.com/explore' }}">
-          <button class="btn primary full" type="submit">打开小红书本地浏览器登录</button>
-        </form>
+    {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
+      <form class="mode-form" method="post" action="/api/collect-and-extract/{{ preset.platform }}">
+        <label>采集数量
+          <select name="limit">
+            <option value="5">5 条</option>
+            <option value="10" selected>10 条</option>
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+            <option value="100">100 条</option>
+            <option value="all">全部</option>
+          </select>
+        </label>
+        <input type="hidden" name="next" value="/ui/source-setup/{{ preset.platform }}">
+        <button class="btn primary full" type="submit" data-busy-text="正在执行采集+提取流程...">
+          🚀 一键采集 → 豆包提取 → 写入知识库
+        </button>
+      </form>
+
+      <div class="v1-callout" style="margin-top:16px;">
+        <strong>前置条件：</strong>
+        <ol style="margin:8px 0 0 20px;padding:0;">
+          <li>CDP Proxy 已运行（<code>node ~/.claude/skills/web-access/scripts/check-deps.mjs</code>）</li>
+          <li>浏览器已登录{{ preset.name }}（收藏页可见）</li>
+          <li>浏览器已登录豆包（doubao.com）</li>
+        </ol>
       </div>
     {% else %}
-      <div class="v1-callout v1-warning">{{ preset.name }} 的收藏页解析器尚未接入。你可以先保存接入方式、主页或收藏夹链接，后续解析器上线后会复用这里的配置。</div>
+      <div class="v1-callout v1-warning">{{ preset.name }} 的收藏页解析器尚未接入。你可以先保存配置，后续解析器上线后自动复用。</div>
     {% endif %}
   </article>
 
   <aside class="glass-card">
-    <h2>接入状态</h2>
+    <h2>平台状态</h2>
     <dl class="meta-list">
       <dt>平台</dt><dd>{{ preset.name }}</dd>
-      <dt>状态</dt><dd>{% if connector and connector.status == "configured_only" %}已保存配置，暂未支持同步{% else %}{{ connector.status if connector else preset.status }}{% endif %}</dd>
-      <dt>类型</dt><dd>收藏夹 / 保存列表</dd>
-      <dt>优先级</dt><dd>{{ preset.priority }}</dd>
-      <dt>存储</dt><dd>local_data/config/source_connections.json</dd>
+      <dt>状态</dt><dd>{{ connector.status if connector else "未配置" }}</dd>
+      <dt>接入方式</dt><dd>{{ preset.auth_hint }}</dd>
+      <dt>CDP Proxy</dt><dd>localhost:3456</dd>
     </dl>
-    <div class="v1-callout">不会读取或展示 Cookie、浏览器会话文件、API Key。</div>
-    <div class="button-row">
-      <a class="btn secondary" href="/ui/sync">返回同步列表</a>
-      <a class="btn secondary" href="/ui/create?mode=link">改用单链接导入</a>
+    <div class="button-row" style="margin-top:16px;">
+      <a class="btn secondary" href="/ui/sync">返回列表</a>
+      <a class="btn secondary" href="/ui/create?mode=link">单链接导入</a>
     </div>
   </aside>
 </section>
@@ -106,38 +100,20 @@
       <span class="section-kicker">本地配置</span>
       <h2>保存目标页面和同步范围</h2>
     </div>
-    {{ ui.status_chip("可选", "neutral") }}
   </div>
   <form class="mode-form" method="post" action="/source-connections/{{ preset.platform }}">
-    <label>接入方式
-      <select name="auth_method">
-        <option value="{{ preset.auth_hint }}" selected>{{ preset.auth_hint }}</option>
-        <option value="Cookie / 本地浏览器会话">Cookie / 本地浏览器会话</option>
-        <option value="API Key / OAuth">API Key / OAuth</option>
-        <option value="公开链接">公开链接</option>
-        <option value="导出文件">导出文件</option>
-      </select>
-    </label>
     <label>主页或收藏夹链接
       <input name="homepage_url" value="{{ connection.homepage_url or '' }}" placeholder="https://...">
     </label>
-    <label>API Base URL
-      <input name="api_base_url" value="{{ connection.api_base_url or '' }}" placeholder="后续接入 API 时自动生成或填写">
-    </label>
     <label>同步范围
       <select name="sync_scope">
-        <option value="favorites" {{ "selected" if connection.sync_scope == "favorites" else "" }}>收藏夹 / 保存列表</option>
-        {% if preset.platform == "xiaohongshu" %}
-          <option value="likes" {{ "selected" if connection.sync_scope == "likes" else "" }}>点赞内容</option>
-        {% endif %}
+        <option value="favorites" {{ "selected" if connection.sync_scope == "favorites" else "" }}>收藏夹</option>
+        <option value="likes" {{ "selected" if connection.sync_scope == "likes" else "" }}>点赞</option>
         <option value="profile" {{ "selected" if connection.sync_scope == "profile" else "" }}>作者主页</option>
-        <option value="both" {{ "selected" if connection.sync_scope == "both" else "" }}>收藏夹 + 作者主页</option>
       </select>
     </label>
-    <label>备注
-      <textarea name="notes" placeholder="比如：先同步我的 AI Agent 收藏夹">{{ connection.notes or '' }}</textarea>
-    </label>
-    <button class="btn primary full" type="submit">保存本地配置</button>
+    <input type="hidden" name="auth_method" value="{{ preset.auth_hint }}">
+    <button class="btn secondary full" type="submit">保存配置</button>
   </form>
 </section>
 {% endblock %}

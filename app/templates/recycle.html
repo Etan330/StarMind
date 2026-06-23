@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% import "_components.html" as ui %}
+{% set title = "回收站" %}
+
+{% block content %}
+{{ ui.page_header("回收站", "被删除或过滤掉的内容在这里，30 天内可恢复。") }}
+
+{% if request.query_params.get("cleared") %}
+  <div class="notice ok centered-notice">回收站已清空。</div>
+{% endif %}
+
+<section class="glass-card v1-section">
+  {% if recycle_items %}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+      <span style="color:#666;">共 {{ recycle_items | length }} 条</span>
+      <form method="post" action="/api/recycle/clear-all" onsubmit="return confirm('确定清空回收站？此操作不可恢复。')">
+        <button class="btn secondary small" type="submit" style="color:#E85D75;border-color:#E85D75;">🗑 一键清空</button>
+      </form>
+    </div>
+    <div class="compact-list">
+      {% for item in recycle_items %}
+        <article class="source-line" style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <strong>{{ item.title }}</strong>
+            <small style="display:block;color:#888;">{{ item.platform }} · {{ item.archived_at.strftime("%Y/%m/%d") }} · {{ item.reason }}</small>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <form method="post" action="/recycle/{{ item.id }}/restore" style="margin:0;">
+              <input type="hidden" name="target" value="review">
+              <button class="btn secondary small" type="submit">恢复</button>
+            </form>
+          </div>
+        </article>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div style="text-align:center;padding:40px;color:#888;">
+      <p style="font-size:1.2rem;">🗑 回收站为空</p>
+      <p>被删除或过滤掉的内容会出现在这里。</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}知识图谱 — StarMind{% endblock %}
+{% block content %}
+<div style="padding:24px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+    <h1 style="font-size:1.5rem;margin:0;">✨ 知识星链</h1>
+    <div>
+      <select id="domain-filter" onchange="loadGraph()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;">
+        <option value="">全部领域</option>
+      </select>
+      <button onclick="toggleFullscreen()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;margin-left:8px;cursor:pointer;">全屏</button>
+    </div>
+  </div>
+  <div id="graph-container" style="width:100%;height:calc(100vh - 160px);border:1px solid #eee;border-radius:12px;background:#fafafa;"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script>
+const chart = echarts.init(document.getElementById('graph-container'));
+const DOMAIN_COLORS = {};
+let colorIdx = 0;
+const PALETTE = ['#4A90D9','#E85D75','#50C878','#F5A623','#9B59B6','#1ABC9C','#E67E22','#3498DB','#E74C3C','#2ECC71'];
+
+function getDomainColor(domain) {
+  if (!DOMAIN_COLORS[domain]) { DOMAIN_COLORS[domain] = PALETTE[colorIdx++ % PALETTE.length]; }
+  return DOMAIN_COLORS[domain];
+}
+
+async function loadGraph() {
+  const filter = document.getElementById('domain-filter').value;
+  const url = filter ? `/api/graph?domain=${encodeURIComponent(filter)}` : '/api/graph';
+  const resp = await fetch(url);
+  const data = await resp.json();
+
+  // Populate domain filter
+  const domains = [...new Set(data.nodes.map(n => n.domain))].sort();
+  const select = document.getElementById('domain-filter');
+  const current = select.value;
+  select.innerHTML = '<option value="">全部领域</option>' + domains.map(d => `<option value="${d}" ${d===current?'selected':''}>${d}</option>`).join('');
+
+  const nodes = data.nodes.map(n => ({
+    id: String(n.id), name: n.label, symbolSize: Math.max(12, n.size * 8),
+    itemStyle: {color: getDomainColor(n.domain)},
+    category: n.domain,
+  }));
+  const edges = data.edges.map(e => ({source: String(e.source), target: String(e.target), lineStyle: {width: Math.max(1, e.weight * 4)}}));
+  const categories = domains.map(d => ({name: d}));
+
+  chart.setOption({
+    tooltip: {trigger: 'item', formatter: p => p.data.name || ''},
+    legend: {data: domains, top: 10, textStyle: {fontSize: 11}},
+    series: [{
+      type: 'graph', layout: 'force', roam: true, draggable: true,
+      force: {repulsion: 120, gravity: 0.05, edgeLength: [60, 200]},
+      data: nodes, links: edges, categories: categories,
+      label: {show: true, position: 'right', fontSize: 10},
+      lineStyle: {color: 'source', opacity: 0.4},
+      emphasis: {focus: 'adjacency', lineStyle: {width: 3}},
+    }],
+  }, true);
+}
+
+function toggleFullscreen() {
+  const el = document.getElementById('graph-container');
+  if (!document.fullscreenElement) { el.requestFullscreen(); }
+  else { document.exitFullscreen(); }
+}
+
+window.addEventListener('resize', () => chart.resize());
+loadGraph();
+</script>
+{% endblock %}

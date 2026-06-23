@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}新手引导 — StarMind{% endblock %}
+{% block content %}
+<div class="onboarding-container" style="max-width:640px;margin:60px auto;padding:0 24px;">
+
+  <!-- Step 1: Welcome -->
+  <div class="step" id="step-1" style="text-align:center;">
+    <h1 style="font-size:2rem;margin-bottom:12px;">✨ 欢迎使用 StarMind！</h1>
+    <p style="color:#666;font-size:1.1rem;">让你的收藏夹自己成长 🌟</p>
+    <p style="margin-top:24px;color:#888;">StarMind 自动同步你在各平台的收藏内容，智能筛选知识，编译成可追问的个人知识库。</p>
+    <div style="margin-top:40px;">
+      <button onclick="advanceStep(2)" style="padding:12px 32px;font-size:1rem;background:#4A90D9;color:#fff;border:none;border-radius:8px;cursor:pointer;">开始引导</button>
+      <button onclick="skipOnboarding()" style="padding:12px 32px;font-size:1rem;background:transparent;color:#888;border:1px solid #ddd;border-radius:8px;cursor:pointer;margin-left:12px;">跳过</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Connect platforms -->
+  <div class="step" id="step-2" style="display:none;">
+    <h2>🔗 连接你的收藏夹</h2>
+    <p style="color:#666;">选择你要导入的平台收藏夹（需先以 --remote-debugging-port=9222 启动 Chrome）</p>
+    <div style="margin:24px 0;">
+      <label style="display:block;padding:12px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer;">
+        <input type="checkbox" name="platforms" value="douyin" checked> 抖音
+      </label>
+      <label style="display:block;padding:12px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer;">
+        <input type="checkbox" name="platforms" value="bilibili"> B站
+      </label>
+      <label style="display:block;padding:12px;border:1px solid #eee;border-radius:8px;margin-bottom:8px;cursor:pointer;">
+        <input type="checkbox" name="platforms" value="xiaohongshu"> 小红书
+      </label>
+    </div>
+    <button onclick="advanceStep(3)" style="padding:10px 28px;background:#4A90D9;color:#fff;border:none;border-radius:8px;cursor:pointer;">连接选中平台</button>
+    <button onclick="advanceStep(3)" style="padding:10px 28px;background:transparent;color:#888;border:1px solid #ddd;border-radius:8px;cursor:pointer;margin-left:8px;">跳过，稍后设置</button>
+  </div>
+
+  <!-- Step 3: Sync & classify -->
+  <div class="step" id="step-3" style="display:none;">
+    <h2>📂 同步 & 分类</h2>
+    <p style="color:#666;">StarMind 将读取你的收藏列表标题并按主题分类。</p>
+    <p style="margin:24px 0;color:#888;">首次同步后，系统会弹出分类弹窗让你选择要保留的知识分类。暂时跳过也可以后续在「连接来源」页面手动触发。</p>
+    <button onclick="advanceStep(4)" style="padding:10px 28px;background:#4A90D9;color:#fff;border:none;border-radius:8px;cursor:pointer;">下一步</button>
+  </div>
+
+  <!-- Step 4: Preferences -->
+  <div class="step" id="step-4" style="display:none;">
+    <h2>⚙️ 偏好设置</h2>
+    <p style="color:#666;">为每个知识领域设置你的兴趣程度，StarMind 会据此决定推送权重。</p>
+    <div id="pref-sliders" style="margin:24px 0;">
+      <p style="color:#999;">偏好将在内容入库后根据实际分类自动生成。你可以随时在设置中调整。</p>
+    </div>
+    <button onclick="advanceStep(5)" style="padding:10px 28px;background:#4A90D9;color:#fff;border:none;border-radius:8px;cursor:pointer;">下一步</button>
+  </div>
+
+  <!-- Step 5: Push settings -->
+  <div class="step" id="step-5" style="display:none;">
+    <h2>🔔 推送设置</h2>
+    <p style="color:#666;">设置你希望接收知识推送的时间段。</p>
+    <div style="margin:24px 0;">
+      <label>开始时间：<input type="time" id="push-start" value="08:00" style="padding:6px;border:1px solid #ddd;border-radius:4px;"></label>
+      <label style="margin-left:16px;">结束时间：<input type="time" id="push-end" value="22:00" style="padding:6px;border:1px solid #ddd;border-radius:4px;"></label>
+    </div>
+    <div style="margin:16px 0;">
+      <label>推送频率：
+        <select id="push-freq" style="padding:6px;border:1px solid #ddd;border-radius:4px;">
+          <option value="1">每小时</option>
+          <option value="2">每2小时</option>
+          <option value="4" selected>每4小时</option>
+        </select>
+      </label>
+    </div>
+    <button onclick="savePushAndAdvance()" style="padding:10px 28px;background:#4A90D9;color:#fff;border:none;border-radius:8px;cursor:pointer;">保存并继续</button>
+  </div>
+
+  <!-- Step 6: Done -->
+  <div class="step" id="step-6" style="display:none;text-align:center;">
+    <h1 style="font-size:2rem;">🎉 设置完成！</h1>
+    <p style="color:#666;font-size:1.1rem;margin:16px 0;">StarMind 将为你智能推送知识。</p>
+    <a href="/" style="display:inline-block;padding:12px 32px;font-size:1rem;background:#4A90D9;color:#fff;border-radius:8px;text-decoration:none;margin-top:24px;">进入首页</a>
+  </div>
+</div>
+
+<script>
+function showStep(n) {
+  document.querySelectorAll('.step').forEach(el => el.style.display = 'none');
+  const target = document.getElementById('step-' + n);
+  if (target) target.style.display = 'block';
+}
+
+async function advanceStep(n) {
+  await fetch('/api/onboarding/advance', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({step: n})});
+  showStep(n);
+}
+
+async function skipOnboarding() {
+  await fetch('/api/onboarding/skip', {method:'POST'});
+  window.location.href = '/';
+}
+
+async function savePushAndAdvance() {
+  const start = document.getElementById('push-start').value;
+  const end = document.getElementById('push-end').value;
+  const freq = document.getElementById('push-freq').value;
+  await fetch('/api/push/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({start_time: start, end_time: end, frequency_hours: parseInt(freq)})});
+  advanceStep(6);
+}
+</script>
+{% endblock %}
