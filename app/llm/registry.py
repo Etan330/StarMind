@@ -5,6 +5,7 @@ from typing import Any
 
 from app.config import (
     DEFAULT_MODEL_CONFIG,
+    DEFAULT_PROVIDERS,
     MODEL_CONFIG_PATH,
     PROVIDERS_PATH,
     SECRETS_PATH,
@@ -17,7 +18,11 @@ from app.llm.providers import AnthropicProvider, GeminiProvider, LLMProvider, Mo
 
 def get_providers() -> dict[str, Any]:
     ensure_config_files()
-    return read_json(PROVIDERS_PATH, {})
+    providers = read_json(PROVIDERS_PATH, {})
+    for pid, pconf in providers.items():
+        if not pconf.get("base_url") and pid in DEFAULT_PROVIDERS:
+            pconf["base_url"] = DEFAULT_PROVIDERS[pid]["base_url"]
+    return providers
 
 
 def get_model_settings() -> dict[str, Any]:

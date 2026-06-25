@@ -12,25 +12,21 @@
   <div id="home-graph" style="width:100%;height:320px;border-radius:8px;background:#1a1a2e;"></div>
 </section>
 
-<!-- 向知识库提问 -->
-<section class="glass-card" style="padding:24px;margin-bottom:24px;">
-  <h2 style="margin:0 0 12px;font-size:1.1rem;">🔍 向知识库提问</h2>
-  <form method="get" action="/" style="display:flex;gap:8px;">
-    <input name="q" type="text" placeholder="问问你的知识库，比如：最近收藏里关于 Agent 的核心观点是什么？" value="{{ question or '' }}" style="flex:1;padding:12px 16px;border:1px solid #ddd;border-radius:8px;font-size:1rem;">
-    <button type="submit" class="btn primary" style="white-space:nowrap;">提问</button>
-  </form>
-
-  {% if agent_response %}
-    <div class="agent-answer" style="margin-top:20px;padding:16px;background:#f8f9fa;border-radius:8px;border-left:4px solid #4A90D9;">
-      <div style="font-size:0.85rem;color:#666;margin-bottom:8px;">StarMind 回答：</div>
-      <div class="markdown-body">{{ agent_response_html | safe }}</div>
-      {% if agent_response.sources %}
-        <div style="margin-top:12px;font-size:0.8rem;color:#888;">
-          来源：{{ agent_response.sources | length }} 条本地资料
-        </div>
-      {% endif %}
-    </div>
-  {% endif %}
+<!-- 向知识库提问 — 对话模式 -->
+<section class="glass-card" id="chat-section" style="padding:0;margin-bottom:24px;display:flex;height:480px;overflow:hidden;">
+  <!-- 左侧对话列表 -->
+  <aside id="chat-sidebar" style="width:200px;border-right:1px solid #eee;display:flex;flex-direction:column;padding:12px;gap:8px;overflow-y:auto;">
+    <button id="chat-new-btn" class="btn primary" style="width:100%;font-size:0.85rem;">＋ 新对话</button>
+    <div id="chat-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
+  </aside>
+  <!-- 右侧聊天区 -->
+  <div style="flex:1;display:flex;flex-direction:column;">
+    <form id="chat-form" style="display:flex;gap:8px;padding:12px;border-bottom:1px solid #eee;">
+      <input id="chat-input" type="text" placeholder="问问你的知识库..." style="flex:1;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:0.95rem;" autocomplete="off">
+      <button type="submit" class="btn primary" style="white-space:nowrap;">发送</button>
+    </form>
+    <div id="chat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column-reverse;gap:12px;"></div>
+  </div>
 </section>
 
 <!-- 四个快捷入口 -->
@@ -138,5 +134,92 @@ fetch('/api/graph').then(r => r.json()).then(data => {
   });
 });
 window.addEventListener('resize', () => chart.resize());
+</script>
+
+<script>
+(function() {
+  const msgBox = document.getElementById('chat-messages');
+  const form = document.getElementById('chat-form');
+  const input = document.getElementById('chat-input');
+  const listEl = document.getElementById('chat-list');
+  const newBtn = document.getElementById('chat-new-btn');
+  let currentConvoId = null;
+
+  function renderBubble(role, content, isHtml) {
+    const div = document.createElement('div');
+    div.style.cssText = role === 'user'
+      ? 'align-self:flex-end;background:#4A90D9;color:#fff;padding:10px 14px;border-radius:12px 12px 2px 12px;max-width:75%;word-break:break-word;'
+      : 'align-self:flex-start;background:#f1f3f5;padding:10px 14px;border-radius:12px 12px 12px 2px;max-width:75%;word-break:break-word;';
+    if (isHtml) { div.innerHTML = content; } else { div.textContent = content; }
+    msgBox.prepend(div);
+    return div;
+  }
+
+  async function loadConversations() {
+    const res = await fetch('/api/conversations');
+    const convos = await res.json();
+    listEl.innerHTML = '';
+    convos.forEach(c => {
+      const btn = document.createElement('button');
+      btn.textContent = c.title;
+      btn.dataset.id = c.id;
+      btn.style.cssText = 'width:100%;text-align:left;padding:8px;border:none;border-radius:6px;background:' + (c.id === currentConvoId ? '#e8f0fe' : 'none') + ';cursor:pointer;font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+      btn.onclick = () => switchConversation(c.id);
+      listEl.appendChild(btn);
+    });
+  }
+
+  async function switchConversation(id) {
+    currentConvoId = id;
+    msgBox.innerHTML = '';
+    const res = await fetch('/api/conversations/' + id + '/messages');
+    const msgs = await res.json();
+    msgs.slice().reverse().forEach(m => renderBubble(m.role, m.content, false));
+    loadConversations();
+  }
+
+  async function createConversation() {
+    const res = await fetch('/api/conversations', {method: 'POST'});
+    const data = await res.json();
+    currentConvoId = data.id;
+    msgBox.innerHTML = '';
+    await loadConversations();
+  }
+
+  newBtn.onclick = createConversation;
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    if (!q) return;
+    if (!currentConvoId) await createConversation();
+    input.value = '';
+    renderBubble('user', q, false);
+    const loading = renderBubble('assistant', '思考中...', false);
+    loading.style.opacity = '0.6';
+    try {
+      const res = await fetch('/api/conversations/' + currentConvoId + '/messages', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question: q})
+      });
+      const data = await res.json();
+      loading.style.opacity = '1';
+      if (data.content_html) { loading.innerHTML = data.content_html; }
+      else { loading.textContent = data.content || data.detail || '回答失败'; }
+    } catch (err) {
+      loading.textContent = '请求失败: ' + err.message;
+      loading.style.opacity = '1';
+    }
+    loadConversations();
+  };
+
+  // Init: load conversations and auto-select latest
+  (async () => {
+    const res = await fetch('/api/conversations');
+    const convos = await res.json();
+    if (convos.length) { await switchConversation(convos[0].id); }
+    else { await loadConversations(); }
+  })();
+})();
 </script>
 {% endblock %}
