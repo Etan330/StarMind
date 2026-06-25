@@ -250,6 +250,30 @@ class PushHistory(Base):
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class ChatConversation(Base):
+    __tablename__ = "chat_conversations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="新对话")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+    messages = relationship("ChatMessage", back_populates="conversation", cascade="all, delete-orphan")
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("chat_conversations.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sources_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    conversation = relationship("ChatConversation", back_populates="messages")
+
+
 class KnowledgeGraphEdge(Base):
     __tablename__ = "knowledge_graph_edges"
     __table_args__ = (

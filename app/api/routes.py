@@ -1141,18 +1141,6 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
     connectors = db.query(Connector).order_by(Connector.created_at.desc()).all()
     settings = get_model_settings()
     profiles = get_model_profiles()
-    question = request.query_params.get("q")
-    selected_profile_id = request.query_params.get("model_profile")
-    selected_profile = get_model_profile(selected_profile_id)
-    agent_response = None
-    if question:
-        agent_response = await AgentRunner(db).answer_question(
-            question,
-            provider_id=selected_profile.get("provider") if selected_profile else None,
-            model=selected_profile.get("model") if selected_profile else None,
-            model_profile_name=selected_profile.get("name") if selected_profile else None,
-        )
-        track_event(db, "query_submitted", {"page": "home", "has_sources": bool(agent_response.sources)})
     recent_candidates = db.query(CandidateItem).order_by(CandidateItem.created_at.desc()).limit(6).all()
     classifications = latest_classifications(db, [candidate.id for candidate in recent_candidates])
     return templates.TemplateResponse(
@@ -1165,16 +1153,12 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             recent_logs=db.query(ScanLog).order_by(ScanLog.created_at.desc()).limit(8).all(),
             distill_requests=get_distill_requests()["requests"][:3],
             agent_legion=get_agent_legion()["agents"],
-            question=question,
-            agent_response=agent_response,
-            agent_response_html=render_markdown(agent_response.answer) if agent_response else "",
             created=request.query_params.get("created"),
             scan=request.query_params.get("scan"),
             connectors=connectors,
             settings=settings,
             model_profiles=profiles["profiles"],
             active_profile_id=get_active_profile_id(settings, profiles),
-            selected_model_profile_id=selected_profile_id,
             pages=db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(3).all(),
             sources=db.query(RawSource).order_by(RawSource.created_at.desc()).limit(3).all(),
             task_cards=task_cards_for_history(db, recent_candidates, classifications),
@@ -2863,6 +2847,102 @@ async def agent_query(request: Request, db: Session = Depends(get_db)):
         model_profile_name=profile.get("name") if profile else None,
     )
     return answer.model_dump()
+
+
+# --- Chat Conversations ---
+
+
+@router.get("/api/conversations")
+def list_conversations(db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+
+    convos = db.query(ChatConversation).order_by(ChatConversation.updated_at.desc()).all()
+    return [{"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()} for c in convos]
+
+
+@router.post("/api/conversations")
+def create_conversation(db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+
+    convo = ChatConversation(id=uuid4().hex, title="新对话")
+    db.add(convo)
+    db.commit()
+    return {"id": convo.id, "title": convo.title}
+
+
+@router.get("/api/conversations/{convo_id}/messages")
+def get_conversation_messages(convo_id: str, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation, ChatMessage
+
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    msgs = db.query(ChatMessage).filter_by(conversation_id=convo_id).order_by(ChatMessage.created_at).all()
+    return [
+        {"id": m.id, "role": m.role, "content": m.content, "sources": json.loads(m.sources_json), "created_at": m.created_at.isoformat()}
+        for m in msgs
+    ]
+
+
+@router.post("/api/conversations/{convo_id}/messages")
+async def send_message(convo_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation, ChatMessage
+    from app.services.markdown_renderer import render_markdown
+
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    data = await request_data(request)
+    question = str(data.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    # Save user message
+    user_msg = ChatMessage(conversation_id=convo_id, role="user", content=question)
+    db.add(user_msg)
+
+    # Update conversation title from first message
+    existing_count = db.query(ChatMessage).filter_by(conversation_id=convo_id, role="user").count()
+    if existing_count == 0:
+        convo.title = question[:20]
+
+    db.commit()
+
+    # Get agent answer
+    profile = get_model_profile(str(data.get("model_profile") or ""))
+    answer = await AgentRunner(db).answer_question(
+        question,
+        provider_id=profile.get("provider") if profile else None,
+        model=profile.get("model") if profile else None,
+        model_profile_name=profile.get("name") if profile else None,
+    )
+
+    # Save assistant message
+    assistant_msg = ChatMessage(
+        conversation_id=convo_id, role="assistant", content=answer.answer, sources_json=json.dumps(answer.sources, ensure_ascii=False)
+    )
+    db.add(assistant_msg)
+    db.commit()
+
+    return {
+        "id": assistant_msg.id,
+        "role": "assistant",
+        "content": answer.answer,
+        "content_html": render_markdown(answer.answer),
+        "sources": answer.sources,
+    }
+
+
+@router.delete("/api/conversations/{convo_id}")
+def delete_conversation(convo_id: str, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    db.delete(convo)
+    db.commit()
+    return {"status": "deleted"}
 
 
 # --- CDP Status ---
