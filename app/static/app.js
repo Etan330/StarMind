@@ -480,7 +480,7 @@
     })
   })
 
-  document.querySelectorAll("form").forEach((form) => {
+  document.querySelectorAll("form:not([data-no-busy])").forEach((form) => {
     form.addEventListener("submit", (event) => {
       if (form.dataset.confirmMessage && !window.confirm(form.dataset.confirmMessage)) {
         event.preventDefault()
