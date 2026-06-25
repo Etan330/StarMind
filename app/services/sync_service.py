@@ -141,6 +141,8 @@ class SyncService:
         self._log(connector.id, scan_run_id, "info", f"Started import for {connector.name}")
         existing_external_keys = self._existing_external_keys()
         existing_canonical_urls = self._existing_canonical_urls()
+        existing_raw_external_keys = self._existing_raw_external_keys()
+        existing_raw_canonical_urls = self._existing_raw_canonical_urls()
         seen_external_keys: set[tuple[str, str]] = set()
         seen_canonical_urls: set[str] = set()
 
@@ -151,6 +153,8 @@ class SyncService:
             if (
                 external_key in existing_external_keys
                 or normalized.canonical_url in existing_canonical_urls
+                or external_key in existing_raw_external_keys
+                or normalized.canonical_url in existing_raw_canonical_urls
                 or external_key in seen_external_keys
                 or normalized.canonical_url in seen_canonical_urls
             ):

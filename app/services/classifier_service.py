@@ -283,47 +283,143 @@ class ClassifierService:
         return path.read_text(encoding="utf-8")
 
     async def batch_classify_titles(self, items: list[dict[str, Any]]) -> dict[str, Any]:
-        """Classify a batch of titles into domain categories using LLM."""
+        """Classify title-only favorites into useful/useless groups."""
         settings = get_model_settings()
         task = settings.get("task_models", {}).get("classifier_model", {})
         provider, model, _config = get_provider_runtime(task.get("provider"), task.get("model"))
 
-        # Process in batches of 20
         all_classified: list[dict[str, Any]] = []
         for i in range(0, len(items), 20):
-            batch = items[i:i + 20]
-            titles_text = "\n".join(f"{idx+1}. {item.get('title', '')} ({item.get('url', '')})" for idx, item in enumerate(batch))
+            batch = [dict(item) for item in items[i:i + 20]]
+            titles_text = "\n".join(
+                f"{idx + 1}. {item.get('title', '')} ({item.get('url', '')})"
+                for idx, item in enumerate(batch)
+            )
             prompt = (
-                "请将以下收藏内容按知识领域分类。对每条内容输出其所属领域（如：AI/大模型、产品设计、编程开发、搞笑视频、美食探店等）。\n"
-                "输出 JSON 数组，每个元素包含 index(从1开始)、domain(领域名)。\n\n"
+                "请只根据标题和链接，对这些历史收藏做前置筛选。\n"
+                "每条内容必须判断 usefulness：useful 或 useless。\n"
+                "同时给出 subcategory（二级分类，如 AI/大模型、编程开发、产品设计、商业认知、学习资料、娱乐消遣、购物种草、生活记录、未分类）、confidence(0-1)、reason。\n"
+                "输出 JSON，格式为 {\"items\":[{\"index\":1,\"usefulness\":\"useful\",\"subcategory\":\"AI/大模型\",\"confidence\":0.9,\"reason\":\"...\"}]}。\n\n"
                 f"内容列表：\n{titles_text}"
             )
             try:
                 result = await provider.json_chat(
                     [{"role": "user", "content": prompt}],
                     model=model,
+                    schema={
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "index": {"type": "integer"},
+                                        "usefulness": {"type": "string"},
+                                        "subcategory": {"type": "string"},
+                                        "confidence": {"type": "number"},
+                                        "reason": {"type": "string"},
+                                    },
+                                    "required": ["index", "usefulness", "subcategory"],
+                                },
+                            }
+                        },
+                    },
                 )
                 classified = result if isinstance(result, list) else result.get("items", result.get("classifications", []))
                 for item_result in classified:
-                    idx = int(item_result.get("index", 0)) - 1
+                    try:
+                        idx = int(item_result.get("index", 0)) - 1
+                    except (TypeError, ValueError):
+                        continue
                     if 0 <= idx < len(batch):
-                        batch[idx]["domain"] = item_result.get("domain", "未分类")
-                all_classified.extend(batch)
-            except Exception:
-                # Fallback: assign "未分类"
+                        batch[idx].update(self._normalize_title_classification(batch[idx], item_result))
                 for item in batch:
-                    item.setdefault("domain", "未分类")
-                all_classified.extend(batch)
+                    if "usefulness" not in item:
+                        item.update(self._title_fallback(item))
+                    all_classified.append(item)
+            except Exception:
+                for item in batch:
+                    item.update(self._title_fallback(item))
+                    all_classified.append(item)
 
-        # Group by domain
-        categories: dict[str, list[dict[str, Any]]] = {}
-        for item in all_classified:
-            domain = item.get("domain", "未分类")
-            categories.setdefault(domain, []).append(item)
+        return self._group_title_classifications(all_classified)
 
+    def _normalize_title_classification(self, item: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+        usefulness = str(payload.get("usefulness") or payload.get("label") or "").strip().lower()
+        if usefulness not in {"useful", "useless"}:
+            usefulness = self._title_fallback(item)["usefulness"]
+        subcategory = str(payload.get("subcategory") or payload.get("domain") or "未分类").strip() or "未分类"
+        try:
+            confidence = float(payload.get("confidence", 0.6))
+        except (TypeError, ValueError):
+            confidence = 0.6
+        confidence = max(0.0, min(confidence, 1.0))
+        reason = str(payload.get("reason") or "模型未给出理由，已按标题信号归类。").strip()
         return {
+            "usefulness": usefulness,
+            "subcategory": subcategory,
+            "domain": subcategory,
+            "confidence": confidence,
+            "reason": reason,
+        }
+
+    def _title_fallback(self, item: dict[str, Any]) -> dict[str, Any]:
+        title = str(item.get("title") or "").lower()
+        knowledge_markers = ["ai", "agent", "rag", "教程", "指南", "架构", "编程", "算法", "产品", "方法", "复盘", "论文", "sop", "商业", "增长"]
+        useless_markers = ["搞笑", "抽奖", "明星", "娱乐", "颜值", "穿搭", "探店", "购物", "种草", "日常", "追剧", "八卦"]
+        if any(marker in title for marker in useless_markers):
+            return {
+                "usefulness": "useless",
+                "subcategory": "娱乐消遣",
+                "domain": "娱乐消遣",
+                "confidence": 0.72,
+                "reason": "标题包含娱乐、消费或低信息密度信号，默认归为没用，用户可手动保留。",
+            }
+        if any(marker in title for marker in knowledge_markers):
+            subcategory = "AI/大模型" if any(marker in title for marker in ["ai", "agent", "rag"]) else "学习资料"
+            return {
+                "usefulness": "useful",
+                "subcategory": subcategory,
+                "domain": subcategory,
+                "confidence": 0.68,
+                "reason": "标题包含知识、工作或学习信号，默认归为有用。",
+            }
+        return {
+            "usefulness": "useful",
+            "subcategory": "未分类",
+            "domain": "未分类",
+            "confidence": 0.5,
+            "reason": "标题信息不足，先放在有用/未分类中等待用户确认。",
+        }
+
+    def _group_title_classifications(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        domain_grouped: dict[str, list[dict[str, Any]]] = {}
+        summary = {"useful_count": 0, "useless_count": 0}
+        for item in items:
+            usefulness = str(item.get("usefulness") or "useful")
+            if usefulness not in {"useful", "useless"}:
+                usefulness = "useful"
+            subcategory = str(item.get("subcategory") or item.get("domain") or "未分类")
+            item["usefulness"] = usefulness
+            item["subcategory"] = subcategory
+            item["domain"] = subcategory
+            summary[f"{usefulness}_count"] += 1
+            grouped.setdefault((usefulness, subcategory), []).append(item)
+            domain_grouped.setdefault(subcategory, []).append(item)
+        groups = [
+            {"usefulness": usefulness, "subcategory": subcategory, "count": len(group_items), "items": group_items}
+            for (usefulness, subcategory), group_items in sorted(
+                grouped.items(),
+                key=lambda entry: (0 if entry[0][0] == "useful" else 1, -len(entry[1]), entry[0][1]),
+            )
+        ]
+        return {
+            "groups": groups,
+            "summary": summary,
             "categories": [
-                {"domain": domain, "count": len(items_list), "items": items_list}
-                for domain, items_list in sorted(categories.items(), key=lambda x: -len(x[1]))
-            ]
+                {"domain": domain, "count": len(group_items), "items": group_items}
+                for domain, group_items in sorted(domain_grouped.items(), key=lambda entry: -len(entry[1]))
+            ],
         }

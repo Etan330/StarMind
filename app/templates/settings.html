@@ -6,7 +6,16 @@
 {{ ui.page_header("设置", "连接模型、保存常用方案，并确认本地数据隔离。") }}
 
 {% if status %}<div class="notice ok">已保存：{{ status }}</div>{% endif %}
-{% if test %}<div class="notice {{ 'ok' if test == 'success' else 'bad' }}">连接测试：{{ "成功" if test == "success" else "失败" }}</div>{% endif %}
+{% if test %}
+  <div class="notice {{ 'ok' if test == 'success' else 'bad' }}">
+    连接测试：{{ "成功" if test == "success" else "失败" }}
+    {% if test == 'failed' and test_error == 'uuap_redirect' %}
+      <br>百度内部请求被 UUAP 登录页拦截。请检查内部 API 鉴权 Header、Base URL 或内网访问方式。
+    {% elif test == 'failed' and test_error %}
+      <br>错误类型：{{ test_error }}
+    {% endif %}
+  </div>
+{% endif %}
 
 {% include "_model_settings_panel.html" %}
 

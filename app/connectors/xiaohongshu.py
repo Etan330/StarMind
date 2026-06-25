@@ -8,8 +8,6 @@ from app.connectors.base import ConnectorItem
 from app.connectors.cdp_proxy import CDPProxy, CDPTab, cdp_proxy
 
 
-XIAOHONGSHU_FAVORITES_URL = "https://www.xiaohongshu.com/user/profile/self?tab=fav"
-
 EVAL_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "extension" / "xiaohongshu_eval.js"
 
 
@@ -17,9 +15,12 @@ class XiaohongshuFavoritesCollector:
     def __init__(self, proxy: CDPProxy | None = None) -> None:
         self._proxy = proxy or cdp_proxy
 
-    async def extract_favorites(self, url: str = XIAOHONGSHU_FAVORITES_URL, limit: int | None = None) -> list[ConnectorItem]:
+    async def extract_favorites(self, url: str | None = None, limit: int | None = None) -> list[ConnectorItem]:
+        target_url = str(url or "").strip()
+        if not target_url:
+            raise ValueError("小红书收藏页绑定用户 profile id，请先提供真实收藏页链接。")
         await self._proxy.connect()
-        tab = await self._proxy.new_tab(url)
+        tab = await self._proxy.new_tab(target_url)
         try:
             await self._proxy.wait_for_load(tab)
             target = limit or 200
@@ -37,35 +38,24 @@ class XiaohongshuFavoritesCollector:
             href = item.get("url") or ""
             if not href:
                 continue
+            title = str(item.get("title") or "").strip()
+            metadata = {"source": "xiaohongshu_cdp_favorites"}
+            if not title:
+                title = "未识别标题"
+                metadata["title_missing"] = True
             items.append(ConnectorItem(
                 raw_url=href,
-                title=item.get("title") or href,
+                title=title,
                 platform="xiaohongshu",
                 author=item.get("author"),
                 content_type="note",
-                metadata={"source": "xiaohongshu_cdp_favorites"},
+                metadata=metadata,
             ))
         return items
 
     @staticmethod
     def _inline_eval() -> str:
-        return """(() => {
-            const anchors = Array.from(document.querySelectorAll('a[href]'));
-            const seen = new Set();
-            const items = [];
-            for (const a of anchors) {
-                try {
-                    const url = new URL(a.getAttribute('href'), location.href);
-                    if (!/(^|\\.)xiaohongshu\\.com$/.test(url.hostname)) continue;
-                    if (!/\\/(explore|discovery\\/item)\\/[a-f0-9]+/.test(url.pathname)) continue;
-                    const key = url.pathname;
-                    if (seen.has(key)) continue;
-                    seen.add(key);
-                    items.push({url: url.href, title: (a.getAttribute('title') || a.innerText || '').trim().split('\\n')[0].slice(0, 180), author: null});
-                } catch(_) {}
-            }
-            return JSON.stringify(items);
-        })()"""
+        return EVAL_SCRIPT_PATH.read_text(encoding="utf-8")
 
 
 xiaohongshu_collector = XiaohongshuFavoritesCollector()

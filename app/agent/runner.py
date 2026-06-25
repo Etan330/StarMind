@@ -77,10 +77,17 @@ class AgentRunner:
                     temperature=0.2,
                 )
             except Exception as exc:
+                provider_label = provider_config.get("display_name") or resolved_provider
+                message = str(exc)
+                if "uuap_redirect" in message or "uuap.baidu.com/login" in message or "UUAP" in message:
+                    guidance = "请求被 UUAP 登录页拦截，请检查百度内部 API 鉴权 Header、Base URL 或内网访问方式。"
+                else:
+                    guidance = f"请确认当前模型供应商（{provider_label}）的 API Key、Base URL 和网络可访问。"
                 answer = (
                     "StarMind 已经完成 Agent 框架调用，但模型没有成功返回。"
-                    "请确认 DeepSeek API Key 已保存且网络可访问。"
-                    f"\n\n错误：{type(exc).__name__}: {exc}"
+                    f"{guidance}"
+                    f"\n\n当前模型：{provider_label} / {resolved_model}"
+                    f"\n错误：{type(exc).__name__}: {exc}"
                 )
 
         self.memory.remember_run(run_id, question, answer)

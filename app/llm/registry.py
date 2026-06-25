@@ -12,7 +12,7 @@ from app.config import (
     read_json,
     write_json,
 )
-from app.llm.providers import AnthropicProvider, GeminiProvider, LLMProvider, MockProvider, OpenAICompatibleProvider
+from app.llm.providers import AnthropicProvider, GeminiProvider, LLMProvider, MockProvider, OpenAICompatibleProvider, ProviderConnectionError
 
 
 def get_providers() -> dict[str, Any]:
@@ -117,7 +117,7 @@ def get_active_provider() -> LLMProvider:
     if api_style == "mock":
         return MockProvider()
     if api_style == "openai_compatible":
-        return OpenAICompatibleProvider(provider_id, base_url, api_key, models)
+        return OpenAICompatibleProvider(provider_id, base_url, api_key, models, provider_config=provider_config)
     if api_style == "anthropic":
         return AnthropicProvider(provider_id, base_url, api_key, models)
     if api_style == "gemini":
@@ -141,7 +141,7 @@ def get_provider_runtime(provider_id: str | None = None, model: str | None = Non
     if api_style == "mock":
         provider = MockProvider()
     elif api_style == "openai_compatible":
-        provider = OpenAICompatibleProvider(resolved_provider_id, base_url, api_key, models)
+        provider = OpenAICompatibleProvider(resolved_provider_id, base_url, api_key, models, provider_config=provider_config)
     elif api_style == "anthropic":
         provider = AnthropicProvider(resolved_provider_id, base_url, api_key, models)
     elif api_style == "gemini":
@@ -151,15 +151,33 @@ def get_provider_runtime(provider_id: str | None = None, model: str | None = Non
     return provider, resolved_model, provider_config
 
 
+def _connection_error_payload(exc: Exception) -> dict[str, str]:
+    if isinstance(exc, ProviderConnectionError):
+        return {"error": exc.code, "message": str(exc)}
+    message = str(exc)
+    if "uuap.baidu.com/login" in message or "uuap_redirect" in message:
+        return {"error": "uuap_redirect", "message": "请求被 UUAP 登录页拦截，请检查内部 API 鉴权 Header、Base URL 或内网访问方式。"}
+    return {"error": type(exc).__name__, "message": message}
+
+
 async def test_active_connection() -> dict[str, Any]:
     settings = get_model_settings()
     provider = get_active_provider()
-    ok = await provider.test_connection()
-    return {
-        "ok": ok,
-        "provider": settings.get("default_provider"),
-        "model": settings.get("default_model"),
-    }
+    try:
+        ok = await provider.test_connection()
+        return {
+            "ok": ok,
+            "provider": settings.get("default_provider"),
+            "model": settings.get("default_model"),
+            "error": None if ok else "connection_failed",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "provider": settings.get("default_provider"),
+            "model": settings.get("default_model"),
+            **_connection_error_payload(exc),
+        }
 
 
 async def test_model_connection(
@@ -183,12 +201,16 @@ async def test_model_connection(
     if api_style == "mock":
         provider = MockProvider()
     elif api_style == "openai_compatible":
-        provider = OpenAICompatibleProvider(provider_id, base_url, resolved_key, models)
+        provider = OpenAICompatibleProvider(provider_id, base_url, resolved_key, models, provider_config=provider_config)
     elif api_style == "anthropic":
         provider = AnthropicProvider(provider_id, base_url, resolved_key, models)
     elif api_style == "gemini":
         provider = GeminiProvider(provider_id, base_url, resolved_key, models)
     else:
         provider = MockProvider()
-    ok = await provider.test_connection()
-    return {"ok": ok, "provider": provider_id, "model": model or (models[0] if models else None)}
+    resolved_model = model or (models[0] if models else None)
+    try:
+        ok = await provider.test_connection()
+        return {"ok": ok, "provider": provider_id, "model": resolved_model, "error": None if ok else "connection_failed"}
+    except Exception as exc:
+        return {"ok": False, "provider": provider_id, "model": resolved_model, **_connection_error_payload(exc)}

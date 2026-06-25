@@ -23,16 +23,22 @@
   <div class="notice bad centered-notice">豆包未登录。请在浏览器中打开 doubao.com 完成登录后重试。</div>
 {% elif saved == "page-not-ready" %}
   <div class="notice bad centered-notice">未识别到收藏内容。请确认浏览器已登录并停留在收藏页面。</div>
+{% elif saved == "current-page-saved" %}
+  <div class="notice ok centered-notice">已保存当前浏览器中的真实收藏页链接，后续扫描会自动复用。</div>
+{% elif saved == "favorites-page-not-found" %}
+  <div class="notice bad centered-notice">没有在当前浏览器标签页中找到真实收藏页。请先打开该平台收藏页，再点击“保存当前收藏页”。</div>
+{% elif saved == "multiple-favorites-pages" %}
+  <div class="notice bad centered-notice">找到多个收藏页。请只保留一个目标收藏页标签页后重试保存。</div>
 {% elif saved == "browser-missing" %}
   <div class="notice bad centered-notice">CDP Proxy 未运行。请运行: node ~/.claude/skills/web-access/scripts/check-deps.mjs</div>
 {% endif %}
 
 <section class="v1-page-grid">
-  <article class="glass-card">
+  <article class="glass-card source-filter-workbench" data-source-filter data-platform="{{ preset.platform }}" data-homepage-url="{{ connection.homepage_url or '' }}">
     <div class="panel-title-row">
       <div>
-        <span class="section-kicker">一键流程</span>
-        <h2>采集收藏 → 豆包提取 → 写入知识库</h2>
+        <span class="section-kicker">历史收藏预筛选</span>
+        <h2>先筛掉噪声，再让豆包深读</h2>
       </div>
       {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
         {{ ui.status_chip("可执行", "success") }}
@@ -41,36 +47,76 @@
       {% endif %}
     </div>
 
-    <ol class="process-steps">
-      <li><strong>Web Access 打开收藏页</strong><span>通过 CDP Proxy 直连浏览器，后台 tab 打开收藏/喜欢页面。</span></li>
-      <li><strong>提取链接列表</strong><span>自动滚动加载，提取视频/笔记链接。</span></li>
-      <li><strong>豆包网页版提取内容</strong><span>打开 doubao.com，逐条发送链接，获取逐字稿或正文。</span></li>
-      <li><strong>写入原始知识库</strong><span>内容保存为 RawSource，进入知识库主链路。</span></li>
+    <div class="notice warning source-risk-note">
+      温馨提示：部分站点对浏览器自动化操作检测严格，存在账号封禁风险。已内置防护措施但无法完全避免，继续操作即视为接受。
+    </div>
+
+    <ol class="process-steps source-filter-steps">
+      <li><strong>扫描标题</strong><span>只读取收藏标题、作者和源链接，不先做全文抓取。</span></li>
+      <li><strong>AI 分类</strong><span>按“有用 / 没用”与二级分类分组，展示可点击样例。</span></li>
+      <li><strong>人工勾选</strong><span>你可以保留整个分类，也可以只保留单条链接。</span></li>
+      <li><strong>豆包提取入库</strong><span>逐条发送到豆包，等待完整返回后写入 RawSource。</span></li>
     </ol>
 
     {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
-      <form class="mode-form" method="post" action="/api/collect-and-extract/{{ preset.platform }}">
+      <form class="mode-form" method="post" action="/{{ preset.platform }}/browser/open" style="margin-bottom:12px;">
+        <input type="hidden" name="homepage_url" value="{{ connection.homepage_url or '' }}">
+        <button class="btn secondary full" type="submit" data-busy-text="{{ '正在打开已保存收藏页...' if has_saved_favorites_url else '正在打开官网登录页...' }}">{{ open_label }}</button>
+      </form>
+      {% if preset.platform in ("bilibili", "xiaohongshu") %}
+        {% if has_saved_favorites_url %}
+          <div class="notice ok" style="margin-bottom:12px;">已记住你的收藏页。保存后可直接扫描，不需要再次从官网登录流程开始；如需更换收藏页，再打开目标页面后点击下方按钮覆盖保存。</div>
+        {% endif %}
+        <form class="mode-form" method="post" action="/source-connections/{{ preset.platform }}/save-current-page" style="margin-bottom:12px;">
+          <button class="btn secondary full" type="submit" data-busy-text="正在读取当前浏览器标签页...">{{ '重新保存当前收藏页' if has_saved_favorites_url else '保存当前收藏页' }}</button>
+        </form>
+      {% endif %}
+
+      <div class="source-filter-controls">
         <label>采集数量
-          <select name="limit">
+          <select data-filter-limit>
             <option value="5">5 条</option>
             <option value="10" selected>10 条</option>
             <option value="20">20 条</option>
             <option value="50">50 条</option>
             <option value="100">100 条</option>
-            <option value="all">全部</option>
           </select>
         </label>
-        <input type="hidden" name="next" value="/ui/source-setup/{{ preset.platform }}">
-        <button class="btn primary full" type="submit" data-busy-text="正在执行采集+提取流程...">
-          🚀 一键采集 → 豆包提取 → 写入知识库
-        </button>
-      </form>
+        <button class="btn primary" type="button" data-filter-scan>扫描标题</button>
+        <button class="btn secondary" type="button" data-filter-classify disabled>AI 分类</button>
+        <button class="btn primary" type="button" data-filter-extract disabled>仅提取我勾选的内容</button>
+      </div>
+
+      <div class="source-filter-status" data-filter-status>{% if has_saved_favorites_url %}等待开始。已保存真实收藏页，可直接点击“扫描标题”；如果登录失效，再点击“{{ open_label }}”打开已保存收藏页重新登录。{% else %}等待开始。点击“{{ open_label }}”后，登录并进入真实收藏页，再保存当前收藏页；保存后下次可直接扫描。{% endif %}</div>
+      <div class="source-filter-summary" data-filter-summary hidden></div>
+      <div class="source-filter-results" data-filter-results hidden></div>
+
+      <details class="source-advanced-flow">
+        <summary>高级：跳过筛选直接提取</summary>
+        <form class="mode-form" method="post" action="/api/collect-and-extract/{{ preset.platform }}">
+          <label>采集数量
+            <select name="limit">
+              <option value="5">5 条</option>
+              <option value="10" selected>10 条</option>
+              <option value="20">20 条</option>
+              <option value="50">50 条</option>
+              <option value="100">100 条</option>
+              <option value="all">全部</option>
+            </select>
+          </label>
+          <input type="hidden" name="homepage_url" value="{{ connection.homepage_url or '' }}">
+          <input type="hidden" name="next" value="/ui/source-setup/{{ preset.platform }}">
+          <button class="btn secondary full" type="submit" data-busy-text="正在执行采集+提取流程...">
+            直接采集 → 豆包提取 → 写入知识库
+          </button>
+        </form>
+      </details>
 
       <div class="v1-callout" style="margin-top:16px;">
         <strong>前置条件：</strong>
         <ol style="margin:8px 0 0 20px;padding:0;">
           <li>CDP Proxy 已运行（<code>node ~/.claude/skills/web-access/scripts/check-deps.mjs</code>）</li>
-          <li>浏览器已登录{{ preset.name }}（收藏页可见）</li>
+          <li>{% if has_saved_favorites_url %}已保存{{ preset.name }}真实收藏页；可直接扫描，必要时可打开已保存收藏页重新登录{% else %}浏览器已登录{{ preset.name }}并进入真实收藏页；保存后后续可直接扫描{% endif %}</li>
           <li>浏览器已登录豆包（doubao.com）</li>
         </ol>
       </div>
@@ -98,12 +144,12 @@
   <div class="panel-title-row">
     <div>
       <span class="section-kicker">本地配置</span>
-      <h2>保存目标页面和同步范围</h2>
+      <h2>保存目标页面和同步范围（可选兜底）</h2>
     </div>
   </div>
   <form class="mode-form" method="post" action="/source-connections/{{ preset.platform }}">
-    <label>主页或收藏夹链接
-      <input name="homepage_url" value="{{ connection.homepage_url or '' }}" placeholder="https://...">
+    <label>收藏页链接（B站/小红书需保存登录后的真实收藏页）
+      <input name="homepage_url" value="{{ connection.homepage_url or '' }}" placeholder="例如 space.bilibili.com/.../favlist 或 xiaohongshu.com/user/profile/...?...tab=fav" data-source-homepage-input>
     </label>
     <label>同步范围
       <select name="sync_scope">

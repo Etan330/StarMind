@@ -118,6 +118,16 @@ class CDPProxy:
             if resp.status_code != 200:
                 raise CDPConnectionError(f"click failed: {resp.text}")
 
+    async def click_at(self, tab: CDPTab, x: float, y: float) -> None:
+        """Click viewport coordinates via POST /clickXY."""
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{self._base}/clickXY?target={tab.tab_id}",
+                json={"x": x, "y": y},
+            )
+            if resp.status_code != 200:
+                raise CDPConnectionError(f"click_at failed: {resp.text}")
+
     async def scroll(self, tab: CDPTab, distance: int = 800) -> None:
         """Scroll via GET /scroll."""
         async with httpx.AsyncClient(timeout=10) as client:

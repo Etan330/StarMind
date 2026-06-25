@@ -50,3 +50,19 @@ def test_douyin_profile_helpers_strip_modal_query_and_build_vid_fallback():
     assert fallback is not None
     assert fallback.raw_url == "https://www.douyin.com/video/7648123596673550565"
     assert fallback.author == "李厂长来了"
+
+
+def test_xiaohongshu_explore_url_normalizes_to_note_id():
+    normalized = normalize_url("https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12?xsec_token=abc&utm_source=share", platform="xiaohongshu")
+
+    assert normalized.platform == "xiaohongshu"
+    assert normalized.external_item_id == "65fabc1234567890abcdef12"
+    assert normalized.canonical_url == "https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12"
+
+
+def test_xiaohongshu_discovery_item_normalizes_to_note_id():
+    normalized = normalize_url("https://www.xiaohongshu.com/discovery/item/65fabc1234567890abcdef12?share_from_user_hidden=true", platform="xiaohongshu")
+
+    assert normalized.platform == "xiaohongshu"
+    assert normalized.external_item_id == "65fabc1234567890abcdef12"
+    assert normalized.canonical_url == "https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12"

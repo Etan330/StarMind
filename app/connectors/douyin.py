@@ -63,10 +63,14 @@ class DouyinBrowserCollector:
 
     async def open(self, url: str = "https://www.douyin.com/user/self?showTab=favorite_collection") -> BrowserState:
         await self._check_proxy()
-        data = await self._request("POST", "/new", url)
+        login_url = "https://www.douyin.com/user/self"
+        data = await self._request("POST", "/new", login_url)
         self._target_id = data["targetId"]
-        await asyncio.sleep(3)
-        return BrowserState(opened=True, current_url=url, message="已在浏览器后台打开抖音收藏页。")
+        await asyncio.sleep(2)
+        if url != login_url:
+            await self._request("POST", f"/navigate?target={self._target_id}", url)
+            await asyncio.sleep(2)
+        return BrowserState(opened=True, current_url=url, message="已在浏览器后台打开抖音我的页，并尝试进入收藏页。")
 
     async def extract_visible_video_links(self, limit: int | None = 10, require_collection_page: bool = True) -> list[ConnectorItem]:
         if self._target_id is None:

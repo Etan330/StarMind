@@ -37,6 +37,8 @@ def infer_platform(parsed) -> str:
         return "bilibili"
     if "douyin.com" in host or "iesdouyin.com" in host:
         return "douyin"
+    if "xiaohongshu.com" in host or "xhslink.com" in host:
+        return "xiaohongshu"
     if host == "github.com" or host.endswith(".github.com"):
         return "github"
     return "web"
@@ -69,6 +71,10 @@ def normalize_url(raw_url: str, platform: str | None = None) -> NormalizedURL:
         douyin_id = _douyin_id(parsed)
         canonical = f"https://www.douyin.com/video/{douyin_id}" if douyin_id else _generic_canonical(scheme, netloc, path, query_pairs)
         external_id = douyin_id or _hash_id(canonical)
+    elif inferred_platform == "xiaohongshu":
+        note_id = _xiaohongshu_id(path)
+        canonical = f"https://www.xiaohongshu.com/explore/{note_id}" if note_id else _generic_canonical(scheme, netloc, path, query_pairs)
+        external_id = note_id or _hash_id(canonical)
     else:
         canonical = _generic_canonical(scheme, netloc, path, query_pairs)
         external_id = _hash_id(canonical)
@@ -116,6 +122,11 @@ def _douyin_id(parsed) -> str | None:
     if query.get("modal_id"):
         return query["modal_id"]
     match = re.search(r"/(?:video|note)/([A-Za-z0-9_-]+)", parsed.path)
+    return match.group(1) if match else None
+
+
+def _xiaohongshu_id(path: str) -> str | None:
+    match = re.search(r"/(?:explore|discovery/item)/([A-Za-z0-9_-]+)", path)
     return match.group(1) if match else None
 
 

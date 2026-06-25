@@ -296,6 +296,190 @@
     })
   })
 
+  document.querySelectorAll("[data-source-filter]").forEach((root) => {
+    const platform = root.dataset.platform
+    const homepageInput = document.querySelector("[data-source-homepage-input]")
+    const limitSelect = root.querySelector("[data-filter-limit]")
+    const scanButton = root.querySelector("[data-filter-scan]")
+    const classifyButton = root.querySelector("[data-filter-classify]")
+    const extractButton = root.querySelector("[data-filter-extract]")
+    const status = root.querySelector("[data-filter-status]")
+    const summary = root.querySelector("[data-filter-summary]")
+    const results = root.querySelector("[data-filter-results]")
+    let scannedItems = []
+    let classifiedItems = []
+    let selectedCandidateIds = []
+
+    const setStatus = (message, tone = "") => {
+      if (!status) return
+      status.textContent = message
+      status.dataset.tone = tone
+    }
+
+    const setBusy = (button, busy, text) => {
+      if (!button) return
+      if (busy) {
+        button.dataset.originalText = button.textContent || ""
+        button.textContent = text || "处理中..."
+        button.disabled = true
+      } else {
+        button.textContent = button.dataset.originalText || button.textContent || "继续"
+        button.disabled = false
+      }
+    }
+
+    const apiPost = async (url, payload) => {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const detail = body.detail || body.error
+        const message = typeof detail === "object" && detail !== null ? detail.message || JSON.stringify(detail) : detail
+        const error = new Error(message || `请求失败：${response.status}`)
+        if (typeof detail === "object" && detail !== null) {
+          error.code = detail.code || body.code || ""
+          error.detail = detail
+        }
+        throw error
+      }
+      return body
+    }
+
+    const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]))
+
+    const renderGroups = (groups) => {
+      if (!results) return
+      results.hidden = false
+      if (!groups.length) {
+        results.innerHTML = '<div class="empty-state">没有可展示的分类结果。</div>'
+        return
+      }
+      results.innerHTML = groups.map((group, groupIndex) => {
+        const groupKey = `${group.usefulness}-${group.subcategory}-${groupIndex}`
+        const items = group.items || []
+        return `
+          <section class="filter-group" data-filter-group="${escapeHtml(groupKey)}">
+            <div class="filter-group-head">
+              <label class="filter-group-check">
+                <input type="checkbox" data-group-toggle checked>
+                <span>${group.usefulness === "useful" ? "有用" : "没用"} · ${escapeHtml(group.subcategory)}</span>
+              </label>
+              <span class="status-chip ${group.usefulness === "useful" ? "success" : "warning"}">${group.count} 条</span>
+            </div>
+            <div class="filter-item-list">
+              ${items.map((item, itemIndex) => `
+                <label class="filter-item">
+                  <input type="checkbox" data-item-check data-item-index="${classifiedItems.indexOf(item)}" ${group.usefulness === "useful" ? "checked" : ""}>
+                  <span>
+                    <strong>${escapeHtml(item.title || item.url)}</strong>
+                    <small>${escapeHtml(item.author || item.platform || "未知作者")} · ${escapeHtml(item.reason || "")}</small>
+                    <a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a>
+                  </span>
+                </label>
+              `).join("")}
+            </div>
+          </section>
+        `
+      }).join("")
+      results.querySelectorAll("[data-group-toggle]").forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          const group = checkbox.closest("[data-filter-group]")
+          group?.querySelectorAll("[data-item-check]").forEach((itemCheck) => {
+            itemCheck.checked = checkbox.checked
+          })
+        })
+      })
+    }
+
+    scanButton?.addEventListener("click", async () => {
+      setBusy(scanButton, true, "扫描中...")
+      setStatus("正在通过浏览器读取收藏标题，请不要关闭浏览器。")
+      try {
+        const currentHomepageUrl = homepageInput?.value?.trim() || root.dataset.homepageUrl || ""
+        const body = await apiPost("/api/sync/scan-titles", { platform, limit: limitSelect?.value || 10, homepage_url: currentHomepageUrl })
+        scannedItems = body.items || []
+        classifiedItems = []
+        selectedCandidateIds = []
+        if (summary) {
+          summary.hidden = false
+          summary.textContent = `已扫描 ${body.total || scannedItems.length} 条收藏标题。下一步点击 AI 分类。`
+        }
+        if (results) {
+          results.hidden = false
+          results.innerHTML = scannedItems.map((item) => `
+            <div class="filter-item preview-only">
+              <span><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(item.author || item.platform || "")}</small><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a></span>
+            </div>
+          `).join("")
+        }
+        classifyButton.disabled = scannedItems.length === 0
+        extractButton.disabled = true
+        setStatus("标题扫描完成。", "ok")
+      } catch (error) {
+        setStatus(error.message || "扫描失败", "bad")
+      } finally {
+        setBusy(scanButton, false)
+      }
+    })
+
+    classifyButton?.addEventListener("click", async () => {
+      setBusy(classifyButton, true, "分类中...")
+      setStatus("正在调用已配置 AI 做有用/没用与二级分类。")
+      try {
+        const body = await apiPost("/api/classify/batch-titles", { items: scannedItems })
+        const groups = body.groups || []
+        classifiedItems = groups.flatMap((group) => group.items || [])
+        if (summary) {
+          summary.hidden = false
+          summary.textContent = `有用 ${body.summary?.useful_count || 0} 条，没用 ${body.summary?.useless_count || 0} 条。默认只勾选“有用”，你可以调整。`
+        }
+        renderGroups(groups)
+        extractButton.disabled = classifiedItems.length === 0
+        setStatus("AI 分类完成，请确认要保留的分类或条目。", "ok")
+      } catch (error) {
+        setStatus(error.message || "分类失败", "bad")
+      } finally {
+        setBusy(classifyButton, false)
+      }
+    })
+
+    extractButton?.addEventListener("click", async () => {
+      const checked = Array.from(root.querySelectorAll("[data-item-check]:checked"))
+      const selected = checked.map((input) => classifiedItems[Number(input.dataset.itemIndex)]).filter(Boolean)
+      const selectedSet = new Set(selected.map((item) => item.url))
+      const skipped = classifiedItems.filter((item) => !selectedSet.has(item.url))
+      if (!selected.length) {
+        setStatus("请至少勾选一条要提取的收藏。", "bad")
+        return
+      }
+      setBusy(extractButton, true, "豆包提取中...")
+      setStatus(`已选择 ${selected.length} 条。正在创建候选并发送到豆包，单条可能等待数分钟。`)
+      try {
+        const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
+        const preparedIds = prepared.candidate_ids || []
+        if (preparedIds.length) selectedCandidateIds = preparedIds
+        if (!selectedCandidateIds.length) {
+          setStatus("没有可提取的候选。可能这些内容已经准备过或已入库，请重新扫描/分类后再试。", "bad")
+          return
+        }
+        const extracted = await apiPost("/api/doubao/extract-selected", { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 })
+        setStatus(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。`, "ok")
+        if (summary) summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
+      } catch (error) {
+        if (error.code === "doubao_login_required") {
+          setStatus("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com", "bad")
+        } else {
+          setStatus(error.message || "豆包提取失败", "bad")
+        }
+      } finally {
+        setBusy(extractButton, false)
+      }
+    })
+  })
+
   document.querySelectorAll("form").forEach((form) => {
     form.addEventListener("submit", (event) => {
       if (form.dataset.confirmMessage && !window.confirm(form.dataset.confirmMessage)) {

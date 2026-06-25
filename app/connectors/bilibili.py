@@ -8,9 +8,6 @@ from app.connectors.base import ConnectorItem
 from app.connectors.cdp_proxy import CDPConnectionError, CDPProxy, CDPTab, cdp_proxy
 
 
-BILIBILI_FAVORITES_URL = "https://space.bilibili.com/ajax/fav/getList"
-BILIBILI_SPACE_URL = "https://www.bilibili.com/account/favorite"
-
 EVAL_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "extension" / "bilibili_eval.js"
 
 
@@ -18,9 +15,12 @@ class BilibiliFavoritesCollector:
     def __init__(self, proxy: CDPProxy | None = None) -> None:
         self._proxy = proxy or cdp_proxy
 
-    async def extract_favorites(self, url: str = BILIBILI_SPACE_URL, limit: int | None = None) -> list[ConnectorItem]:
+    async def extract_favorites(self, url: str | None = None, limit: int | None = None) -> list[ConnectorItem]:
+        target_url = str(url or "").strip()
+        if not target_url:
+            raise ValueError("B站收藏页绑定用户 space id / favlist id，请先提供真实收藏页链接。")
         await self._proxy.connect()
-        tab = await self._proxy.new_tab(url)
+        tab = await self._proxy.new_tab(target_url)
         try:
             await self._proxy.wait_for_load(tab)
             # Scroll to load more items
@@ -39,35 +39,24 @@ class BilibiliFavoritesCollector:
             href = item.get("url") or ""
             if not href:
                 continue
+            title = str(item.get("title") or "").strip()
+            metadata = {"source": "bilibili_cdp_favorites", "bvid": item.get("bvid")}
+            if not title:
+                title = "未识别标题"
+                metadata["title_missing"] = True
             items.append(ConnectorItem(
                 raw_url=href,
-                title=item.get("title") or href,
+                title=title,
                 platform="bilibili",
                 author=item.get("author"),
                 content_type="video",
-                metadata={"source": "bilibili_cdp_favorites", "bvid": item.get("bvid")},
+                metadata=metadata,
             ))
         return items
 
     @staticmethod
     def _inline_eval() -> str:
-        return """(() => {
-            const anchors = Array.from(document.querySelectorAll('a[href]'));
-            const seen = new Set();
-            const items = [];
-            for (const a of anchors) {
-                try {
-                    const url = new URL(a.getAttribute('href'), location.href);
-                    if (!/(^|\\.)bilibili\\.com$/.test(url.hostname)) continue;
-                    const m = url.pathname.match(/\\/video\\/(BV[a-zA-Z0-9]+)/);
-                    if (!m) continue;
-                    if (seen.has(m[1])) continue;
-                    seen.add(m[1]);
-                    items.push({url: url.href, title: (a.getAttribute('title') || a.innerText || '').trim().slice(0, 180), author: null, bvid: m[1]});
-                } catch(_) {}
-            }
-            return JSON.stringify(items);
-        })()"""
+        return EVAL_SCRIPT_PATH.read_text(encoding="utf-8")
 
 
 bilibili_collector = BilibiliFavoritesCollector()

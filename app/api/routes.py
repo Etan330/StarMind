@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,7 +15,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.agent import AgentRunner
-from app.connectors import BrowserDependencyMissing, DouyinPageNotReady, douyin_browser_collector
+from app.connectors import BrowserDependencyMissing, CDPConnectionError, DouyinPageNotReady, cdp_proxy, douyin_browser_collector
 from app.connectors.base import ConnectorItem
 from app.config import (
     AGENT_LEGION_PATH,
@@ -357,11 +358,18 @@ FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
         "workflow": "打开浏览器 → 登录抖音 → 进入收藏页 → 提取并处理可见收藏",
     },
     "xiaohongshu": {
-        "status_label": "可登录，待解析",
-        "status_tone": "warning",
-        "support_level": "login_only",
-        "capability": "已能打开本地浏览器保存登录会话；收藏页解析器还未接入，不会假装同步成功。",
-        "workflow": "打开浏览器 → 登录小红书 → 保存目标页面，等待解析器接入",
+        "status_label": "可执行预筛选",
+        "status_tone": "success",
+        "support_level": "live",
+        "capability": "本地浏览器登录后，可自动尝试进入收藏页并扫描可见笔记标题。",
+        "workflow": "打开官网 → 登录小红书 → 自动进入收藏页 → 扫描标题并预筛选",
+    },
+    "bilibili": {
+        "status_label": "可执行预筛选",
+        "status_tone": "success",
+        "support_level": "live",
+        "capability": "本地浏览器登录后，可自动尝试进入收藏页并扫描可见视频标题。",
+        "workflow": "打开官网 → 登录 B站 → 自动进入收藏页 → 扫描标题并预筛选",
     },
 }
 
@@ -504,6 +512,72 @@ def get_source_connections() -> dict[str, Any]:
     payload = read_json(SOURCE_CONNECTIONS_PATH, DEFAULT_SOURCE_CONNECTIONS)
     payload.setdefault("connections", {})
     return payload
+
+
+PLATFORM_BROWSER_ENTRY_URLS = {
+    "bilibili": "https://www.bilibili.com",
+    "xiaohongshu": "https://www.xiaohongshu.com/explore",
+}
+
+PLATFORM_DEFAULT_FAVORITES_URLS = {
+}
+
+PLATFORM_OPEN_LABELS = {
+    "douyin": "打开抖音官网登录",
+    "bilibili": "打开 B站官网登录",
+    "xiaohongshu": "打开小红书官网登录",
+}
+
+
+def saved_source_homepage_url(platform: str) -> str:
+    connection = get_source_connections().get("connections", {}).get(platform, {})
+    return str(connection.get("homepage_url") or "").strip() if isinstance(connection, dict) else ""
+
+
+def is_platform_favorites_url(platform: str, url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    host = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+    query = parse_qs(parsed.query)
+    if platform == "bilibili":
+        return host == "space.bilibili.com" and path.endswith("/favlist") and bool(query.get("fid"))
+    if platform == "xiaohongshu":
+        return host == "www.xiaohongshu.com" and "/user/profile/" in path and "fav" in query.get("tab", [])
+    return False
+
+
+def resolve_platform_favorites_url(platform: str, request_url: str = "") -> str:
+    requested = str(request_url or "").strip()
+    if requested:
+        return requested
+    saved = saved_source_homepage_url(platform)
+    if saved:
+        return saved
+    default_url = PLATFORM_DEFAULT_FAVORITES_URLS.get(platform, "")
+    if default_url:
+        return default_url
+    raise HTTPException(
+        status_code=428,
+        detail={
+            "code": "user_favorites_url_required",
+            "message": f"{platform} 收藏页绑定你的账号/收藏夹 ID，无法使用通用链接。请先点击“打开官网登录”，进入真实收藏页后保存该页面链接，再扫描标题。",
+        },
+    )
+
+
+async def open_platform_browser(platform: str, request_url: str = "") -> dict[str, str]:
+    entry_url = PLATFORM_BROWSER_ENTRY_URLS.get(platform)
+    if not entry_url:
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    favorites_url = str(request_url or "").strip() or saved_source_homepage_url(platform)
+    await cdp_proxy.connect()
+    tab = await cdp_proxy.new_tab(entry_url)
+    if favorites_url and favorites_url != entry_url:
+        await cdp_proxy.navigate(tab, favorites_url)
+        tab.url = favorites_url
+    await cdp_proxy.wait_for_load(tab)
+    info = await cdp_proxy.get_info(tab)
+    return {"current_url": str(info.get("url") or tab.url or favorites_url or entry_url)}
 
 
 def get_activation_rules() -> dict[str, Any]:
@@ -939,6 +1013,29 @@ def clean_douyin_title(raw_title: str, page_text: str, href: str) -> str:
     return href
 
 
+def filter_metadata(item: dict[str, Any]) -> dict[str, Any]:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    return {
+        **metadata,
+        "filter_usefulness": str(item.get("usefulness") or item.get("filter_usefulness") or "useful"),
+        "filter_subcategory": str(item.get("subcategory") or item.get("domain") or item.get("filter_subcategory") or "未分类"),
+        "filter_reason": str(item.get("reason") or item.get("filter_reason") or "用户在历史收藏预筛选中保留。"),
+        "filter_confidence": float(item.get("confidence") or item.get("filter_confidence") or 0),
+        "source": metadata.get("source") or "historical_favorites_filter",
+    }
+
+
+def connector_item_from_filter_item(item: dict[str, Any], platform: str) -> ConnectorItem:
+    return ConnectorItem(
+        raw_url=str(item.get("url") or item.get("raw_url") or "").strip(),
+        title=str(item.get("title") or "").strip(),
+        platform=platform,
+        author=str(item.get("author") or "").strip() or None,
+        content_type=str(item.get("content_type") or "auto").strip() or "auto",
+        metadata=filter_metadata(item),
+    )
+
+
 def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int]:
     candidate_ids: list[int] = []
     seen: set[int] = set()
@@ -949,6 +1046,7 @@ def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int
             .filter(
                 or_(
                     CandidateItem.canonical_url == normalized.canonical_url,
+                    CandidateItem.raw_url == item.raw_url,
                     (CandidateItem.platform == normalized.platform) & (CandidateItem.external_item_id == normalized.external_item_id),
                 )
             )
@@ -956,6 +1054,9 @@ def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int
         )
         if candidate and candidate.id not in seen:
             metadata = json.loads(candidate.metadata_json or "{}")
+            raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
+            if metadata.get("doubao_extracted") is True or raw_source is not None:
+                continue
             metadata.update(item.metadata or {})
             candidate.title = item.title or candidate.title
             candidate.author = item.author or candidate.author
@@ -1422,6 +1523,11 @@ def model_settings_page(request: Request, db: Session = Depends(get_db)):
             active_profile_id=get_active_profile_id(settings, profiles),
             status=request.query_params.get("status"),
             test=request.query_params.get("test"),
+            test_error=request.query_params.get("error"),
+            test_provider=request.query_params.get("provider"),
+            events=events,
+            event_counts=counts,
+            recent_events=recent_events,
         ),
     )
 
@@ -1477,7 +1583,10 @@ async def test_model_settings(request: Request):
     result = await test_model_connection(provider, model, api_key, base_url) if provider else await test_active_connection()
     if wants_html(request):
         state = "success" if result["ok"] else "failed"
-        return RedirectResponse(f"/ui/settings?test={state}", status_code=303)
+        params = {"test": state, "provider": result.get("provider") or provider}
+        if not result["ok"] and result.get("error"):
+            params["error"] = str(result.get("error"))
+        return RedirectResponse(f"/ui/settings?{urlencode(params)}", status_code=303)
     return result
 
 
@@ -1575,6 +1684,10 @@ def source_setup_page(platform: str, request: Request, db: Session = Depends(get
     if preset is None:
         raise HTTPException(status_code=404, detail="source platform not found")
     source_connections = get_source_connections()["connections"]
+    connection = source_connections.get(platform, {})
+    saved_homepage_url = str(connection.get("homepage_url") or "").strip() if isinstance(connection, dict) else ""
+    has_saved_favorites_url = platform in {"bilibili", "xiaohongshu"} and bool(saved_homepage_url)
+    open_label = "打开已保存收藏页" if has_saved_favorites_url else PLATFORM_OPEN_LABELS.get(platform, f"打开 {preset['name']} 官网登录")
     connector = db.query(Connector).filter(Connector.platform == platform).first()
     return templates.TemplateResponse(
         request,
@@ -1585,10 +1698,94 @@ def source_setup_page(platform: str, request: Request, db: Session = Depends(get
             db,
             preset=preset,
             connector=connector,
-            connection=source_connections.get(platform, {}),
+            connection=connection,
+            has_saved_favorites_url=has_saved_favorites_url,
+            open_label=open_label,
             saved=request.query_params.get("saved"),
         ),
     )
+
+
+@router.post("/source-connections/{platform}/save-current-page")
+async def save_current_source_page(platform: str, request: Request, db: Session = Depends(get_db)):
+    preset = next((item for item in PLATFORM_PRESETS if item["platform"] == platform), None)
+    if preset is None:
+        raise HTTPException(status_code=404, detail="source platform not found")
+    if platform not in {"bilibili", "xiaohongshu"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    try:
+        await cdp_proxy.connect()
+        targets = await cdp_proxy.list_targets()
+    except CDPConnectionError as exc:
+        if wants_html(request):
+            return RedirectResponse(f"/ui/source-setup/{platform}?saved=browser-missing", status_code=303)
+        raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
+    candidates = []
+    for target in targets:
+        url = str(target.get("url") or "").strip()
+        if is_platform_favorites_url(platform, url):
+            candidates.append(url)
+    unique_candidates = list(dict.fromkeys(candidates))
+    if not unique_candidates:
+        if wants_html(request):
+            return RedirectResponse(f"/ui/source-setup/{platform}?saved=favorites-page-not-found", status_code=303)
+        raise HTTPException(
+            status_code=428,
+            detail={
+                "code": "favorites_page_not_found",
+                "message": "没有在当前浏览器标签页中找到真实收藏页。请先在浏览器里打开该平台收藏页，再点击保存当前收藏页。",
+            },
+        )
+    if len(unique_candidates) > 1:
+        if wants_html(request):
+            return RedirectResponse(f"/ui/source-setup/{platform}?saved=multiple-favorites-pages", status_code=303)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "multiple_favorites_pages_found",
+                "message": "找到了多个收藏页，请只保留一个目标收藏页后重试。",
+                "candidates": unique_candidates,
+            },
+        )
+
+    payload = get_source_connections()
+    connection = dict(payload.get("connections", {}).get(platform, {}))
+    connection.update(
+        {
+            "platform": platform,
+            "display_name": str(preset["name"]),
+            "auth_method": str(connection.get("auth_method") or preset.get("auth_hint") or "manual"),
+            "homepage_url": unique_candidates[0],
+            "api_base_url": str(connection.get("api_base_url") or ""),
+            "sync_scope": str(connection.get("sync_scope") or "favorites"),
+            "notes": str(connection.get("notes") or ""),
+            "status": str(connection.get("status") or "configured_only"),
+            "supports_live_sync": bool(connection.get("supports_live_sync") or False),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    )
+    payload.setdefault("connections", {})[platform] = connection
+    write_json(SOURCE_CONNECTIONS_PATH, payload)
+
+    connector = db.query(Connector).filter(Connector.platform == platform).first()
+    if connector is None:
+        connector = Connector(
+            name=str(preset["name"]),
+            platform=platform,
+            connector_type="platform_stub",
+            status="configured_only",
+            auth_method=connection["auth_method"],
+            max_scan_pages=20,
+        )
+        db.add(connector)
+    else:
+        connector.auth_method = connection["auth_method"]
+        connector.status = "configured_only"
+    db.commit()
+
+    if wants_html(request):
+        return RedirectResponse(f"/ui/source-setup/{platform}?saved=current-page-saved", status_code=303)
+    return {"status": "saved", "connection": connection}
 
 
 @router.post("/source-connections/{platform}")
@@ -1635,38 +1832,34 @@ async def save_source_connection(platform: str, request: Request, db: Session = 
     return {"status": "saved", "connection": connection}
 
 
+@router.post("/bilibili/browser/open")
+async def open_bilibili_browser(request: Request):
+    data = await request_data(request)
+    url = str(data.get("homepage_url") or data.get("url") or "").strip()
+    try:
+        state = await open_platform_browser("bilibili", url)
+    except CDPConnectionError as exc:
+        if wants_html(request):
+            return RedirectResponse("/ui/source-setup/bilibili?saved=browser-missing", status_code=303)
+        raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
+    if wants_html(request):
+        return RedirectResponse("/ui/source-setup/bilibili?saved=browser-opened", status_code=303)
+    return {"status": "opened", "current_url": state["current_url"]}
+
+
 @router.post("/xiaohongshu/browser/open")
 async def open_xiaohongshu_browser(request: Request):
     data = await request_data(request)
-    url = str(data.get("url") or "https://www.xiaohongshu.com/explore").strip()
+    url = str(data.get("homepage_url") or data.get("url") or "").strip()
     try:
-        from playwright.async_api import async_playwright
-    except Exception as exc:
+        state = await open_platform_browser("xiaohongshu", url)
+    except CDPConnectionError as exc:
         if wants_html(request):
             return RedirectResponse("/ui/source-setup/xiaohongshu?saved=browser-missing", status_code=303)
-        raise HTTPException(status_code=500, detail="Playwright 未安装，请先安装项目依赖。") from exc
-    browser_dir = LOCAL_DATA_DIR / "browser" / "xiaohongshu"
-    browser_dir.mkdir(parents=True, exist_ok=True)
-    playwright = await async_playwright().start()
-    try:
-        context = await playwright.chromium.launch_persistent_context(
-            str(browser_dir),
-            channel="chrome",
-            headless=False,
-            viewport={"width": 1360, "height": 900},
-        )
-    except Exception:
-        context = await playwright.chromium.launch_persistent_context(
-            str(browser_dir),
-            headless=False,
-            viewport={"width": 1360, "height": 900},
-        )
-    page = context.pages[0] if context.pages else await context.new_page()
-    await page.goto(url, wait_until="domcontentloaded")
-    BROWSER_SESSIONS["xiaohongshu"] = {"playwright": playwright, "context": context, "page": page}
+        raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
     if wants_html(request):
         return RedirectResponse("/ui/source-setup/xiaohongshu?saved=browser-opened", status_code=303)
-    return {"status": "opened", "current_url": page.url}
+    return {"status": "opened", "current_url": state["current_url"]}
 
 
 @router.get("/connectors")
@@ -1708,7 +1901,7 @@ async def scan_connector(connector_id: int, request: Request, db: Session = Depe
 @router.post("/douyin/browser/open")
 async def open_douyin_browser(request: Request):
     data = await request_data(request)
-    url = str(data.get("url") or "https://www.douyin.com/user/self?showTab=favorite_collection").strip()
+    url = str(data.get("homepage_url") or data.get("url") or "https://www.douyin.com/user/self?showTab=favorite_collection").strip()
     try:
         state = await douyin_browser_collector.open(url)
     except BrowserDependencyMissing as exc:
@@ -2239,6 +2432,8 @@ def settings_page(request: Request, db: Session = Depends(get_db)):
             active_profile_id=get_active_profile_id(settings, profiles),
             status=request.query_params.get("status"),
             test=request.query_params.get("test"),
+            test_error=request.query_params.get("error"),
+            test_provider=request.query_params.get("provider"),
             event_counts=tracking.counts(),
             recent_events=tracking.recent(10),
         ),
@@ -2689,8 +2884,10 @@ async def extract_bilibili_favorites(request: Request, db: Session = Depends(get
 
     data = await request_data(request)
     limit = parse_collection_limit(data, 10)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
+    favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
     try:
-        items = await _bili.extract_favorites(limit=limit)
+        items = await _bili.extract_favorites(url=favorites_url, limit=limit)
     except _CDPErr as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     connector = ensure_connector(db, "bilibili", "B站收藏夹", "browser_bilibili")
@@ -2708,8 +2905,10 @@ async def extract_xiaohongshu_favorites(request: Request, db: Session = Depends(
 
     data = await request_data(request)
     limit = parse_collection_limit(data, 10)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
+    favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
     try:
-        items = await _xhs.extract_favorites(limit=limit)
+        items = await _xhs.extract_favorites(url=favorites_url, limit=limit)
     except _CDPErr as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     connector = ensure_connector(db, "xiaohongshu", "小红书收藏夹", "browser_xiaohongshu")
@@ -2874,20 +3073,43 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
     platform = str(data.get("platform") or "").strip()
     limit = int(data.get("limit") or 500)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
 
     try:
         if platform == "bilibili":
-            items = await bilibili_collector.extract_favorites(limit=limit)
+            favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
+            items = await bilibili_collector.extract_favorites(url=favorites_url, limit=limit)
         elif platform == "xiaohongshu":
-            items = await xiaohongshu_collector.extract_favorites(limit=limit)
+            favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
+            items = await xiaohongshu_collector.extract_favorites(url=favorites_url, limit=limit)
         elif platform == "douyin":
+            if homepage_url:
+                await douyin_browser_collector.open(homepage_url)
             items = await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=False)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
     except _CDPErr as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
+    except BrowserDependencyMissing as exc:
+        raise HTTPException(status_code=503, detail={"code": "browser_missing", "message": str(exc)}) from exc
+    except DouyinPageNotReady as exc:
+        raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
 
-    return {"items": [{"url": i.raw_url, "title": i.title, "author": i.author, "platform": i.platform} for i in items], "total": len(items)}
+    return {
+        "items": [
+            {
+                "url": i.raw_url,
+                "title": i.title,
+                "author": i.author,
+                "platform": i.platform,
+                "content_type": i.content_type,
+                "metadata": i.metadata or {},
+            }
+            for i in items
+        ],
+        "total": len(items),
+        "login_required": False,
+    }
 
 
 @router.post("/api/classify/batch-titles")
@@ -2898,6 +3120,71 @@ async def classify_batch_titles(request: Request, db: Session = Depends(get_db))
         raise HTTPException(status_code=400, detail="items required")
     result = await ClassifierService(db).batch_classify_titles(items)
     return result
+
+
+@router.post("/api/sync/prepare-selected")
+async def prepare_selected_items(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    platform = str(data.get("platform") or "unknown").strip()
+    selected_items = data.get("selected_items") or data.get("selected") or []
+    skipped_items = data.get("skipped_items") or data.get("skipped") or []
+    if not isinstance(selected_items, list) or not isinstance(skipped_items, list):
+        raise HTTPException(status_code=400, detail="selected_items and skipped_items must be arrays")
+
+    connector = ensure_connector(db, platform, f"{platform} 收藏夹", f"browser_{platform}")
+    connector_items = [
+        connector_item_from_filter_item(item, platform)
+        for item in selected_items
+        if str(item.get("url") or item.get("raw_url") or "").strip()
+    ]
+    reusable_candidate_ids = candidate_ids_for_items(db, connector_items)
+    reusable_candidates = db.query(CandidateItem).filter(CandidateItem.id.in_(reusable_candidate_ids)).all() if reusable_candidate_ids else []
+    reusable_urls = {candidate.raw_url for candidate in reusable_candidates} | {candidate.canonical_url for candidate in reusable_candidates}
+    new_connector_items = []
+    for item in connector_items:
+        normalized = normalize_url(item.raw_url, item.platform)
+        if item.raw_url in reusable_urls or normalized.canonical_url in reusable_urls:
+            continue
+        new_connector_items.append(item)
+    result = await SyncService(db).import_items(connector, new_connector_items, f"{platform}_selected")
+    merged_candidate_ids = list(dict.fromkeys([*reusable_candidate_ids, *result.candidate_ids]))
+    result.candidate_ids = merged_candidate_ids
+
+    for candidate_id in result.candidate_ids:
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate_id).first()
+        if ledger:
+            ledger.classification_label = "knowledge_selected"
+
+    for item in skipped_items:
+        raw_url = str(item.get("url") or item.get("raw_url") or "").strip()
+        if not raw_url:
+            continue
+        normalized = normalize_url(raw_url, platform)
+        existing = db.query(SyncLedgerItem).filter(
+            SyncLedgerItem.platform == normalized.platform,
+            SyncLedgerItem.external_item_id == normalized.external_item_id,
+        ).first()
+        if existing:
+            existing.classification_label = existing.classification_label or "user_skipped"
+            continue
+        db.add(
+            SyncLedgerItem(
+                connector_id=connector.id,
+                platform=normalized.platform,
+                external_item_id=normalized.external_item_id,
+                canonical_url=normalized.canonical_url,
+                raw_url=raw_url,
+                scan_run_id=f"user_skipped_{uuid4().hex[:8]}",
+                classification_label="user_skipped",
+            )
+        )
+    db.commit()
+    return {
+        "status": "prepared",
+        "selected_count": len(connector_items),
+        "skipped_count": len(skipped_items),
+        **result.as_dict(),
+    }
 
 
 @router.post("/api/sync/confirm-categories")
@@ -2913,10 +3200,14 @@ async def confirm_categories(request: Request, db: Session = Depends(get_db)):
     # Write selected items as candidates
     connector = ensure_connector(db, platform, f"{platform} 收藏夹", f"browser_{platform}")
     connector_items = [
-        ConnectorItem(raw_url=i["url"], title=i.get("title", ""), platform=platform, author=i.get("author"))
+        connector_item_from_filter_item(i, platform)
         for i in selected_items
     ]
     result = await SyncService(db).import_items(connector, connector_items, f"{platform}_category_confirmed")
+    for candidate_id in result.candidate_ids:
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate_id).first()
+        if ledger:
+            ledger.classification_label = "knowledge_selected"
 
     # Write skipped items to ledger only
     for item in skipped_items:
@@ -2939,6 +3230,116 @@ async def confirm_categories(request: Request, db: Session = Depends(get_db)):
     return {"status": "confirmed", "selected_count": len(selected_items), "skipped_count": len(skipped_items), **result.as_dict()}
 
 
+# --- Doubao Extract Selected Candidates ---
+
+
+@router.post("/api/doubao/extract-selected")
+async def extract_selected_with_doubao(request: Request, db: Session = Depends(get_db)):
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+    from app.connectors.doubao_extractor import DoubaoExtractor
+
+    data = await request_data(request)
+    candidate_ids = data.get("candidate_ids") or []
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        raise HTTPException(status_code=400, detail="candidate_ids required")
+    per_item_timeout = int(data.get("per_item_timeout_seconds") or 240)
+    generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
+
+    extractor = DoubaoExtractor()
+    keep_doubao_tab_open = False
+    try:
+        try:
+            logged_in = await extractor.check_login()
+        except _CDPErr as exc:
+            raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
+        login_required_detail = {
+            "code": "doubao_login_required",
+            "message": "需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com",
+            "action": "open_doubao_and_login_then_retry",
+            "login_url": "https://www.doubao.com",
+        }
+        if not logged_in:
+            keep_doubao_tab_open = True
+            raise HTTPException(status_code=428, detail=login_required_detail)
+
+        raw_service = RawSourceService(db)
+        wiki_service = WikiMaintenanceService(db)
+        items: list[dict[str, Any]] = []
+        success_count = 0
+        failed_count = 0
+        for raw_candidate_id in candidate_ids:
+            candidate_id = int(raw_candidate_id)
+            candidate = db.get(CandidateItem, candidate_id)
+            if candidate is None:
+                failed_count += 1
+                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
+                continue
+            try:
+                result = await extractor.extract_content(
+                    candidate.raw_url or candidate.canonical_url,
+                    candidate.content_type or "auto",
+                    timeout_seconds=per_item_timeout,
+                )
+            except _CDPErr as exc:
+                failed_count += 1
+                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
+                continue
+
+            if not result.success or not str(result.transcript or result.text_content or "").strip():
+                if result.error == "doubao_login_required":
+                    keep_doubao_tab_open = True
+                    raise HTTPException(status_code=428, detail=login_required_detail)
+                failed_count += 1
+                ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+                if ledger:
+                    ledger.classification_label = "doubao_failed"
+                db.commit()
+                items.append({"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response"})
+                continue
+
+            content = str(result.transcript or result.text_content).strip()
+            metadata = safe_json(candidate.metadata_json)
+            prompt = str(getattr(result, "prompt", "") or "")
+            metadata.update(
+                {
+                    "transcript": content,
+                    "content": content,
+                    "page_text": content,
+                    "doubao_extracted": True,
+                    "doubao_prompt": prompt,
+                    "doubao_extracted_at": datetime.now().isoformat(timespec="seconds"),
+                    "doubao_response_length": len(content),
+                    "doubao_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                }
+            )
+            candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            candidate.title = result.title or candidate.title
+            db.commit()
+            raw_source = raw_service.ingest_candidate(candidate.id)
+            wiki_page_id = None
+            if generate_wiki_draft:
+                page = await wiki_service.create_page_from_raw_source(raw_source.id)
+                wiki_page_id = page.page_id
+            success_count += 1
+            items.append(
+                {
+                    "candidate_id": candidate.id,
+                    "success": True,
+                    "raw_source_id": raw_source.id,
+                    "wiki_page_id": wiki_page_id,
+                }
+            )
+    finally:
+        await extractor.close(close_tab=not keep_doubao_tab_open)
+
+    return {
+        "status": "completed",
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "items": items,
+    }
+
+
 # --- Collect + Doubao Extract + Write to Knowledge Base (一键全流程) ---
 
 
@@ -2952,6 +3353,7 @@ async def collect_and_extract(platform: str, request: Request, db: Session = Dep
     data = await request_data(request)
     raw_limit = str(data.get("limit") or "10").strip()
     limit = None if raw_limit == "all" else int(raw_limit)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
     next_url = str(data.get("next") or f"/ui/source-setup/{platform}")
 
     # Step 1: Collect favorites via CDP
@@ -2980,9 +3382,11 @@ async def collect_and_extract(platform: str, request: Request, db: Session = Dep
             except _CDPErr:
                 items = await douyin_browser_collector.extract_visible_video_links(limit=effective_limit, require_collection_page=False)
         elif platform == "bilibili":
-            items = await bilibili_collector.extract_favorites(limit=effective_limit)
+            favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
+            items = await bilibili_collector.extract_favorites(url=favorites_url, limit=effective_limit)
         elif platform == "xiaohongshu":
-            items = await xiaohongshu_collector.extract_favorites(limit=effective_limit)
+            favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
+            items = await xiaohongshu_collector.extract_favorites(url=favorites_url, limit=effective_limit)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
     except _CDPErr as exc:
