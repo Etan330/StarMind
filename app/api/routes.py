@@ -598,11 +598,20 @@ def get_active_profile_id(settings: dict[str, Any], payload: dict[str, Any]) -> 
     return active_profile_id
 
 
+def favorite_platform_sort_key(item: dict[str, str | int]) -> tuple[int, int]:
+    platform = str(item["platform"])
+    if platform == "douyin":
+        return (-1, int(item["priority"]))
+    if platform == "tiktok":
+        return (1, int(item["priority"]))
+    return (0, int(item["priority"]))
+
+
 def favorite_platform_cards(db: Session) -> list[dict[str, Any]]:
     source_connections = get_source_connections()["connections"]
     connectors = {connector.platform: connector for connector in db.query(Connector).all()}
     cards: list[dict[str, Any]] = []
-    for preset in sorted(PLATFORM_PRESETS, key=lambda item: int(item["priority"])):
+    for preset in sorted(PLATFORM_PRESETS, key=favorite_platform_sort_key):
         platform = str(preset["platform"])
         if platform not in SOCIAL_FAVORITE_PLATFORMS:
             continue
@@ -3370,6 +3379,16 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                     keep_doubao_tab_open = True
                     raise HTTPException(status_code=428, detail=login_required_detail)
                 failed_count += 1
+                metadata = safe_json(candidate.metadata_json)
+                metadata.update(
+                    {
+                        "doubao_extracted": False,
+                        "doubao_error": result.error or "empty_response",
+                        "doubao_prompt": str(getattr(result, "prompt", "") or ""),
+                        "doubao_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                    }
+                )
+                candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
                 ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
                 if ledger:
                     ledger.classification_label = "doubao_failed"
@@ -3386,6 +3405,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                     "content": content,
                     "page_text": content,
                     "doubao_extracted": True,
+                    "doubao_error": None,
                     "doubao_prompt": prompt,
                     "doubao_extracted_at": datetime.now().isoformat(timespec="seconds"),
                     "doubao_response_length": len(content),

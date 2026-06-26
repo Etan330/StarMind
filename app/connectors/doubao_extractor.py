@@ -161,7 +161,7 @@ class DoubaoExtractor:
                     elapsed_seconds=monotonic() - started_at,
                 )
 
-            content = await self._wait_for_response_complete(tab, before.get("count", 0), timeout_seconds)
+            content = await self._wait_for_response_complete(tab, int(before.get("assistant_count", 0)), timeout_seconds, prompt)
             if not content:
                 return ExtractResult(
                     url=url,
@@ -204,8 +204,8 @@ class DoubaoExtractor:
         send_script = f"""
         (() => {{
             const prompt = {json.dumps(prompt)};
-            const urlMatch = prompt.match(/https?:\/\/\S+/);
-            const url = urlMatch ? urlMatch[0].replace(/[，。\s]+$/, '') : '';
+            const urlMatch = prompt.match(/https?:\\/\\/\\S+/);
+            const url = urlMatch ? urlMatch[0].replace(/[，。\\s]+$/, '') : '';
             const isVisible = (node) => {{
                 if (!node) return false;
                 const rect = node.getBoundingClientRect?.();
@@ -223,17 +223,31 @@ class DoubaoExtractor:
                 '[data-testid*="input"] textarea',
                 '[data-testid*="chat"] textarea',
                 '[class*="editor"][contenteditable="true"]',
-                '[class*="Editor"][contenteditable="true"]'
+                '[class*="Editor"][contenteditable="true"]',
+                '[class*="input"] [contenteditable="true"]',
+                '[class*="composer"] [contenteditable="true"]',
+                '[class*="chat"] [contenteditable="true"]'
             ];
             const inputCandidates = inputSelectors
                 .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
                 .filter((node) => isVisible(node) && (node.matches?.('textarea, input, [contenteditable="true"], [role="textbox"], .ProseMirror') || node.isContentEditable));
-            const input = inputCandidates.find((node) => /发消息|按住空格|说话/.test(node.getAttribute('placeholder') || '')) || inputCandidates[0];
+            const inputScore = (node) => {{
+                const rect = node.getBoundingClientRect();
+                const hint = [node.getAttribute('placeholder'), node.getAttribute('aria-label'), node.className, node.closest('[class*="composer"], [class*="input"], [class*="chat"]')?.className].join(' ');
+                let score = 0;
+                if (/发消息|按住空格|说话|输入|message|chat/i.test(hint)) score += 80;
+                if (/composer|input|chat/i.test(hint)) score += 60;
+                if (rect.top > window.innerHeight * 0.45) score += 40;
+                if (rect.width > 200) score += 20;
+                return score;
+            }};
+            const input = inputCandidates.sort((a, b) => inputScore(b) - inputScore(a))[0];
             if (!input) return JSON.stringify({{success: false, error: 'chat_input_not_ready'}});
             const readText = () => (input.value || input.innerText || input.textContent || '').trim();
             const verifyWritten = () => {{
                 const written = readText();
-                return written.includes(prompt.slice(0, 20)) || (url && written.includes(url));
+                if (url) return written.includes(url);
+                return written.includes(prompt.slice(0, 40));
             }};
             const selectAllContent = () => {{
                 input.focus();
@@ -256,6 +270,13 @@ class DoubaoExtractor:
                 input.dispatchEvent(new CompositionEvent('compositionend', {{bubbles: true, data: prompt}}));
                 input.dispatchEvent(new KeyboardEvent('keydown', {{bubbles: true, key: 'Process'}}));
                 input.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true, key: 'Process'}}));
+                try {{
+                    const reactPropsKey = Object.keys(input).find((key) => key.startsWith('__reactProps'));
+                    const reactProps = reactPropsKey ? input[reactPropsKey] : null;
+                    const event = {{target: input, currentTarget: input, type: 'change', nativeEvent: {{}}}};
+                    if (reactProps && typeof reactProps.onChange === 'function') reactProps.onChange(event);
+                    if (reactProps && typeof reactProps.onInput === 'function') reactProps.onInput(event);
+                }} catch (_error) {{}}
             }};
             const pastePrompt = () => {{
                 try {{
@@ -263,9 +284,9 @@ class DoubaoExtractor:
                     const dataTransfer = new DataTransfer();
                     dataTransfer.setData('text/plain', prompt);
                     const pasteEvent = new ClipboardEvent('paste', {{bubbles: true, cancelable: true, clipboardData: dataTransfer}});
-                    const notPrevented = input.dispatchEvent(pasteEvent);
+                    input.dispatchEvent(pasteEvent);
                     dispatchTextEvents();
-                    return verifyWritten() || !notPrevented;
+                    return verifyWritten();
                 }} catch (_error) {{
                     return false;
                 }}
@@ -289,15 +310,20 @@ class DoubaoExtractor:
             if (!verifyWritten()) writeByDom();
             const written = readText();
 
-            if (!written.includes(prompt.slice(0, 20)) && !(url && written.includes(url))) {{
-                return JSON.stringify({{success: false, error: 'prompt_input_not_applied'}});
+            if ((url && !written.includes(url)) || (!url && !written.includes(prompt.slice(0, 40)))) {{
+                return JSON.stringify({{success: false, error: 'prompt_input_not_applied', input_text: written, url}});
             }}
             const inputRect = input.getBoundingClientRect();
             const buttonScope = input.closest('form, [class*="chat"], [class*="input"], [class*="composer"], [class*="Editor"], [class*="editor"]') || document;
-            const buttonCandidates = Array.from(buttonScope.querySelectorAll('button, [role="button"]')).concat(Array.from(document.querySelectorAll('button, [role="button"]')));
-            const buttons = Array.from(new Set(buttonCandidates)).filter(isVisible);
-            const enabledButtons = buttons.filter((button) => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
-            const signal = (button) => [button.innerText, button.getAttribute('aria-label'), button.getAttribute('title'), button.className, button.querySelector('svg')?.getAttribute('aria-label'), button.querySelector('svg')?.className?.baseVal].join(' ');
+            const candidateSelector = 'button, [role="button"], [class*="send"], [class*="submit"], [class*="Send"], [class*="Submit"], svg, svg use';
+            const buttonCandidates = Array.from(buttonScope.querySelectorAll(candidateSelector)).concat(Array.from(document.querySelectorAll(candidateSelector)));
+            const buttons = Array.from(new Set(buttonCandidates)).map((node) => {{
+                if (node.tagName === 'BUTTON' || node.getAttribute?.('role') === 'button') return node;
+                return node.closest?.('button, [role="button"]') || node.querySelector?.('button, [role="button"]') || node;
+            }}).filter(isVisible);
+            const enabledButtons = Array.from(new Set(buttons)).filter((button) => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+            const useHref = (button) => Array.from(button.querySelectorAll?.('use') || []).map((use) => use.getAttribute('xlink:href') || use.getAttribute('href') || '').join(' ');
+            const signal = (button) => [button.innerText, button.getAttribute('aria-label'), button.getAttribute('title'), button.className?.baseVal || button.className, button.querySelector?.('svg')?.getAttribute('aria-label'), button.querySelector?.('svg')?.className?.baseVal, useHref(button)].join(' ');
             const isNearInputRight = (button) => {{
                 const rect = button.getBoundingClientRect();
                 return rect.left >= inputRect.left && rect.left <= inputRect.right + 80 && rect.top >= inputRect.top - 120 && rect.top <= inputRect.bottom + 120 && rect.left > inputRect.right - 220;
@@ -329,8 +355,25 @@ class DoubaoExtractor:
                 return JSON.stringify({{success: false, error: disabled ? 'send_button_disabled' : 'send_button_not_found'}});
             }}
             const rect = sendButton.getBoundingClientRect();
-            sendButton.click();
-            return JSON.stringify({{success: true, url, click_x: rect.left + rect.width / 2, click_y: rect.top + rect.height / 2}});
+            let react_click_attempted = false;
+            try {{
+                const reactPropsKey = Object.keys(sendButton).find((key) => key.startsWith('__reactProps'));
+                const reactProps = reactPropsKey ? sendButton[reactPropsKey] : null;
+                if (reactProps && typeof reactProps.onClick === 'function') {{
+                    react_click_attempted = true;
+                    reactProps.onClick();
+                }}
+            }} catch (_error) {{}}
+            return JSON.stringify({{
+                success: true,
+                url,
+                input_text: written,
+                before_count: 0,
+                react_click_attempted,
+                send_button_class: String(sendButton.className?.baseVal || sendButton.className || ''),
+                click_x: rect.left + rect.width / 2,
+                click_y: rect.top + rect.height / 2
+            }});
         }})()
         """
         result = await self._proxy.eval_script(tab, send_script)
@@ -343,36 +386,129 @@ class DoubaoExtractor:
             return payload
         click_x = payload.get("click_x")
         click_y = payload.get("click_y")
+        before_count = int(before.get("count") or payload.get("before_count") or 0)
+        before_assistant = int(before.get("assistant_count") or 0)
+        url = str(payload.get("url") or "")
+        prompt_head = prompt.strip()[:40]
+
+        async def confirm_sent() -> dict[str, Any]:
+            state = await self._message_state(tab)
+            after_count = int(state.get("count") or 0)
+            after_assistant = int(state.get("assistant_count") or 0)
+            input_text = str(state.get("input_text") or "")
+            input_was_reported = "input_text" in state
+            # input_cleared 只在输入框确实报告过、且原 prompt/url 已不在框内时才成立。
+            input_cleared = bool(input_was_reported and prompt_head and prompt_head not in input_text and (not url or url not in input_text))
+            # 发送成功的唯一可信信号是消息数增加（新增了一条用户消息 / 助手开始回复）。
+            # 不再用 page_text 是否含 url 判定——未发送的 prompt 仍停留在输入框时，
+            # 它的 url 也会出现在 page_text 里，会造成「没发出去却报成功」的假阳性。
+            if after_assistant > before_assistant:
+                return {"success": True, "confirmed_by": "assistant_count", "after_count": after_count}
+            if after_count > before_count:
+                return {"success": True, "confirmed_by": "message_count", "after_count": after_count}
+            # input_cleared 仅作为消息计数尚未刷新出来时的弱补充信号。
+            if input_cleared and after_count >= before_count:
+                return {"success": True, "confirmed_by": "input_cleared", "after_count": after_count}
+            return {
+                "success": False,
+                "error": "doubao_send_not_confirmed",
+                "url": url,
+                "click_x": click_x,
+                "click_y": click_y,
+                "input_text": str(payload.get("input_text") or input_text),
+                "before_count": before_count,
+                "after_count": after_count,
+                "confirmed_by": None,
+            }
+
+        if payload.get("react_click_attempted"):
+            await asyncio.sleep(1)
+            react_confirmation = await confirm_sent()
+            if react_confirmation.get("success"):
+                return react_confirmation
+
         if isinstance(click_x, (int, float)) and isinstance(click_y, (int, float)) and hasattr(self._proxy, "click_at"):
             try:
                 await self._proxy.click_at(tab, float(click_x), float(click_y))
                 await asyncio.sleep(1)
+                click_confirmation = await confirm_sent()
+                if click_confirmation.get("success"):
+                    return click_confirmation
             except Exception:
                 pass
-        after = await self._message_state(tab)
-        before_count = int(before.get("count") or 0)
-        after_count = int(after.get("count") or 0)
-        page_text = str(after.get("page_text") or after.get("text") or "")
-        url = str(payload.get("url") or "")
-        if after_count <= before_count and (not url or url not in page_text):
-            return {"success": False, "error": "send_click_no_effect"}
-        return {"success": True}
+
+        if hasattr(self._proxy, "key"):
+            try:
+                await self._proxy.key(tab, "Enter", code="Enter", windows_virtual_key_code=13)
+                await asyncio.sleep(1)
+                key_confirmation = await confirm_sent()
+                if key_confirmation.get("success"):
+                    return key_confirmation
+            except Exception:
+                pass
+
+        return await confirm_sent()
 
     async def _message_state(self, tab: CDPTab) -> dict[str, Any]:
         raw = await self._proxy.eval_script(tab, """
         (() => {
-            const nodes = Array.from(document.querySelectorAll('[class*="message"], [class*="markdown"], [data-testid*="message"], [class*="answer"]'));
-            const visible = nodes.map((node) => (node.innerText || '').trim()).filter(Boolean);
-            const last = visible.length ? visible[visible.length - 1] : '';
-            const controls = Array.from(document.querySelectorAll('button, [role="button"], [class*="loading"], [class*="stop"], [class*="spinner"], [class*="generat"]'));
-            const generating = controls.some((node) => /停止|stop|生成中|思考中|正在生成|loading|spinner/i.test(node.innerText || node.getAttribute('aria-label') || node.className || ''));
-            const canCopyOrRegenerate = controls.some((node) => /复制|copy|重新生成|regenerate/i.test(node.innerText || node.getAttribute('aria-label') || node.className || ''));
-            return JSON.stringify({count: visible.length, text: last, page_text: text.slice(-4000), generating: generating && !canCopyOrRegenerate});
+            // 豆包真实消息节点是 [data-message-id]。用户消息内含 send-msg-bubble-bg 气泡，
+            // 助手消息内含 markdown / md-box-root 容器。旧的 [class*=message] selector 会
+            // 命中虚拟列表 wrapper、action-bar、suggest-message 提示，导致 count/text 不可靠。
+            const isUserMessage = (node) => Boolean(node.querySelector('[class*="send-msg-bubble-bg"]'));
+            const messageNodes = Array.from(document.querySelectorAll('[data-message-id]'));
+            const records = messageNodes.map((node) => ({
+                id: node.getAttribute('data-message-id') || '',
+                is_user: isUserMessage(node),
+                text: (node.innerText || '').trim(),
+            }));
+            const assistantRecords = records.filter((record) => !record.is_user && record.text);
+            const lastAssistant = assistantRecords.length ? assistantRecords[assistantRecords.length - 1] : null;
+
+            const pageText = document.body?.innerText || '';
+            const inputs = Array.from(document.querySelectorAll('textarea:not([readonly]), input[type="text"]:not([readonly]), [contenteditable="true"], [role="textbox"], .ProseMirror'));
+            const input = inputs.find((node) => {
+                const rect = node.getBoundingClientRect?.();
+                const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                return rect && rect.width > 0 && rect.height > 0 && (!style || (style.display !== 'none' && style.visibility !== 'hidden'));
+            });
+            const inputText = input ? (input.value || input.innerText || input.textContent || '').trim() : '';
+
+            // 生成中检测：豆包发送后右下角按钮会从「发送箭头」切换为「停止」(square)。
+            // 优先用 send 按钮的 data-loading / svg data-dbx-name，再兜底文本/类名扫描。
+            const sendBtn = Array.from(document.querySelectorAll('button')).find((btn) => {
+                const cls = String(btn.className?.baseVal || btn.className || '');
+                return /send-msg-btn|g-send-msg-btn/i.test(cls);
+            });
+            let generating = false;
+            if (sendBtn) {
+                const svgName = sendBtn.querySelector('svg')?.getAttribute('data-dbx-name') || '';
+                const dataName = sendBtn.getAttribute('data-dbx-name') || '';
+                const aria = sendBtn.getAttribute('aria-label') || '';
+                if (/stop|square|pause|停止|生成中/i.test(svgName + ' ' + dataName + ' ' + aria)) generating = true;
+                if (sendBtn.getAttribute('data-loading') === 'true') generating = true;
+            }
+            if (!generating) {
+                const controls = Array.from(document.querySelectorAll('button, [role="button"]'));
+                generating = controls.some((node) => /停止生成|停止回答|正在生成|生成中|思考中/i.test((node.innerText || '') + ' ' + (node.getAttribute('aria-label') || '')));
+            }
+
+            return JSON.stringify({
+                count: records.length,
+                assistant_count: assistantRecords.length,
+                text: lastAssistant ? lastAssistant.text : '',
+                last_assistant_id: lastAssistant ? lastAssistant.id : '',
+                page_text: pageText.slice(-4000),
+                input_text: inputText,
+                generating: generating,
+            });
         })()
         """)
         return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
 
-    async def _wait_for_response_complete(self, tab: CDPTab, previous_count: int, timeout_seconds: int) -> str:
+    async def _wait_for_response_complete(self, tab: CDPTab, previous_assistant_count: int, timeout_seconds: int, prompt: str = "") -> str:
+        # previous_assistant_count: 发送前的助手消息数。等到出现新的助手消息后，
+        # 再等其文本连续稳定且 generating=False 才视为完成。
         deadline = monotonic() + max(30, timeout_seconds)
         stable_rounds = 0
         last_text = ""
@@ -380,9 +516,10 @@ class DoubaoExtractor:
             await asyncio.sleep(2)
             state = await self._message_state(tab)
             text = str(state.get("text") or "").strip()
-            count = int(state.get("count") or 0)
+            assistant_count = int(state.get("assistant_count") or 0)
             generating = bool(state.get("generating"))
-            if count <= previous_count or len(text) < 20:
+            # 还没有新的助手回复（text 来自旧消息或用户消息），继续等。
+            if assistant_count <= previous_assistant_count or len(text) < 2:
                 stable_rounds = 0
                 last_text = text
                 continue
@@ -393,7 +530,7 @@ class DoubaoExtractor:
                 last_text = text
             if stable_rounds >= 5:
                 return text
-        return last_text if len(last_text) >= 20 else ""
+        return last_text if len(last_text) >= 2 else ""
 
     async def batch_extract(self, urls: list[str], content_type: str = "auto", timeout_seconds: int = 240) -> list[ExtractResult]:
         results = []

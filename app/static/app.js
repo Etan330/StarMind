@@ -306,9 +306,13 @@
     const status = root.querySelector("[data-filter-status]")
     const summary = root.querySelector("[data-filter-summary]")
     const results = root.querySelector("[data-filter-results]")
+    const resumablePlatforms = new Set(["douyin", "xiaohongshu", "bilibili"])
+    const canResume = resumablePlatforms.has(platform)
+    const stateKey = `starmind.batchTitleFilter.${platform}`
     let scannedItems = []
     let classifiedItems = []
     let selectedCandidateIds = []
+    let currentGroups = []
 
     const setStatus = (message, tone = "") => {
       if (!status) return
@@ -350,14 +354,73 @@
 
     const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]))
 
-    const renderGroups = (groups) => {
+    const readSavedState = () => {
+      if (!canResume) return null
+      try {
+        const raw = window.localStorage?.getItem(stateKey)
+        if (!raw) return null
+        const state = JSON.parse(raw)
+        const validStage = ["scanned", "classified", "prepared", "completed"].includes(state?.stage)
+        if (state?.version !== 1 || state?.platform !== platform || !validStage) throw new Error("invalid state")
+        if (state.scannedItems && !Array.isArray(state.scannedItems)) throw new Error("invalid scannedItems")
+        if (state.classifiedItems && !Array.isArray(state.classifiedItems)) throw new Error("invalid classifiedItems")
+        if (state.groups && !Array.isArray(state.groups)) throw new Error("invalid groups")
+        if (state.selectedCandidateIds && !Array.isArray(state.selectedCandidateIds)) throw new Error("invalid selectedCandidateIds")
+        return state
+      } catch (_error) {
+        window.localStorage?.removeItem(stateKey)
+        return null
+      }
+    }
+
+    const saveState = (stage, extra = {}) => {
+      if (!canResume) return
+      const state = {
+        version: 1,
+        platform,
+        stage,
+        homepageUrl: homepageInput?.value?.trim() || root.dataset.homepageUrl || "",
+        limit: String(limitSelect?.value || 10),
+        scannedItems,
+        classifiedItems,
+        groups: currentGroups,
+        selectedCandidateIds,
+        summaryText: summary?.textContent || "",
+        statusText: status?.textContent || "",
+        updatedAt: new Date().toISOString(),
+        ...extra,
+      }
+      try {
+        window.localStorage?.setItem(stateKey, JSON.stringify(state))
+      } catch (_error) {
+      }
+    }
+
+    const renderScannedPreview = (items) => {
       if (!results) return
       results.hidden = false
-      if (!groups.length) {
+      results.innerHTML = items.map((item) => `
+        <div class="filter-item preview-only">
+          <span><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(item.author || item.platform || "")}</small><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a></span>
+        </div>
+      `).join("")
+    }
+
+    const classifiedItemIndex = (item) => {
+      const directIndex = classifiedItems.indexOf(item)
+      if (directIndex >= 0) return directIndex
+      return classifiedItems.findIndex((current) => current?.url && current.url === item?.url)
+    }
+
+    const renderGroups = (groups) => {
+      if (!results) return
+      currentGroups = Array.isArray(groups) ? groups : []
+      results.hidden = false
+      if (!currentGroups.length) {
         results.innerHTML = '<div class="empty-state">没有可展示的分类结果。</div>'
         return
       }
-      results.innerHTML = groups.map((group, groupIndex) => {
+      results.innerHTML = currentGroups.map((group, groupIndex) => {
         const groupKey = `${group.usefulness}-${group.subcategory}-${groupIndex}`
         const items = group.items || []
         return `
@@ -370,9 +433,9 @@
               <span class="status-chip ${group.usefulness === "useful" ? "success" : "warning"}">${group.count} 条</span>
             </div>
             <div class="filter-item-list">
-              ${items.map((item, itemIndex) => `
+              ${items.map((item) => `
                 <label class="filter-item">
-                  <input type="checkbox" data-item-check data-item-index="${classifiedItems.indexOf(item)}" ${group.usefulness === "useful" ? "checked" : ""}>
+                  <input type="checkbox" data-item-check data-item-index="${classifiedItemIndex(item)}" ${group.usefulness === "useful" ? "checked" : ""}>
                   <span>
                     <strong>${escapeHtml(item.title || item.url)}</strong>
                     <small>${escapeHtml(item.author || item.platform || "未知作者")} · ${escapeHtml(item.reason || "")}</small>
@@ -394,6 +457,42 @@
       })
     }
 
+    const restoreState = () => {
+      const state = readSavedState()
+      if (!state) return
+      scannedItems = state.scannedItems || []
+      classifiedItems = state.classifiedItems || []
+      selectedCandidateIds = state.selectedCandidateIds || []
+      currentGroups = state.groups || []
+      if (homepageInput && state.homepageUrl) homepageInput.value = state.homepageUrl
+      if (limitSelect && state.limit) limitSelect.value = state.limit
+      if (summary && state.summaryText) {
+        summary.hidden = false
+        summary.textContent = state.summaryText
+      }
+      if (state.statusText) setStatus(state.statusText, state.stage === "completed" ? "ok" : "")
+      if (state.stage === "scanned") {
+        renderScannedPreview(scannedItems)
+        classifyButton.disabled = scannedItems.length === 0
+        extractButton.disabled = true
+        setStatus(state.statusText || "已恢复上次扫描结果，可继续 AI 分类。", "ok")
+      } else if (state.stage === "classified") {
+        renderGroups(currentGroups)
+        classifyButton.disabled = scannedItems.length === 0
+        extractButton.disabled = classifiedItems.length === 0
+        setStatus(state.statusText || "已恢复上次 AI 分类结果，可继续勾选提取。", "ok")
+      } else if (state.stage === "prepared") {
+        renderGroups(currentGroups)
+        classifyButton.disabled = scannedItems.length === 0
+        extractButton.disabled = selectedCandidateIds.length === 0
+        setStatus(state.statusText || "已恢复上次准备提取状态，可继续提取。", "ok")
+      } else if (state.stage === "completed") {
+        if (currentGroups.length) renderGroups(currentGroups)
+        extractButton.disabled = true
+        setStatus(state.statusText || "上次提取已完成，可重新扫描开启新流程。", "ok")
+      }
+    }
+
     scanButton?.addEventListener("click", async () => {
       setBusy(scanButton, true, "扫描中...")
       setStatus("正在通过浏览器读取收藏标题，请不要关闭浏览器。")
@@ -403,21 +502,16 @@
         scannedItems = body.items || []
         classifiedItems = []
         selectedCandidateIds = []
+        currentGroups = []
         if (summary) {
           summary.hidden = false
           summary.textContent = `已扫描 ${body.total || scannedItems.length} 条收藏标题。下一步点击 AI 分类。`
         }
-        if (results) {
-          results.hidden = false
-          results.innerHTML = scannedItems.map((item) => `
-            <div class="filter-item preview-only">
-              <span><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(item.author || item.platform || "")}</small><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a></span>
-            </div>
-          `).join("")
-        }
+        renderScannedPreview(scannedItems)
         classifyButton.disabled = scannedItems.length === 0
         extractButton.disabled = true
         setStatus("标题扫描完成。", "ok")
+        saveState("scanned")
       } catch (error) {
         setStatus(error.message || "扫描失败", "bad")
       } finally {
@@ -439,6 +533,7 @@
         renderGroups(groups)
         extractButton.disabled = classifiedItems.length === 0
         setStatus("AI 分类完成，请确认要保留的分类或条目。", "ok")
+        saveState("classified")
       } catch (error) {
         setStatus(error.message || "分类失败", "bad")
       } finally {
@@ -451,23 +546,28 @@
       const selected = checked.map((input) => classifiedItems[Number(input.dataset.itemIndex)]).filter(Boolean)
       const selectedSet = new Set(selected.map((item) => item.url))
       const skipped = classifiedItems.filter((item) => !selectedSet.has(item.url))
-      if (!selected.length) {
+      if (!selected.length && !selectedCandidateIds.length) {
         setStatus("请至少勾选一条要提取的收藏。", "bad")
         return
       }
       setBusy(extractButton, true, "豆包提取中...")
-      setStatus(`已选择 ${selected.length} 条。正在创建候选并发送到豆包，单条可能等待数分钟。`)
+      setStatus(`已选择 ${selected.length || selectedCandidateIds.length} 条。正在创建候选并发送到豆包，单条可能等待数分钟。`)
       try {
-        const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
-        const preparedIds = prepared.candidate_ids || []
-        if (preparedIds.length) selectedCandidateIds = preparedIds
+        if (selected.length) {
+          const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
+          const preparedIds = prepared.candidate_ids || []
+          if (preparedIds.length) selectedCandidateIds = preparedIds
+          saveState("prepared")
+        }
         if (!selectedCandidateIds.length) {
           setStatus("没有可提取的候选。可能这些内容已经准备过或已入库，请重新扫描/分类后再试。", "bad")
           return
         }
-        const extracted = await apiPost("/api/doubao/extract-selected", { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 })
+        const endpoint = platform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
+        const extracted = await apiPost(endpoint, { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 })
         setStatus(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。`, "ok")
         if (summary) summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
+        saveState("completed")
       } catch (error) {
         if (error.code === "doubao_login_required") {
           setStatus("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com", "bad")
@@ -478,6 +578,8 @@
         setBusy(extractButton, false)
       }
     })
+
+    restoreState()
   })
 
   document.querySelectorAll("form:not([data-no-busy])").forEach((form) => {
