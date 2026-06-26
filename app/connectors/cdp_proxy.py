@@ -119,14 +119,15 @@ class CDPProxy:
                 raise CDPConnectionError(f"click failed: {resp.text}")
 
     async def click_at(self, tab: CDPTab, x: float, y: float) -> None:
-        """Click viewport coordinates via POST /clickXY."""
+        """Click viewport coordinates via the web-access proxy."""
+        payload = {"x": x, "y": y}
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(
-                f"{self._base}/clickXY?target={tab.tab_id}",
-                json={"x": x, "y": y},
-            )
-            if resp.status_code != 200:
-                raise CDPConnectionError(f"click_at failed: {resp.text}")
+            resp = await client.post(f"{self._base}/clickXY?target={tab.tab_id}", json=payload)
+            if resp.status_code == 200:
+                return
+            fallback = await client.post(f"{self._base}/clickAt?target={tab.tab_id}", json=payload)
+            if fallback.status_code != 200:
+                raise CDPConnectionError(f"click_at failed: {resp.text}; fallback failed: {fallback.text}")
 
     async def key(
         self,

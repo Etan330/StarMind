@@ -375,6 +375,8 @@ def test_doubao_send_prompt_script_uses_expanded_input_and_send_confirmation_log
     assert "input_text" in send_script
     assert "before_count" in send_script
     assert "before?.count" not in send_script
+    assert "doubao_send_not_confirmed" in send_script
+    assert "promptHead" in send_script
     assert result["success"] is False
     assert result["error"] == "prompt_input_not_applied"
 
