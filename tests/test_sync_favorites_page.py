@@ -38,6 +38,12 @@ def test_sync_favorites_page_lists_platforms_and_management_links():
         assert 'href="/ui/source-setup/xiaohongshu"' in response.text
         assert "可执行预筛选" in response.text
         assert "/douyin/favorites/extract" not in response.text
+
+        douyin_pos = response.text.index('href="/ui/source-setup/douyin"')
+        tiktok_pos = response.text.index('href="/ui/source-setup/tiktok"')
+        assert douyin_pos < response.text.index('href="/ui/source-setup/xiaohongshu"')
+        assert tiktok_pos > response.text.index('href="/ui/source-setup/reddit"')
+        assert 'src="https://cdn.simpleicons.org/tiktok/FFFFFF"' in response.text
     finally:
         app.dependency_overrides.clear()
 

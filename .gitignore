@@ -12,3 +12,6 @@ local_data/
 *.db
 *.sqlite
 *.log
+
+# 豆包提取调试草稿（临时文本，非项目产物）
+doubao-debug

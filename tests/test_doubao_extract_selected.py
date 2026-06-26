@@ -46,6 +46,21 @@ class FakeDoubaoExtractor:
         return None
 
 
+class SequencedDoubaoExtractor:
+    results = []
+    calls = []
+
+    async def check_login(self):
+        return True
+
+    async def extract_content(self, url, content_type="auto", timeout_seconds=240):
+        self.calls.append(url)
+        return self.results.pop(0)
+
+    async def close(self, close_tab=True):
+        return None
+
+
 class LoginRequiredDoubaoExtractor:
     closed_with = []
 
@@ -162,6 +177,7 @@ def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monk
 
         assert "这是豆包返回的完整逐字稿" in transcript
         assert metadata["doubao_extracted"] is True
+        assert metadata["doubao_error"] is None
         assert metadata["doubao_response_length"] == len("这是豆包返回的完整逐字稿，应该写入 RawSource。")
         assert metadata["filter_subcategory"] == "AI/大模型"
         assert ledger.classification_label == "knowledge"
@@ -229,6 +245,32 @@ def test_doubao_ensure_tab_reuses_existing_open_tab():
 
     assert tab.tab_id == "tab-existing"
     assert tab.url == "https://www.doubao.com/chat/abc"
+
+
+def test_doubao_message_state_script_uses_data_message_id_and_distinguishes_roles():
+    class FakeProxy:
+        script = ""
+
+        async def eval_script(self, tab, script):
+            self.script = script
+            return json.dumps({"count": 0, "assistant_count": 0, "text": "", "page_text": "", "generating": False})
+
+    proxy = FakeProxy()
+    extractor = DoubaoExtractor(proxy=proxy)
+
+    state = asyncio.run(extractor._message_state(SimpleNamespace(tab_id="tab", url="https://www.doubao.com/chat/")))
+
+    assert state["count"] == 0
+    assert state["assistant_count"] == 0
+    # 真实豆包消息节点是 [data-message-id]；用户用 send-msg-bubble-bg 气泡，助手用 markdown 容器。
+    assert "data-message-id" in proxy.script
+    assert "send-msg-bubble-bg" in proxy.script
+    assert "assistant_count" in proxy.script
+    assert "const pageText = document.body?.innerText || '';" in proxy.script
+    assert "page_text: pageText.slice(-4000)" in proxy.script
+    # 旧的脆弱 selector 不应再出现
+    assert "page_text: text.slice(-4000)" not in proxy.script
+    assert '[class*="answer"]' not in proxy.script
 
 
 def test_doubao_check_login_does_not_treat_unknown_as_ready():
@@ -306,7 +348,7 @@ def test_doubao_send_prompt_reports_input_not_ready():
     assert result["error"] == "chat_input_not_ready"
 
 
-def test_doubao_send_prompt_script_uses_paste_before_dom_fallback():
+def test_doubao_send_prompt_script_uses_expanded_input_and_send_confirmation_logic():
     captured_scripts = []
 
     class FakeProxy:
@@ -326,8 +368,13 @@ def test_doubao_send_prompt_script_uses_paste_before_dom_fallback():
     assert "ClipboardEvent" in send_script
     assert "DataTransfer" in send_script
     assert "paste" in send_script
-    assert "placeholder" in send_script and "发消息" in send_script
-    assert "send-msg-btn" in send_script and "g-send-msg-btn" in send_script
+    assert "[class*=\"input\"] [contenteditable=\"true\"]" in send_script
+    assert "[class*=\"composer\"] [contenteditable=\"true\"]" in send_script
+    assert "candidateSelector" in send_script
+    assert "svg use" in send_script
+    assert "input_text" in send_script
+    assert "before_count" in send_script
+    assert "before?.count" not in send_script
     assert result["success"] is False
     assert result["error"] == "prompt_input_not_applied"
 
@@ -389,7 +436,14 @@ def test_doubao_send_prompt_reports_click_without_effect():
             if "login_required" in script:
                 return json.dumps({"login_required": False, "has_input": True})
             if "const prompt =" in script:
-                return json.dumps({"success": True, "url": "https://example.com", "click_x": 1214, "click_y": 664})
+                return json.dumps({
+                    "success": True,
+                    "url": "https://example.com",
+                    "click_x": 1214,
+                    "click_y": 664,
+                    "input_text": "测试 prompt https://example.com",
+                    "before_count": 0,
+                })
             return json.dumps({"count": 0, "text": "", "page_text": "", "generating": False})
 
         async def click_at(self, tab, x, y):
@@ -400,23 +454,107 @@ def test_doubao_send_prompt_reports_click_without_effect():
     result = asyncio.run(extractor._send_prompt(SimpleNamespace(tab_id="tab"), "测试 prompt https://example.com"))
 
     assert result["success"] is False
-    assert result["error"] == "send_click_no_effect"
+    assert result["error"] == "doubao_send_not_confirmed"
+
+
+class FakeProxyForUnconfirmedDoubaoSend:
+    def __init__(self):
+        self.clicked_at = []
+        self.pressed_keys = []
+        self.message_calls = 0
+
+    async def eval_script(self, tab, script):
+        if "login_required" in script:
+            return json.dumps({"login_required": False, "has_input": True})
+        if "const prompt =" in script:
+            return json.dumps({
+                "success": True,
+                "url": "https://example.com",
+                "click_x": 1214,
+                "click_y": 664,
+                "input_text": "测试 prompt https://example.com",
+                "before_count": 0,
+            })
+        self.message_calls += 1
+        return json.dumps({"count": 0, "text": "", "page_text": "", "generating": False})
+
+    async def click_at(self, tab, x, y):
+        self.clicked_at.append((x, y))
+
+    async def key(self, tab, key, code=None, windows_virtual_key_code=None, modifiers=0):
+        self.pressed_keys.append((key, code, windows_virtual_key_code, modifiers))
+
+
+def test_doubao_send_prompt_returns_diagnostics_when_real_send_is_unconfirmed():
+    proxy = FakeProxyForUnconfirmedDoubaoSend()
+    extractor = DoubaoExtractor(proxy=proxy)
+
+    result = asyncio.run(extractor._send_prompt(SimpleNamespace(tab_id="tab"), "测试 prompt https://example.com"))
+
+    assert result["success"] is False
+    assert result["error"] == "doubao_send_not_confirmed"
+    assert result["input_text"] == "测试 prompt https://example.com"
+    assert result["click_x"] == 1214
+    assert result["click_y"] == 664
+    assert result["before_count"] == 0
+    assert result["after_count"] == 0
+    assert result["confirmed_by"] is None
+    assert proxy.clicked_at == [(1214, 664)]
+    assert any(key[0] == "Enter" for key in proxy.pressed_keys)
+
+
+def test_doubao_send_prompt_confirms_success_when_input_clears_after_key_send():
+    class FakeProxy(FakeProxyForUnconfirmedDoubaoSend):
+        async def eval_script(self, tab, script):
+            if "login_required" in script:
+                return json.dumps({"login_required": False, "has_input": True})
+            if "const prompt =" in script:
+                return json.dumps({
+                    "success": True,
+                    "url": "https://example.com",
+                    "click_x": 1214,
+                    "click_y": 664,
+                    "input_text": "测试 prompt https://example.com",
+                    "before_count": 0,
+                })
+            self.message_calls += 1
+            if self.pressed_keys:
+                return json.dumps({"count": 1, "text": "测试 prompt https://example.com", "page_text": "测试 prompt https://example.com", "input_text": "", "generating": False})
+            return json.dumps({"count": 0, "text": "", "page_text": "", "input_text": "测试 prompt https://example.com", "generating": False})
+
+    proxy = FakeProxy()
+    extractor = DoubaoExtractor(proxy=proxy)
+
+    result = asyncio.run(extractor._send_prompt(SimpleNamespace(tab_id="tab"), "测试 prompt https://example.com"))
+
+    assert result["success"] is True
+    assert result["confirmed_by"] in {"input_cleared", "message_count", "page_text"}
+    assert any(key[0] == "Enter" for key in proxy.pressed_keys)
 
 
 def test_doubao_send_prompt_reports_success_after_verified_send():
     class FakeProxy:
+        def __init__(self):
+            self.message_calls = 0
+
         async def eval_script(self, tab, script):
             if "login_required" in script:
                 return json.dumps({"login_required": False, "has_input": True})
             if "const prompt =" in script:
                 return json.dumps({"success": True, "url": "https://example.com"})
-            return json.dumps({"count": 1, "text": "测试 prompt https://example.com", "page_text": "测试 prompt https://example.com", "generating": False})
+            # 第一次（before）消息数为 1；发送后助手新增一条 -> assistant_count 增加，
+            # 这才是真正发出去的可信信号（page_text 含 url 已不再算成功）。
+            self.message_calls += 1
+            if self.message_calls <= 1:
+                return json.dumps({"count": 1, "assistant_count": 0, "text": "", "page_text": "", "input_text": "测试 prompt https://example.com", "generating": False})
+            return json.dumps({"count": 3, "assistant_count": 1, "text": "回复内容", "page_text": "回复内容", "input_text": "", "generating": False})
 
     extractor = DoubaoExtractor(proxy=FakeProxy())
 
     result = asyncio.run(extractor._send_prompt(SimpleNamespace(tab_id="tab"), "测试 prompt https://example.com"))
 
     assert result["success"] is True
+    assert result["confirmed_by"] in {"assistant_count", "message_count"}
 
 
 def test_wait_for_response_requires_five_stable_rounds_before_returning():
@@ -426,7 +564,7 @@ def test_wait_for_response_requires_five_stable_rounds_before_returning():
 
         async def eval_script(self, tab, script):
             self.calls += 1
-            return json.dumps({"count": 1, "text": "这是豆包已经输出完成的一段足够长的内容，可以安全抓取入库", "generating": False})
+            return json.dumps({"count": 2, "assistant_count": 1, "text": "这是豆包已经输出完成的一段足够长的内容，可以安全抓取入库", "generating": False})
 
     async def no_sleep(_seconds):
         return None
@@ -445,10 +583,41 @@ def test_wait_for_response_requires_five_stable_rounds_before_returning():
         module.asyncio.sleep = original_sleep
 
 
+def test_wait_for_response_ignores_reply_until_assistant_count_increases():
+    """发送后只有用户消息时 assistant_count 不增加，必须继续等待，不能误返回旧助手文本。"""
+
+    class FakeProxy:
+        def __init__(self):
+            self.calls = 0
+
+        async def eval_script(self, tab, script):
+            self.calls += 1
+            # 前两轮还没有新助手回复（assistant_count 仍为 previous=1）
+            if self.calls <= 2:
+                return json.dumps({"count": 3, "assistant_count": 1, "text": "旧的助手回复", "generating": True})
+            # 之后新助手回复出现并稳定
+            return json.dumps({"count": 4, "assistant_count": 2, "text": "豆包对本次链接给出的全新完整回复内容", "generating": False})
+
+    async def no_sleep(_seconds):
+        return None
+
+    import app.connectors.doubao_extractor as module
+    original_sleep = module.asyncio.sleep
+    module.asyncio.sleep = no_sleep
+    try:
+        proxy = FakeProxy()
+        extractor = DoubaoExtractor(proxy=proxy)
+        text = asyncio.run(extractor._wait_for_response_complete(SimpleNamespace(tab_id="tab"), 1, 60))
+
+        assert text == "豆包对本次链接给出的全新完整回复内容"
+    finally:
+        module.asyncio.sleep = original_sleep
+
+
 def test_wait_for_response_returns_last_text_when_timeout_has_enough_content():
     class FakeProxy:
         async def eval_script(self, tab, script):
-            return json.dumps({"count": 1, "text": "这是豆包已经输出但还没稳定的一段足够长的内容", "generating": True})
+            return json.dumps({"count": 2, "assistant_count": 1, "text": "这是豆包已经输出但还没稳定的一段足够长的内容", "generating": True})
 
     async def no_sleep(_seconds):
         return None
@@ -531,6 +700,72 @@ def test_extract_selected_stops_batch_when_login_modal_appears_during_extract(mo
         assert response.json()["detail"]["login_url"] == "https://www.doubao.com"
         assert db.query(RawSource).count() == 0
         assert LoginRequiredDuringExtractDoubaoExtractor.closed_with[-1] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def create_doubao_candidate(db, external_item_id, url, title="视频教程"):
+    candidate = CandidateItem(
+        source_type="active_connector",
+        platform="bilibili",
+        external_item_id=external_item_id,
+        canonical_url=url,
+        raw_url=url,
+        title=title,
+        content_type="video",
+        status="pending_classification",
+    )
+    db.add(candidate)
+    db.flush()
+    db.add(
+        SyncLedgerItem(
+            platform="bilibili",
+            external_item_id=external_item_id,
+            canonical_url=url,
+            raw_url=url,
+            scan_run_id="selected",
+            classification_label="knowledge_selected",
+            candidate_id=candidate.id,
+        )
+    )
+    db.commit()
+    db.refresh(candidate)
+    return candidate
+
+
+def test_extract_selected_records_doubao_failure_metadata_and_continues(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", SequencedDoubaoExtractor)
+    SequencedDoubaoExtractor.calls = []
+    SequencedDoubaoExtractor.results = [
+        FakeExtractResult(success=False, error="doubao_send_not_confirmed"),
+        FakeExtractResult(success=True),
+    ]
+    db = make_session()
+    first = create_doubao_candidate(db, "BVfail", "https://www.bilibili.com/video/BVfail", "失败视频")
+    second = create_doubao_candidate(db, "BVok", "https://www.bilibili.com/video/BVok", "成功视频")
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post("/api/doubao/extract-selected", json={"candidate_ids": [first.id, second.id]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success_count"] == 1
+        assert body["failed_count"] == 1
+        assert len(SequencedDoubaoExtractor.calls) == 2
+        first_metadata = json.loads(db.get(CandidateItem, first.id).metadata_json)
+        second_metadata = json.loads(db.get(CandidateItem, second.id).metadata_json)
+        assert first_metadata["doubao_extracted"] is False
+        assert first_metadata["doubao_error"] == "doubao_send_not_confirmed"
+        assert first_metadata["doubao_prompt"] == "请帮我提取这个视频链接的完整逐字稿"
+        assert second_metadata["doubao_extracted"] is True
+        assert second_metadata["doubao_error"] is None
+        assert db.query(RawSource).count() == 1
     finally:
         app.dependency_overrides.clear()
 

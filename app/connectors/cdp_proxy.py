@@ -128,6 +128,27 @@ class CDPProxy:
             if resp.status_code != 200:
                 raise CDPConnectionError(f"click_at failed: {resp.text}")
 
+    async def key(
+        self,
+        tab: CDPTab,
+        key: str,
+        code: str | None = None,
+        windows_virtual_key_code: int | None = None,
+        modifiers: int = 0,
+    ) -> None:
+        """Dispatch a browser-level keyboard event via POST /key."""
+        payload: dict[str, Any] = {
+            "key": key,
+            "code": code or key,
+            "modifiers": modifiers,
+        }
+        if windows_virtual_key_code is not None:
+            payload["windowsVirtualKeyCode"] = windows_virtual_key_code
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(f"{self._base}/key?target={tab.tab_id}", json=payload)
+            if resp.status_code != 200:
+                raise CDPConnectionError(f"key failed: {resp.text}")
+
     async def scroll(self, tab: CDPTab, distance: int = 800) -> None:
         """Scroll via GET /scroll."""
         async with httpx.AsyncClient(timeout=10) as client:
