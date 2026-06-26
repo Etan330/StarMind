@@ -1,6 +1,7 @@
 .env
 .env.local
 .venv/
+.venv311/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -9,9 +10,13 @@ __pycache__/
 .DS_Store
 
 local_data/
+logs-*/
+StarMind/
 *.db
 *.sqlite
 *.log
 
 # 豆包提取调试草稿（临时文本，非项目产物）
 doubao-debug
+
+.worktrees/

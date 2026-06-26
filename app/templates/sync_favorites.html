@@ -21,7 +21,9 @@
           {% endif %}
           <div>
             <strong>{{ platform.name }}</strong>
-            <small style="display:block;color:#888;">{{ platform.auth_hint }}</small>
+            {% if platform.platform != "douyin" %}
+              <small style="display:block;color:#888;">{{ platform.auth_hint }}</small>
+            {% endif %}
           </div>
         </div>
         <div class="action-stack">

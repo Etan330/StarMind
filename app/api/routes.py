@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from urllib.parse import urlencode
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -178,7 +179,7 @@ PLATFORM_PRESETS: list[dict[str, str | int]] = [
         "platform": "douyin",
         "status": "开发中",
         "action": "配置收藏夹",
-        "logo_url": "https://cdn.simpleicons.org/tiktok/FFFFFF",
+        "logo_url": "https://cdn.simpleicons.org/tiktok/000000",
         "priority": 1,
         "fit": "高优先级",
         "reason": "国内短视频高频收藏平台，适合蒸馏博主与收藏夹内容。",
@@ -1064,7 +1065,8 @@ def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int
         if candidate and candidate.id not in seen:
             metadata = json.loads(candidate.metadata_json or "{}")
             raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
-            if metadata.get("doubao_extracted") is True or raw_source is not None:
+            already_extracted = metadata.get("doubao_extracted") is True or metadata.get("xiaohongshu_diandian_extracted") is True
+            if already_extracted or raw_source is not None:
                 continue
             metadata.update(item.metadata or {})
             candidate.title = item.title or candidate.title
@@ -2173,14 +2175,24 @@ def pending_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/ui/sources", response_class=HTMLResponse)
 def sources_page(request: Request, db: Session = Depends(get_db)):
     sources = db.query(RawSource).order_by(RawSource.created_at.desc()).all()
+    raw_service = RawSourceService(db)
+    for source in sources:
+        candidate = db.get(CandidateItem, source.candidate_id) if source.candidate_id else None
+        source.title = raw_service.display_title_for_source(source, candidate)
     favorite_sources = [source for source in sources if source.source_type not in {"passive_link", "manual_idea", "distill_profile"}]
     link_items = db.query(CandidateItem).filter(CandidateItem.source_type == "passive_link").order_by(CandidateItem.created_at.desc()).all()
     idea_items = db.query(CandidateItem).filter(CandidateItem.source_type == "manual_idea").order_by(CandidateItem.created_at.desc()).all()
     source_id = request.query_params.get("source_id")
     selected_source = db.get(RawSource, int(source_id)) if source_id and source_id.isdigit() else (sources[0] if sources else None)
+    if selected_source:
+        selected_candidate = db.get(CandidateItem, selected_source.candidate_id) if selected_source.candidate_id else None
+        selected_source.title = raw_service.display_title_for_source(selected_source, selected_candidate)
     selected_metadata = safe_json(selected_source.metadata_json) if selected_source else {}
     selected_transcript = read_local_text(selected_source.transcript_path if selected_source else None)
     selected_raw_text = read_local_text(selected_source.raw_content_path if selected_source else None)
+    if selected_source:
+        selected_transcript = raw_service.normalize_transcript_heading(selected_transcript, selected_source.title)
+        selected_raw_text = raw_service.normalize_transcript_heading(selected_raw_text, f"原始资料：{selected_source.title}")
     return templates.TemplateResponse(
         request,
         "sources.html",
@@ -3319,7 +3331,169 @@ async def confirm_categories(request: Request, db: Session = Depends(get_db)):
     return {"status": "confirmed", "selected_count": len(selected_items), "skipped_count": len(skipped_items), **result.as_dict()}
 
 
-# --- Doubao Extract Selected Candidates ---
+# --- Doubao / Xiaohongshu Diandian Extract Selected Candidates ---
+
+
+XIAOHONGSHU_NOTE_ID_RE = re.compile(r"[a-f0-9]{12,}", re.IGNORECASE)
+
+
+def xiaohongshu_note_id_from_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    for part in reversed(parts):
+        if XIAOHONGSHU_NOTE_ID_RE.fullmatch(part):
+            return part
+    return ""
+
+
+def xiaohongshu_share_url_from_candidate(candidate: CandidateItem, metadata: dict[str, Any]) -> str:
+    share_url = str(metadata.get("xiaohongshu_share_url") or "").strip()
+    if share_url:
+        return share_url
+    source_url = str(candidate.raw_url or candidate.canonical_url or "")
+    note_id = str(metadata.get("xiaohongshu_note_id") or "").strip() or xiaohongshu_note_id_from_url(source_url)
+    if not note_id:
+        return source_url
+    parsed = urlparse(source_url)
+    source_query = parse_qs(parsed.query)
+    params = {"source": "webshare", "xhsshare": "pc_web"}
+    token = (source_query.get("xsec_token") or [""])[0]
+    if token:
+        params["xsec_token"] = token
+    params["xsec_source"] = "pc_share"
+    return f"https://www.xiaohongshu.com/discovery/item/{note_id}?{urlencode(params)}"
+
+
+def xiaohongshu_share_text_for_candidate(candidate: CandidateItem) -> tuple[str, str]:
+    metadata = safe_json(candidate.metadata_json)
+    share_url = xiaohongshu_share_url_from_candidate(candidate, metadata)
+    share_text = str(metadata.get("xiaohongshu_share_text") or "").strip()
+    if share_text:
+        return share_text, share_url or str(candidate.raw_url or candidate.canonical_url or "")
+    title = str(candidate.title or "未识别标题").strip() or "未识别标题"
+    if share_url:
+        return f"【{title} | 小红书 - 你的生活兴趣社区】 {share_url}", share_url
+    return title, str(candidate.raw_url or candidate.canonical_url or "")
+
+
+@router.post("/api/xiaohongshu/diandian/extract-selected")
+async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Session = Depends(get_db)):
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+    from app.connectors.xiaohongshu_diandian_extractor import XiaohongshuDiandianExtractor
+
+    data = await request_data(request)
+    candidate_ids = data.get("candidate_ids") or []
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        raise HTTPException(status_code=400, detail="candidate_ids required")
+    per_item_timeout = int(data.get("per_item_timeout_seconds") or 240)
+    generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
+
+    extractor = XiaohongshuDiandianExtractor()
+    keep_diandian_tab_open = False
+    not_ready_detail = {
+        "code": "xiaohongshu_diandian_not_ready",
+        "message": "小红书点点页面未就绪。请确认浏览器仍登录小红书，并打开 https://www.xiaohongshu.com/ai_chat 后重试。",
+        "action": "open_xiaohongshu_diandian_then_retry",
+        "login_url": "https://www.xiaohongshu.com/ai_chat",
+    }
+    try:
+        try:
+            ready = await extractor.check_ready()
+        except _CDPErr as exc:
+            raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
+        if not ready:
+            keep_diandian_tab_open = True
+            raise HTTPException(status_code=428, detail=not_ready_detail)
+
+        raw_service = RawSourceService(db)
+        wiki_service = WikiMaintenanceService(db)
+        items: list[dict[str, Any]] = []
+        success_count = 0
+        failed_count = 0
+        for raw_candidate_id in candidate_ids:
+            candidate_id = int(raw_candidate_id)
+            candidate = db.get(CandidateItem, candidate_id)
+            if candidate is None:
+                failed_count += 1
+                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
+                continue
+            share_text, share_url = xiaohongshu_share_text_for_candidate(candidate)
+            try:
+                result = await extractor.extract_content(
+                    share_text=share_text,
+                    url=share_url or candidate.raw_url or candidate.canonical_url,
+                    content_type=candidate.content_type or "note",
+                    timeout_seconds=per_item_timeout,
+                )
+            except _CDPErr as exc:
+                failed_count += 1
+                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
+                continue
+
+            attempts = int(getattr(result, "attempts", 1) or 1)
+            retried = bool(getattr(result, "retried", False))
+            if not result.success or not str(result.transcript or result.text_content or "").strip():
+                if result.error == "xiaohongshu_diandian_not_ready":
+                    keep_diandian_tab_open = True
+                    raise HTTPException(status_code=428, detail=not_ready_detail)
+                failed_count += 1
+                metadata = safe_json(candidate.metadata_json)
+                metadata.update(
+                    {
+                        "xiaohongshu_diandian_extracted": False,
+                        "xiaohongshu_diandian_share_text": share_text,
+                        "xiaohongshu_diandian_share_url": share_url,
+                        "xiaohongshu_diandian_attempts": attempts,
+                        "xiaohongshu_diandian_retried": retried,
+                        "xiaohongshu_diandian_error": result.error or "empty_response",
+                    }
+                )
+                candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+                if ledger:
+                    ledger.classification_label = "xiaohongshu_diandian_failed"
+                db.commit()
+                items.append({"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response", "attempts": attempts, "retried": retried})
+                continue
+
+            content = str(result.transcript or result.text_content).strip()
+            metadata = safe_json(candidate.metadata_json)
+            prompt = str(getattr(result, "prompt", "") or "")
+            metadata.update(
+                {
+                    "transcript": content,
+                    "content": content,
+                    "page_text": content,
+                    "xiaohongshu_diandian_extracted": True,
+                    "xiaohongshu_diandian_prompt": prompt,
+                    "xiaohongshu_diandian_share_text": share_text,
+                    "xiaohongshu_diandian_share_url": share_url,
+                    "xiaohongshu_diandian_extracted_at": datetime.now().isoformat(timespec="seconds"),
+                    "xiaohongshu_diandian_response_length": len(content),
+                    "xiaohongshu_diandian_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                    "xiaohongshu_diandian_attempts": attempts,
+                    "xiaohongshu_diandian_retried": retried,
+                    "xiaohongshu_diandian_error": None,
+                }
+            )
+            candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            db.commit()
+            raw_source = raw_service.ingest_candidate(candidate.id)
+            ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+            if ledger:
+                ledger.classification_label = "knowledge"
+                ledger.raw_source_id = raw_source.id
+                db.commit()
+            wiki_page_id = None
+            if generate_wiki_draft:
+                page = await wiki_service.create_page_from_raw_source(raw_source.id)
+                wiki_page_id = page.page_id
+            success_count += 1
+            items.append({"candidate_id": candidate.id, "success": True, "raw_source_id": raw_source.id, "wiki_page_id": wiki_page_id, "attempts": attempts, "retried": retried, "error": None})
+    finally:
+        await extractor.close(close_tab=not keep_diandian_tab_open)
+
+    return {"status": "completed", "success_count": success_count, "failed_count": failed_count, "items": items}
 
 
 @router.post("/api/doubao/extract-selected")
@@ -3410,6 +3584,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                     "doubao_extracted_at": datetime.now().isoformat(timespec="seconds"),
                     "doubao_response_length": len(content),
                     "doubao_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                    "doubao_error": None,
                 }
             )
             candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)

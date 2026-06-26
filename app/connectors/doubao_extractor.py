@@ -319,7 +319,7 @@ class DoubaoExtractor:
             const buttonCandidates = Array.from(buttonScope.querySelectorAll(candidateSelector)).concat(Array.from(document.querySelectorAll(candidateSelector)));
             const buttons = Array.from(new Set(buttonCandidates)).map((node) => {{
                 if (node.tagName === 'BUTTON' || node.getAttribute?.('role') === 'button') return node;
-                return node.closest?.('button, [role="button"]') || node.querySelector?.('button, [role="button"]') || node;
+                return node.closest?.('button, [role="button"], [class*="send"], [class*="submit"], [class*="Send"], [class*="Submit"]') || node.querySelector?.('button, [role="button"]') || node;
             }}).filter(isVisible);
             const enabledButtons = Array.from(new Set(buttons)).filter((button) => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
             const useHref = (button) => Array.from(button.querySelectorAll?.('use') || []).map((use) => use.getAttribute('xlink:href') || use.getAttribute('href') || '').join(' ');
@@ -364,8 +364,19 @@ class DoubaoExtractor:
                     reactProps.onClick();
                 }}
             }} catch (_error) {{}}
+            sendButton.click();
+            const promptHead = prompt.slice(0, 40);
+            const confirmSent = () => {{
+                const inputText = readText();
+                const messages = Array.from(document.querySelectorAll('[class*="message"], [class*="markdown"], [data-testid*="message"], [class*="answer"], [class*="chat-content"], [class*="ChatContent"]'))
+                    .map((node) => (node.innerText || '').trim())
+                    .filter(Boolean);
+                return !inputText.includes(promptHead) || messages.some((text) => text.includes(promptHead) || (url && text.includes(url)));
+            }};
+            const confirmed = confirmSent();
             return JSON.stringify({{
-                success: true,
+                success: confirmed,
+                error: confirmed ? undefined : 'doubao_send_not_confirmed',
                 url,
                 input_text: written,
                 before_count: 0,
@@ -512,14 +523,16 @@ class DoubaoExtractor:
         deadline = monotonic() + max(30, timeout_seconds)
         stable_rounds = 0
         last_text = ""
+        prompt_head = str(prompt or "").strip()[:80]
         while monotonic() < deadline:
             await asyncio.sleep(2)
             state = await self._message_state(tab)
             text = str(state.get("text") or "").strip()
             assistant_count = int(state.get("assistant_count") or 0)
             generating = bool(state.get("generating"))
+            is_user_prompt = bool(prompt_head and prompt_head in text)
             # 还没有新的助手回复（text 来自旧消息或用户消息），继续等。
-            if assistant_count <= previous_assistant_count or len(text) < 2:
+            if assistant_count <= previous_assistant_count or len(text) < 2 or is_user_prompt:
                 stable_rounds = 0
                 last_text = text
                 continue
@@ -530,6 +543,8 @@ class DoubaoExtractor:
                 last_text = text
             if stable_rounds >= 5:
                 return text
+        if prompt_head and prompt_head in last_text:
+            return ""
         return last_text if len(last_text) >= 2 else ""
 
     async def batch_extract(self, urls: list[str], content_type: str = "auto", timeout_seconds: int = 240) -> list[ExtractResult]:

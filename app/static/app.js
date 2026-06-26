@@ -306,13 +306,13 @@
     const status = root.querySelector("[data-filter-status]")
     const summary = root.querySelector("[data-filter-summary]")
     const results = root.querySelector("[data-filter-results]")
-    const resumablePlatforms = new Set(["douyin", "xiaohongshu", "bilibili"])
-    const canResume = resumablePlatforms.has(platform)
-    const stateKey = `starmind.batchTitleFilter.${platform}`
     let scannedItems = []
     let classifiedItems = []
     let selectedCandidateIds = []
-    let currentGroups = []
+    let lastGroups = []
+    const resumablePlatforms = new Set(["douyin", "xiaohongshu", "bilibili"])
+    const canResume = resumablePlatforms.has(platform)
+    const stateKey = `starmind.batchTitleFilter.${platform}`
 
     const setStatus = (message, tone = "") => {
       if (!status) return
@@ -360,15 +360,13 @@
         const raw = window.localStorage?.getItem(stateKey)
         if (!raw) return null
         const state = JSON.parse(raw)
-        const validStage = ["scanned", "classified", "prepared", "completed"].includes(state?.stage)
-        if (state?.version !== 1 || state?.platform !== platform || !validStage) throw new Error("invalid state")
-        if (state.scannedItems && !Array.isArray(state.scannedItems)) throw new Error("invalid scannedItems")
-        if (state.classifiedItems && !Array.isArray(state.classifiedItems)) throw new Error("invalid classifiedItems")
-        if (state.groups && !Array.isArray(state.groups)) throw new Error("invalid groups")
-        if (state.selectedCandidateIds && !Array.isArray(state.selectedCandidateIds)) throw new Error("invalid selectedCandidateIds")
+        if (!state || state.version !== 1 || state.platform !== platform) {
+          window.localStorage?.removeItem(stateKey)
+          return null
+        }
         return state
       } catch (_error) {
-        window.localStorage?.removeItem(stateKey)
+        try { window.localStorage?.removeItem(stateKey) } catch (_ignored) {}
         return null
       }
     }
@@ -380,20 +378,22 @@
         platform,
         stage,
         homepageUrl: homepageInput?.value?.trim() || root.dataset.homepageUrl || "",
-        limit: String(limitSelect?.value || 10),
+        limit: limitSelect?.value || "10",
         scannedItems,
         classifiedItems,
-        groups: currentGroups,
+        groups: lastGroups,
         selectedCandidateIds,
         summaryText: summary?.textContent || "",
         statusText: status?.textContent || "",
         updatedAt: new Date().toISOString(),
         ...extra,
       }
-      try {
-        window.localStorage?.setItem(stateKey, JSON.stringify(state))
-      } catch (_error) {
-      }
+      try { window.localStorage?.setItem(stateKey, JSON.stringify(state)) } catch (_error) {}
+    }
+
+    const clearSavedState = () => {
+      if (!canResume) return
+      try { window.localStorage?.removeItem(stateKey) } catch (_error) {}
     }
 
     const renderScannedPreview = (items) => {
@@ -406,21 +406,15 @@
       `).join("")
     }
 
-    const classifiedItemIndex = (item) => {
-      const directIndex = classifiedItems.indexOf(item)
-      if (directIndex >= 0) return directIndex
-      return classifiedItems.findIndex((current) => current?.url && current.url === item?.url)
-    }
-
     const renderGroups = (groups) => {
+      lastGroups = groups || []
       if (!results) return
-      currentGroups = Array.isArray(groups) ? groups : []
       results.hidden = false
-      if (!currentGroups.length) {
+      if (!groups.length) {
         results.innerHTML = '<div class="empty-state">没有可展示的分类结果。</div>'
         return
       }
-      results.innerHTML = currentGroups.map((group, groupIndex) => {
+      results.innerHTML = groups.map((group, groupIndex) => {
         const groupKey = `${group.usefulness}-${group.subcategory}-${groupIndex}`
         const items = group.items || []
         return `
@@ -433,9 +427,9 @@
               <span class="status-chip ${group.usefulness === "useful" ? "success" : "warning"}">${group.count} 条</span>
             </div>
             <div class="filter-item-list">
-              ${items.map((item) => `
+              ${items.map((item, itemIndex) => `
                 <label class="filter-item">
-                  <input type="checkbox" data-item-check data-item-index="${classifiedItemIndex(item)}" ${group.usefulness === "useful" ? "checked" : ""}>
+                  <input type="checkbox" data-item-check data-item-index="${classifiedItems.indexOf(item)}" ${group.usefulness === "useful" ? "checked" : ""}>
                   <span>
                     <strong>${escapeHtml(item.title || item.url)}</strong>
                     <small>${escapeHtml(item.author || item.platform || "未知作者")} · ${escapeHtml(item.reason || "")}</small>
@@ -458,40 +452,40 @@
     }
 
     const restoreState = () => {
-      const state = readSavedState()
-      if (!state) return
-      scannedItems = state.scannedItems || []
-      classifiedItems = state.classifiedItems || []
-      selectedCandidateIds = state.selectedCandidateIds || []
-      currentGroups = state.groups || []
-      if (homepageInput && state.homepageUrl) homepageInput.value = state.homepageUrl
-      if (limitSelect && state.limit) limitSelect.value = state.limit
-      if (summary && state.summaryText) {
-        summary.hidden = false
-        summary.textContent = state.summaryText
+      const saved = readSavedState()
+      if (!saved) return
+      if (!Array.isArray(saved.scannedItems) || !Array.isArray(saved.classifiedItems) || !Array.isArray(saved.groups) || !Array.isArray(saved.selectedCandidateIds)) {
+        clearSavedState()
+        return
       }
-      if (state.statusText) setStatus(state.statusText, state.stage === "completed" ? "ok" : "")
-      if (state.stage === "scanned") {
+      scannedItems = saved.scannedItems
+      classifiedItems = saved.classifiedItems
+      selectedCandidateIds = saved.selectedCandidateIds
+      lastGroups = saved.groups
+      if (summary && saved.summaryText) {
+        summary.hidden = false
+        summary.textContent = saved.summaryText
+      }
+      if (saved.statusText) setStatus(saved.statusText, saved.stage === "completed" ? "ok" : "")
+      if (saved.stage === "scanned") {
         renderScannedPreview(scannedItems)
         classifyButton.disabled = scannedItems.length === 0
         extractButton.disabled = true
-        setStatus(state.statusText || "已恢复上次扫描结果，可继续 AI 分类。", "ok")
-      } else if (state.stage === "classified") {
-        renderGroups(currentGroups)
+      } else if (saved.stage === "classified" || saved.stage === "prepared") {
+        renderGroups(lastGroups)
         classifyButton.disabled = scannedItems.length === 0
-        extractButton.disabled = classifiedItems.length === 0
-        setStatus(state.statusText || "已恢复上次 AI 分类结果，可继续勾选提取。", "ok")
-      } else if (state.stage === "prepared") {
-        renderGroups(currentGroups)
+        extractButton.disabled = classifiedItems.length === 0 && selectedCandidateIds.length === 0
+      } else if (saved.stage === "completed") {
+        if (lastGroups.length) renderGroups(lastGroups)
+        else if (scannedItems.length) renderScannedPreview(scannedItems)
         classifyButton.disabled = scannedItems.length === 0
-        extractButton.disabled = selectedCandidateIds.length === 0
-        setStatus(state.statusText || "已恢复上次准备提取状态，可继续提取。", "ok")
-      } else if (state.stage === "completed") {
-        if (currentGroups.length) renderGroups(currentGroups)
         extractButton.disabled = true
-        setStatus(state.statusText || "上次提取已完成，可重新扫描开启新流程。", "ok")
+      } else {
+        clearSavedState()
       }
     }
+
+    restoreState()
 
     scanButton?.addEventListener("click", async () => {
       setBusy(scanButton, true, "扫描中...")
@@ -502,16 +496,16 @@
         scannedItems = body.items || []
         classifiedItems = []
         selectedCandidateIds = []
-        currentGroups = []
         if (summary) {
           summary.hidden = false
           summary.textContent = `已扫描 ${body.total || scannedItems.length} 条收藏标题。下一步点击 AI 分类。`
         }
         renderScannedPreview(scannedItems)
+        lastGroups = []
+        saveState("scanned")
         classifyButton.disabled = scannedItems.length === 0
         extractButton.disabled = true
         setStatus("标题扫描完成。", "ok")
-        saveState("scanned")
       } catch (error) {
         setStatus(error.message || "扫描失败", "bad")
       } finally {
@@ -546,43 +540,44 @@
       const selected = checked.map((input) => classifiedItems[Number(input.dataset.itemIndex)]).filter(Boolean)
       const selectedSet = new Set(selected.map((item) => item.url))
       const skipped = classifiedItems.filter((item) => !selectedSet.has(item.url))
-      if (!selected.length && !selectedCandidateIds.length) {
+      if (!selected.length) {
         setStatus("请至少勾选一条要提取的收藏。", "bad")
         return
       }
-      setBusy(extractButton, true, "豆包提取中...")
-      setStatus(`已选择 ${selected.length || selectedCandidateIds.length} 条。正在创建候选并发送到豆包，单条可能等待数分钟。`)
+      const isXiaohongshu = platform === "xiaohongshu"
+      setBusy(extractButton, true, isXiaohongshu ? "点点提取中..." : "豆包提取中...")
+      setStatus(isXiaohongshu
+        ? `已选择 ${selected.length} 条。正在创建候选并发送到小红书点点，单条可能等待数分钟。`
+        : `已选择 ${selected.length} 条。正在创建候选并发送到豆包，单条可能等待数分钟。`)
       try {
-        if (selected.length) {
-          const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
-          const preparedIds = prepared.candidate_ids || []
-          if (preparedIds.length) selectedCandidateIds = preparedIds
-          saveState("prepared")
-        }
+        const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
+        const preparedIds = prepared.candidate_ids || []
+        if (preparedIds.length) selectedCandidateIds = preparedIds
+        saveState("prepared")
         if (!selectedCandidateIds.length) {
           setStatus("没有可提取的候选。可能这些内容已经准备过或已入库，请重新扫描/分类后再试。", "bad")
           return
         }
-        const endpoint = platform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
-        const extracted = await apiPost(endpoint, { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 })
+        const extractEndpoint = isXiaohongshu ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
+        const extracted = await apiPost(extractEndpoint, { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 })
         setStatus(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。`, "ok")
         if (summary) summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
         saveState("completed")
       } catch (error) {
-        if (error.code === "doubao_login_required") {
+        if (error.code === "xiaohongshu_diandian_not_ready") {
+          setStatus("小红书点点页面未就绪。请确认浏览器仍登录小红书，并打开 https://www.xiaohongshu.com/ai_chat 后重试。", "bad")
+        } else if (error.code === "doubao_login_required") {
           setStatus("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com", "bad")
         } else {
-          setStatus(error.message || "豆包提取失败", "bad")
+          setStatus(error.message || (isXiaohongshu ? "小红书点点提取失败" : "豆包提取失败"), "bad")
         }
       } finally {
         setBusy(extractButton, false)
       }
     })
-
-    restoreState()
   })
 
-  document.querySelectorAll("form:not([data-no-busy])").forEach((form) => {
+  document.querySelectorAll("form").forEach((form) => {
     form.addEventListener("submit", (event) => {
       if (form.dataset.confirmMessage && !window.confirm(form.dataset.confirmMessage)) {
         event.preventDefault()

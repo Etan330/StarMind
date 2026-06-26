@@ -16,7 +16,7 @@
   <div class="notice ok centered-notice">已提取 {{ saved.replace("extracted-", "") }} 条链接。</div>
 {% elif saved and saved.startswith("collected-") %}
   {% set parts = saved.replace("collected-", "").split("-") %}
-  <div class="notice ok centered-notice">✅ 完成！采集 {{ parts[0] }} 条 → 已写入知识库 {{ parts[1] }} 条。<br><small>豆包逐字稿提取需要开启 CDP 远程调试并登录豆包。未提取到逐字稿的条目已保留链接信息入库。</small></div>
+  <div class="notice ok centered-notice">✅ 完成！采集 {{ parts[0] }} 条 → 已写入知识库 {{ parts[1] }} 条。<br><small>{% if preset.platform == "xiaohongshu" %}点点提取需要开启 CDP 远程调试并保持小红书登录。未提取到正文的条目已保留链接信息入库。{% else %}豆包逐字稿提取需要开启 CDP 远程调试并登录豆包。未提取到逐字稿的条目已保留链接信息入库。{% endif %}</small></div>
 {% elif saved == "collect-failed" %}
   <div class="notice bad centered-notice">采集失败。请确认 CDP Proxy 已运行且浏览器已开启远程调试。</div>
 {% elif saved == "doubao-login-required" %}
@@ -38,7 +38,7 @@
     <div class="panel-title-row">
       <div>
         <span class="section-kicker">历史收藏预筛选</span>
-        <h2>先筛掉噪声，再让豆包深读</h2>
+        <h2>{% if preset.platform == "xiaohongshu" %}先筛掉噪声，再让点点深读{% else %}先筛掉噪声，再让豆包深读{% endif %}</h2>
       </div>
       {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
         {{ ui.status_chip("可执行", "success") }}
@@ -55,7 +55,11 @@
       <li><strong>扫描标题</strong><span>只读取收藏标题、作者和源链接，不先做全文抓取。</span></li>
       <li><strong>AI 分类</strong><span>按“有用 / 没用”与二级分类分组，展示可点击样例。</span></li>
       <li><strong>人工勾选</strong><span>你可以保留整个分类，也可以只保留单条链接。</span></li>
-      <li><strong>豆包提取入库</strong><span>逐条发送到豆包，等待完整返回后写入 RawSource。</span></li>
+      {% if preset.platform == "xiaohongshu" %}
+        <li><strong>点点提取入库</strong><span>逐条发送到小红书点点，等待完整返回后写入 RawSource。</span></li>
+      {% else %}
+        <li><strong>豆包提取入库</strong><span>逐条发送到豆包，等待完整返回后写入 RawSource。</span></li>
+      {% endif %}
     </ol>
 
     {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
@@ -107,7 +111,7 @@
           <input type="hidden" name="homepage_url" value="{{ connection.homepage_url or '' }}">
           <input type="hidden" name="next" value="/ui/source-setup/{{ preset.platform }}">
           <button class="btn secondary full" type="submit" data-busy-text="正在执行采集+提取流程...">
-            直接采集 → 豆包提取 → 写入知识库
+            直接采集 → {% if preset.platform == "xiaohongshu" %}点点提取{% else %}豆包提取{% endif %} → 写入知识库
           </button>
         </form>
       </details>
@@ -117,7 +121,11 @@
         <ol style="margin:8px 0 0 20px;padding:0;">
           <li>CDP Proxy 已运行（<code>node ~/.claude/skills/web-access/scripts/check-deps.mjs</code>）</li>
           <li>{% if has_saved_favorites_url %}已保存{{ preset.name }}真实收藏页；可直接扫描，必要时可打开已保存收藏页重新登录{% else %}浏览器已登录{{ preset.name }}并进入真实收藏页；保存后后续可直接扫描{% endif %}</li>
-          <li>浏览器已登录豆包（doubao.com）</li>
+          {% if preset.platform == "xiaohongshu" %}
+            <li>浏览器已登录小红书，点点入口（xiaohongshu.com/ai_chat）可用</li>
+          {% else %}
+            <li>浏览器已登录豆包（doubao.com）</li>
+          {% endif %}
         </ol>
       </div>
     {% else %}
