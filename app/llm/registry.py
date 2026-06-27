@@ -37,7 +37,7 @@ def get_model_settings() -> dict[str, Any]:
 
 def save_provider_base_url(provider: str, base_url: str | None) -> None:
     ensure_config_files()
-    if base_url is None:
+    if base_url is None or not base_url.strip():
         return
     providers = get_providers()
     if provider not in providers:

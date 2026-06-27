@@ -3,249 +3,183 @@
 {% set title = "StarMind 首页" %}
 
 {% block content %}
-<!-- 知识星链图谱 -->
-<section class="glass-card" style="padding:16px;margin-bottom:24px;">
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-    <h2 style="margin:0;font-size:1.2rem;">✨ 知识星链</h2>
-    <a href="/ui/graph" style="font-size:0.85rem;color:#4A90D9;">全屏查看 →</a>
+<div class="home-container" id="home-container">
+  <!-- 知识图谱：全屏铺满，鼠标移入时收缩到左侧（无边框） -->
+  <div id="home-graph" class="home-graph-bg"></div>
+  <div id="graph-empty-hint" class="graph-empty-hint" style="display:none;">
+    <div class="empty-dot"></div>
+    <span>知识图谱（添加内容后显示）</span>
+    <a href="/ui/sync" class="empty-guide-btn">开始第一步：同步你的收藏夹 →</a>
   </div>
-  <div id="home-graph" style="width:100%;height:320px;border-radius:8px;background:#1a1a2e;"></div>
-</section>
 
-<!-- 向知识库提问 — 对话模式 -->
-<section class="glass-card" id="chat-section" style="padding:0;margin-bottom:24px;display:flex;height:480px;overflow:hidden;">
-  <!-- 左侧对话列表 -->
-  <aside id="chat-sidebar" style="width:200px;border-right:1px solid #eee;display:flex;flex-direction:column;padding:12px;gap:8px;overflow-y:auto;">
-    <button id="chat-new-btn" class="btn primary" style="width:100%;font-size:0.85rem;">＋ 新对话</button>
-    <div id="chat-list" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;"></div>
-  </aside>
-  <!-- 右侧聊天区 -->
-  <div style="flex:1;display:flex;flex-direction:column;">
-    <form id="chat-form" data-no-busy style="display:flex;gap:8px;padding:12px;border-bottom:1px solid #eee;">
-      <input id="chat-input" type="text" placeholder="问问你的知识库..." style="flex:1;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:0.95rem;" autocomplete="off">
-      <button type="submit" class="btn primary" style="white-space:nowrap;">发送</button>
-    </form>
-    <div id="chat-messages" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;"></div>
+  <!-- 右侧浮动面板 -->
+  <div class="home-floating-panel" id="home-panel">
+    <div class="home-entries">
+      <button onclick="document.getElementById('modal-sync').showModal()" class="entry-chip">📂 同步收藏</button>
+      <button onclick="document.getElementById('modal-link').showModal()" class="entry-chip">🔗 粘贴链接</button>
+      <button onclick="document.getElementById('modal-creator').showModal()" class="entry-chip">👤 输入博主</button>
+      <button onclick="document.getElementById('modal-idea').showModal()" class="entry-chip">💡 写想法</button>
+    </div>
+    <div class="home-chat">
+      <!-- 历史对话列表 -->
+      <div id="chat-sidebar">
+        <button id="chat-new-btn" class="chat-new-btn">＋ 新对话</button>
+        <div id="chat-list"></div>
+      </div>
+      <div id="chat-messages" class="chat-messages"></div>
+      <form id="chat-form" data-no-busy class="chat-input-bar">
+        <input id="chat-input" type="text" placeholder="问问你的知识库..." autocomplete="off">
+        <button type="submit" class="btn primary">发送</button>
+      </form>
+    </div>
   </div>
-</section>
+</div>
 
-<!-- 四个快捷入口 -->
-<section class="glass-card" style="padding:24px;margin-bottom:24px;">
-  <h2 style="margin:0 0 16px;font-size:1.1rem;">📥 导入内容到知识库</h2>
-  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
-    <button onclick="document.getElementById('modal-sync').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
-      <span style="font-size:1.5rem;">📂</span>
-      <strong style="display:block;margin-top:8px;">同步收藏</strong>
-    </button>
-    <button onclick="document.getElementById('modal-link').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
-      <span style="font-size:1.5rem;">🔗</span>
-      <strong style="display:block;margin-top:8px;">粘贴链接</strong>
-    </button>
-    <button onclick="document.getElementById('modal-creator').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
-      <span style="font-size:1.5rem;">👤</span>
-      <strong style="display:block;margin-top:8px;">输入博主</strong>
-    </button>
-    <button onclick="document.getElementById('modal-idea').showModal()" class="entry-card" style="cursor:pointer;border:1px solid #eee;border-radius:12px;padding:16px;text-align:center;background:none;">
-      <span style="font-size:1.5rem;">💡</span>
-      <strong style="display:block;margin-top:8px;">写想法</strong>
-    </button>
-  </div>
-</section>
-
-<!-- 弹窗：同步收藏 -->
-<dialog id="modal-sync" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+<dialog id="modal-sync" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
   <h3 style="margin:0 0 12px;">📂 同步收藏夹</h3>
-  <p style="color:#666;font-size:0.9rem;">选择平台进入收藏管理页面。</p>
-  <div style="display:flex;flex-direction:column;gap:8px;margin:16px 0;">
+  <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;">
     <a href="/ui/source-setup/douyin" class="btn secondary" style="text-align:center;">抖音</a>
     <a href="/ui/source-setup/bilibili" class="btn secondary" style="text-align:center;">B站</a>
     <a href="/ui/source-setup/xiaohongshu" class="btn secondary" style="text-align:center;">小红书</a>
-    <a href="/ui/sync" class="btn secondary" style="text-align:center;">更多平台...</a>
   </div>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;">取消</button>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;">取消</button>
 </dialog>
-
-<!-- 弹窗：粘贴链接 -->
-<dialog id="modal-link" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+<dialog id="modal-link" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
   <h3 style="margin:0 0 12px;">🔗 粘贴链接</h3>
   <form method="post" action="/passive/link">
-    <input name="url" type="url" placeholder="粘贴视频或文章链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <input name="title" type="text" placeholder="标题（可选）" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <input type="hidden" name="process_now" value="true">
-    <input type="hidden" name="transcribe" value="false">
-    <button type="submit" class="btn primary" style="width:100%;">导入到知识库</button>
+    <input name="url" type="url" placeholder="粘贴链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
+    <input type="hidden" name="process_now" value="true"><input type="hidden" name="transcribe" value="false">
+    <button type="submit" class="btn primary" style="width:100%;">导入</button>
   </form>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
 </dialog>
-
-<!-- 弹窗：输入博主 -->
-<dialog id="modal-creator" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
-  <h3 style="margin:0 0 12px;">👤 输入博主主页</h3>
+<dialog id="modal-creator" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
+  <h3 style="margin:0 0 12px;">👤 输入博主</h3>
   <form method="post" action="/distill/profile">
     <input name="profile_url" type="url" placeholder="博主主页链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
     <input name="target_name" type="text" placeholder="博主名称" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <input name="platform" type="text" placeholder="平台（如：抖音）" value="社交媒体" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
     <button type="submit" class="btn primary" style="width:100%;">开始蒸馏</button>
   </form>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
 </dialog>
-
-<!-- 弹窗：写想法 -->
-<dialog id="modal-idea" style="border:none;border-radius:12px;padding:24px;max-width:480px;width:90%;">
+<dialog id="modal-idea" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
   <h3 style="margin:0 0 12px;">💡 记录想法</h3>
   <form method="post" action="/manual/idea">
-    <input name="title" type="text" placeholder="想法标题" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <textarea name="content" rows="4" placeholder="写下你的想法..." required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;resize:vertical;"></textarea>
+    <textarea name="content" rows="3" placeholder="写下想法..." required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;"></textarea>
     <input type="hidden" name="process_now" value="true">
-    <button type="submit" class="btn primary" style="width:100%;">保存到知识库</button>
+    <button type="submit" class="btn primary" style="width:100%;">保存</button>
   </form>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
+  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
 </dialog>
+{% endblock %}
 
-<!-- ECharts 知识星链 -->
+{% block scripts %}
+<style>
+.home-container{position:relative;width:100%;height:calc(100vh - 80px);overflow:hidden;}
+.home-graph-bg{position:absolute;inset:0;z-index:1;transition:all .5s ease;}
+/* 图谱收缩：缩到左侧40%，无边框无白板 */
+.home-container.graph-focused .home-graph-bg{width:40%;right:auto;left:0;}
+.graph-empty-hint{position:absolute;top:50%;left:30%;transform:translate(-50%,-50%);z-index:2;display:flex;flex-direction:column;align-items:center;gap:8px;opacity:.4;pointer-events:none;}
+.empty-dot{width:14px;height:14px;border-radius:50%;background:#215f52;}
+.graph-empty-hint span{font-size:.8rem;color:#999;}
+.empty-guide-btn{margin-top:8px;padding:8px 16px;background:#215f52;color:#fff;border-radius:8px;text-decoration:none;font-size:.85rem;}
+.empty-guide-btn:hover{background:#1a4d42;}
+.home-floating-panel{position:absolute;top:16px;right:16px;bottom:16px;width:400px;z-index:10;display:flex;flex-direction:column;gap:12px;transition:all .4s ease;}
+.home-container.graph-focused .home-floating-panel{width:55%;}
+.home-entries{display:flex;gap:8px;flex-shrink:0;}
+.entry-chip{flex:1;padding:10px 6px;border:1px solid rgba(33,95,82,.12);border-radius:10px;background:rgba(255,255,255,.88);backdrop-filter:blur(8px);cursor:pointer;font-size:.82rem;text-align:center;transition:all .15s;}
+.entry-chip:hover{background:#fff;border-color:#215f52;}
+.home-chat{flex:1;display:flex;flex-direction:column;min-height:0;background:rgba(255,255,255,.9);backdrop-filter:blur(12px);border-radius:16px;border:1px solid rgba(33,95,82,.08);box-shadow:0 4px 24px rgba(0,0,0,.05);overflow:hidden;}
+#chat-sidebar{display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid #f0f0f0;overflow-x:auto;flex-shrink:0;align-items:center;}
+.chat-new-btn{border:1px dashed #ccc;background:none;padding:4px 10px;border-radius:6px;font-size:.78rem;cursor:pointer;white-space:nowrap;color:#666;}
+.chat-new-btn:hover{border-color:#215f52;color:#215f52;}
+#chat-list{display:flex;gap:4px;overflow-x:auto;}
+.chat-tab{border:none;background:#f4f4f4;padding:4px 10px;border-radius:6px;font-size:.75rem;cursor:pointer;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis;}
+.chat-tab.active{background:#215f52;color:#fff;}
+.chat-tab-del{border:none;background:none;color:#999;font-size:.65rem;cursor:pointer;padding:0 2px;margin-left:2px;}
+.chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;}
+.chat-input-bar{display:flex;gap:8px;padding:12px;border-top:1px solid #f0f0f0;background:#fff;}
+.chat-input-bar input{flex:1;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:.95rem;}
+.chat-bubble-user{align-self:flex-end;background:#215f52;color:#fff;padding:10px 14px;border-radius:14px 14px 4px 14px;max-width:75%;word-break:break-word;}
+.chat-bubble-ai{align-self:flex-start;background:#f4f7f6;padding:10px 14px;border-radius:14px 14px 14px 4px;max-width:75%;word-break:break-word;}
+@media(max-width:900px){.home-floating-panel{width:calc(100% - 32px);}}
+</style>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 <script>
-const chart = echarts.init(document.getElementById('home-graph'));
-const PALETTE = ['#4A90D9','#E85D75','#50C878','#F5A623','#9B59B6','#1ABC9C','#E67E22','#3498DB'];
-const domainColors = {};
-let ci = 0;
-function dc(d) { if (!domainColors[d]) domainColors[d] = PALETTE[ci++ % PALETTE.length]; return domainColors[d]; }
-
-fetch('/api/graph').then(r => r.json()).then(data => {
-  const nodes = data.nodes.map(n => ({
-    id: String(n.id), name: n.label, symbolSize: Math.max(10, n.size * 6),
-    itemStyle: {color: dc(n.domain)}, category: n.domain
-  }));
-  const edges = data.edges.map(e => ({source: String(e.source), target: String(e.target), lineStyle: {width: Math.max(1, e.weight * 3), opacity: 0.4}}));
-  const categories = [...new Set(data.nodes.map(n => n.domain))].map(d => ({name: d}));
-
-  chart.setOption({
-    backgroundColor: '#1a1a2e',
-    tooltip: {trigger: 'item', formatter: p => p.data?.name || ''},
-    legend: {data: categories.map(c=>c.name), top: 8, textStyle: {color: '#aaa', fontSize: 10}},
-    series: [{
-      type: 'graph', layout: 'force', roam: true, draggable: true,
-      force: {repulsion: 80, gravity: 0.06, edgeLength: [40, 160]},
-      data: nodes, links: edges, categories,
-      label: {show: true, position: 'right', fontSize: 9, color: '#ccc'},
-      lineStyle: {color: 'source'},
-      emphasis: {focus: 'adjacency'}
-    }]
+(function(){
+  var c=document.getElementById('home-container'),g=document.getElementById('home-graph'),eh=document.getElementById('graph-empty-hint');
+  var ch=echarts.init(g),gd=null,fo=false;
+  var P=['#215f52','#3a9e85','#50C878','#8fd4c0','#2d7a6b','#1ABC9C','#45b89a','#6ecfb5'],dm={},ci=0;
+  function dc(d){if(!dm[d])dm[d]=P[ci++%P.length];return dm[d];}
+  function opt(d,bg){return{backgroundColor:bg,series:[{type:'graph',layout:'force',roam:true,draggable:true,force:{repulsion:100,gravity:.04,edgeLength:[50,200]},data:d.nodes.map(function(n){return{id:String(n.id),name:n.label,symbolSize:Math.max(8,n.size*5),itemStyle:{color:dc(n.domain),shadowBlur:4,shadowColor:'rgba(33,95,82,.2)'},category:n.domain}}),links:d.edges.map(function(e){return{source:String(e.source),target:String(e.target),lineStyle:{width:Math.max(.5,e.weight*2),color:'rgba(33,95,82,.15)'}}}),categories:[...new Set(d.nodes.map(function(n){return n.domain}))].map(function(d){return{name:d}}),label:{show:true,position:'right',fontSize:10,color:'#555'},lineStyle:{color:'source'},emphasis:{focus:'adjacency'}}]};}
+  fetch('/api/graph').then(function(r){return r.json()}).then(function(d){
+    gd=d;if(!d.nodes.length){eh.style.display='flex';ch.setOption({backgroundColor:'transparent',series:[{type:'graph',layout:'none',data:[{x:300,y:200,symbolSize:14,itemStyle:{color:'#215f52'},name:''}],links:[]}]});return;}
+    ch.setOption(opt(d,'transparent'));
   });
-});
-window.addEventListener('resize', () => chart.resize());
+  // 鼠标移入图谱区域 → 收缩到左侧（同一图层，无边框）
+  g.addEventListener('mouseenter',function(){if(fo||!gd||!gd.nodes.length)return;fo=true;c.classList.add('graph-focused');setTimeout(function(){ch.resize();},500);});
+  // 鼠标移出图谱 → 还原铺满
+  g.addEventListener('mouseleave',function(){if(!fo)return;fo=false;c.classList.remove('graph-focused');setTimeout(function(){ch.resize();},500);});
+  window.addEventListener('resize',function(){ch.resize();});
+})();
 </script>
-
 <script>
-(function() {
-  const msgBox = document.getElementById('chat-messages');
-  const form = document.getElementById('chat-form');
-  const input = document.getElementById('chat-input');
-  const listEl = document.getElementById('chat-list');
-  const newBtn = document.getElementById('chat-new-btn');
-  let currentConvoId = null;
+(function(){
+  var mb=document.getElementById('chat-messages'),fm=document.getElementById('chat-form'),ip=document.getElementById('chat-input');
+  var listEl=document.getElementById('chat-list'),newBtn=document.getElementById('chat-new-btn');
+  var cid=null;
 
-  function renderBubble(role, content, isHtml) {
-    const div = document.createElement('div');
-    div.style.cssText = role === 'user'
-      ? 'align-self:flex-end;background:#4A90D9;color:#fff;padding:10px 14px;border-radius:12px 12px 2px 12px;max-width:75%;word-break:break-word;'
-      : 'align-self:flex-start;background:#f1f3f5;padding:10px 14px;border-radius:12px 12px 12px 2px;max-width:75%;word-break:break-word;';
-    if (isHtml) { div.innerHTML = content; } else { div.textContent = content; }
-    msgBox.prepend(div);
-    return div;
+  function renderBubble(role,content){
+    var d=document.createElement('div');d.className=role==='user'?'chat-bubble-user':'chat-bubble-ai';
+    d.textContent=content;mb.appendChild(d);mb.scrollTop=mb.scrollHeight;return d;
   }
 
-  async function loadConversations() {
-    const res = await fetch('/api/conversations');
-    const convos = await res.json();
-    listEl.innerHTML = '';
-    convos.forEach(c => {
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;gap:2px;';
-      const btn = document.createElement('button');
-      btn.textContent = c.title;
-      btn.style.cssText = 'flex:1;text-align:left;padding:8px;border:none;border-radius:6px;background:' + (c.id === currentConvoId ? '#e8f0fe' : 'none') + ';cursor:pointer;font-size:0.82rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-      btn.onclick = () => switchConversation(c.id);
-      const del = document.createElement('button');
-      del.textContent = '✕';
-      del.style.cssText = 'border:none;background:none;color:#999;cursor:pointer;font-size:0.75rem;padding:4px;';
-      del.onclick = async () => {
-        if (!confirm('删除这个对话？')) return;
-        await fetch('/api/conversations/' + c.id, {method: 'DELETE'});
-        if (currentConvoId === c.id) { currentConvoId = null; msgBox.innerHTML = ''; }
-        loadConversations();
-      };
-      row.appendChild(btn);
-      row.appendChild(del);
-      listEl.appendChild(row);
+  async function loadConversations(){
+    var res=await fetch('/api/conversations');var convos=await res.json();
+    listEl.innerHTML='';
+    convos.slice(0,8).forEach(function(c){
+      var btn=document.createElement('button');btn.className='chat-tab'+(c.id===cid?' active':'');
+      btn.textContent=c.title;btn.onclick=function(){switchConversation(c.id);};
+      listEl.appendChild(btn);
     });
   }
 
-  async function switchConversation(id) {
-    currentConvoId = id;
-    msgBox.innerHTML = '';
-    const res = await fetch('/api/conversations/' + id + '/messages');
-    const msgs = await res.json();
-    // Group into pairs (user, assistant) and show newest first; within each pair: reply on top, question below
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      const div = document.createElement('div');
-      div.style.cssText = m.role === 'user'
-        ? 'align-self:flex-end;background:#4A90D9;color:#fff;padding:10px 14px;border-radius:12px 12px 2px 12px;max-width:75%;word-break:break-word;'
-        : 'align-self:flex-start;background:#f1f3f5;padding:10px 14px;border-radius:12px 12px 12px 2px;max-width:75%;word-break:break-word;';
-      div.textContent = m.content;
-      msgBox.appendChild(div);
-    }
+  async function switchConversation(id){
+    cid=id;mb.innerHTML='';
+    var res=await fetch('/api/conversations/'+id+'/messages');var msgs=await res.json();
+    msgs.forEach(function(m){
+      var d=document.createElement('div');d.className=m.role==='user'?'chat-bubble-user':'chat-bubble-ai';
+      d.textContent=m.content;mb.appendChild(d);
+    });
+    mb.scrollTop=mb.scrollHeight;
     loadConversations();
   }
 
-  async function createConversation() {
-    const res = await fetch('/api/conversations', {method: 'POST'});
-    const data = await res.json();
-    currentConvoId = data.id;
-    msgBox.innerHTML = '';
-    await loadConversations();
+  async function createConversation(){
+    var res=await fetch('/api/conversations',{method:'POST'});var data=await res.json();
+    cid=data.id;mb.innerHTML='';loadConversations();
   }
 
-  newBtn.onclick = createConversation;
+  newBtn.onclick=createConversation;
 
-  form.onsubmit = async (e) => {
-    e.preventDefault();
-    const q = input.value.trim();
-    if (!q) return;
-    if (!currentConvoId) await createConversation();
-    input.value = '';
-    // Prepend: reply first, then user on top — visually top-to-bottom: reply, user question
-    const loading = document.createElement('div');
-    loading.style.cssText = 'align-self:flex-start;background:#f1f3f5;padding:10px 14px;border-radius:12px 12px 12px 2px;max-width:75%;word-break:break-word;opacity:0.6;';
-    loading.textContent = '思考中...';
-    const userDiv = document.createElement('div');
-    userDiv.style.cssText = 'align-self:flex-end;background:#4A90D9;color:#fff;padding:10px 14px;border-radius:12px 12px 2px 12px;max-width:75%;word-break:break-word;';
-    userDiv.textContent = q;
-    msgBox.prepend(userDiv);
-    msgBox.prepend(loading);
-    try {
-      const res = await fetch('/api/conversations/' + currentConvoId + '/messages', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({question: q})
-      });
-      const data = await res.json();
-      loading.style.opacity = '1';
-      if (data.content_html) { loading.innerHTML = data.content_html; }
-      else { loading.textContent = data.content || data.detail || '回答失败'; }
-    } catch (err) {
-      loading.textContent = '请求失败: ' + err.message;
-      loading.style.opacity = '1';
-    }
-    loadConversations();
+  fm.onsubmit=async function(e){
+    e.preventDefault();var q=ip.value.trim();if(!q)return;
+    if(!cid)await createConversation();
+    ip.value='';renderBubble('user',q);
+    var l=renderBubble('assistant','思考中...');l.style.opacity='.6';
+    try{
+      var r=await fetch('/api/conversations/'+cid+'/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});
+      var d=await r.json();l.style.opacity='1';
+      if(d.content_html)l.innerHTML=d.content_html;else l.textContent=d.content||'回答失败';
+    }catch(err){l.textContent='请求失败';l.style.opacity='1';}
+    mb.scrollTop=mb.scrollHeight;loadConversations();
   };
 
-  // Init: load conversations and auto-select latest
-  (async () => {
-    const res = await fetch('/api/conversations');
-    const convos = await res.json();
-    if (convos.length) { await switchConversation(convos[0].id); }
-    else { await loadConversations(); }
+  // Init: load conversations, select latest
+  (async function(){
+    var res=await fetch('/api/conversations');var convos=await res.json();
+    if(convos.length){await switchConversation(convos[0].id);}
+    else{await createConversation();}
   })();
 })();
 </script>

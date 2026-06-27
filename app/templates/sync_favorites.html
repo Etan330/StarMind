@@ -3,41 +3,116 @@
 {% set title = "同步收藏夹" %}
 
 {% block content %}
-{{ ui.page_header("收藏来源管理", "每个社交媒体平台一条，点击「管理」进入采集流程。", "连接来源") }}
-
-<section class="glass-card v1-section">
-  <div class="panel-title-row">
-    <div>
-      <span class="section-kicker">社交媒体平台</span>
-      <h2>收藏来源列表</h2>
-    </div>
+<div class="sync-page">
+  <div class="sync-header">
+    <h1>收藏来源</h1>
+    <p>管理你的社交媒体收藏夹同步</p>
   </div>
-  <div class="compact-list">
+
+  <div class="sync-platforms">
     {% for platform in favorite_platforms %}
-      <article class="source-line">
-        <div style="display:flex;align-items:center;gap:12px;">
-          {% if platform.logo_url %}
-            <img src="{{ platform.logo_url }}" alt="{{ platform.name }}" width="24" height="24" style="border-radius:4px;">
+    <div class="sync-card">
+      <div class="sync-card-left">
+        {% if platform.logo_url %}
+          <img src="{{ platform.logo_url }}" alt="{{ platform.name }}" width="32" height="32">
+        {% endif %}
+        <div>
+          <strong>{{ platform.name }}</strong>
+          {% if platform.platform != "douyin" %}
+            <small>{{ platform.auth_hint }}</small>
           {% endif %}
-          <div>
-            <strong>{{ platform.name }}</strong>
-            {% if platform.platform != "douyin" %}
-              <small style="display:block;color:#888;">{{ platform.auth_hint }}</small>
-            {% endif %}
-          </div>
         </div>
-        <div class="action-stack">
-          {{ ui.status_chip(platform.status_label, platform.status_tone) }}
-          <a class="btn primary" href="{{ platform.manage_url }}">管理</a>
-        </div>
-      </article>
+      </div>
+      <div class="sync-card-right">
+        {{ ui.status_chip(platform.status_label, platform.status_tone) }}
+        <button class="btn-icon" title="定时设置" onclick="openScheduleModal('{{ platform.platform }}', '{{ platform.name }}')">⏰</button>
+        <a class="btn primary small" href="{{ platform.manage_url }}">管理</a>
+      </div>
+    </div>
     {% endfor %}
   </div>
-</section>
 
-<section class="glass-card v1-section">
-  <div class="v1-callout">
-    <strong>隐私说明：</strong>StarMind 通过 Web Access 直连你的日常浏览器，天然携带登录态，不收集账号密码。所有操作在后台 tab 中执行。
+  <p class="sync-privacy">🔒 通过浏览器直连，不收集账号密码，数据只在你的设备。</p>
+</div>
+
+<!-- Schedule Modal -->
+<div class="modal-overlay" id="sync-schedule-modal" hidden>
+  <div class="modal-box">
+    <h2 id="schedule-modal-title">定时同步设置</h2>
+    <input type="hidden" id="schedule-connector-platform">
+    <div class="day-picker">
+      <label class="day-chip"><input type="checkbox" name="sdays" value="0"><span>一</span></label>
+      <label class="day-chip"><input type="checkbox" name="sdays" value="1"><span>二</span></label>
+      <label class="day-chip"><input type="checkbox" name="sdays" value="2"><span>三</span></label>
+      <label class="day-chip"><input type="checkbox" name="sdays" value="3"><span>四</span></label>
+      <label class="day-chip"><input type="checkbox" name="sdays" value="4"><span>五</span></label>
+      <label class="day-chip"><input type="checkbox" name="sdays" value="5"><span>六</span></label>
+      <label class="day-chip"><input type="checkbox" name="sdays" value="6"><span>日</span></label>
+    </div>
+    <label class="form-row">时间 <input type="time" id="schedule-sync-time" value=""></label>
+    <div class="modal-actions">
+      <button class="btn primary" onclick="saveSyncSchedule()">保存</button>
+      <button class="btn secondary" onclick="applyScheduleToAll()">同步到所有</button>
+      <button class="btn ghost" onclick="closeScheduleModal()">取消</button>
+    </div>
   </div>
-</section>
+</div>
+
+<style>
+.sync-page { max-width: 680px; margin: 0 auto; padding: 2rem 1rem; }
+.sync-header { margin-bottom: 2rem; }
+.sync-header h1 { font-size: 1.4rem; margin: 0 0 4px; }
+.sync-header p { color: #888; font-size: 0.9rem; margin: 0; }
+.sync-platforms { display: flex; flex-direction: column; gap: 12px; }
+.sync-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-radius: 12px; background: #fff;
+  border: 1px solid #f0f0f0; transition: box-shadow 0.15s;
+}
+.sync-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.04); }
+.sync-card-left { display: flex; align-items: center; gap: 12px; }
+.sync-card-left img { border-radius: 8px; }
+.sync-card-left strong { display: block; font-size: 0.95rem; }
+.sync-card-left small { color: #999; font-size: 0.8rem; }
+.sync-card-right { display: flex; align-items: center; gap: 8px; }
+.btn-icon { border: none; background: none; font-size: 1.1rem; cursor: pointer; padding: 4px; border-radius: 6px; }
+.btn-icon:hover { background: #f0f7f5; }
+.sync-privacy { margin-top: 2rem; font-size: 0.82rem; color: #aaa; text-align: center; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 999; }
+.modal-overlay[hidden] { display: none; }
+.modal-box { background: #fff; border-radius: 16px; padding: 2rem; max-width: 380px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.1); }
+.modal-box h2 { font-size: 1.1rem; margin: 0 0 1rem; }
+.day-picker { display: flex; gap: 6px; margin-bottom: 1rem; }
+.day-chip { cursor: pointer; }
+.day-chip input { display: none; }
+.day-chip span { display: inline-block; width: 32px; height: 32px; line-height: 32px; text-align: center; border-radius: 50%; border: 1px solid #ddd; font-size: 0.8rem; }
+.day-chip input:checked + span { background: #215f52; color: #fff; border-color: #215f52; }
+.form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 1rem; font-size: 0.9rem; }
+.form-row input { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; }
+.modal-actions { display: flex; gap: 8px; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+var currentPlatform = '';
+function openScheduleModal(platform, name) {
+  currentPlatform = platform;
+  document.getElementById('schedule-modal-title').textContent = '定时同步 — ' + name;
+  document.getElementById('schedule-connector-platform').value = platform;
+  document.getElementById('sync-schedule-modal').hidden = false;
+}
+function closeScheduleModal() { document.getElementById('sync-schedule-modal').hidden = true; }
+async function saveSyncSchedule() {
+  const days = [...document.querySelectorAll('#sync-schedule-modal input[name="sdays"]:checked')].map(i => parseInt(i.value));
+  const time = document.getElementById('schedule-sync-time').value;
+  const r = await fetch('/api/sync/schedule', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform: currentPlatform, days, time})});
+  if (r.ok) { alert('已保存'); closeScheduleModal(); }
+}
+async function applyScheduleToAll() {
+  const r = await fetch('/api/sync/schedule/apply-all', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({platform: currentPlatform})});
+  if (r.ok) { alert('已同步到所有平台'); closeScheduleModal(); }
+}
+document.getElementById('sync-schedule-modal')?.addEventListener('click', e => { if (e.target.id === 'sync-schedule-modal') closeScheduleModal(); });
+</script>
 {% endblock %}

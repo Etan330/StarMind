@@ -1,5 +1,7 @@
 from app.models.records import (
     CandidateItem,
+    ChatConversation,
+    ChatMessage,
     Connector,
     KnowledgeClassification,
     KnowledgeGraphEdge,
@@ -13,12 +15,15 @@ from app.models.records import (
     ScanLog,
     SyncLedgerItem,
     UserPreference,
+    WikiCategory,
     WikiLog,
     WikiPage,
 )
 
 __all__ = [
     "CandidateItem",
+    "ChatConversation",
+    "ChatMessage",
     "Connector",
     "KnowledgeClassification",
     "KnowledgeGraphEdge",
@@ -32,6 +37,7 @@ __all__ = [
     "ScanLog",
     "SyncLedgerItem",
     "UserPreference",
+    "WikiCategory",
     "WikiLog",
     "WikiPage",
 ]

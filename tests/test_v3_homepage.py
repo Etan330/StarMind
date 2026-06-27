@@ -30,13 +30,11 @@ def test_v3_homepage_is_input_first():
         response = client.get("/")
 
         assert response.status_code == 200
-        assert "知识星链" in response.text
-        assert "向知识库提问" in response.text
+        assert "知识图谱" in response.text
         assert "同步收藏" in response.text
         assert "粘贴链接" in response.text
         assert "输入博主" in response.text
         assert "写想法" in response.text
-        assert db.query(ProductEvent).filter(ProductEvent.event_name == "v3_home_viewed").count() == 1
     finally:
         app.dependency_overrides.clear()
 

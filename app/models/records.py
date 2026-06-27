@@ -120,6 +120,9 @@ class RawSource(Base):
     immutable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     retention_policy: Mapped[str] = mapped_column(String(160), default="keep_forever_unless_user_deletes", nullable=False)
     agent_delete_allowed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_distilled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    distilled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    preliminary_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
@@ -139,6 +142,16 @@ class RecycleBinItem(Base):
     status: Mapped[str] = mapped_column(String(80), nullable=False, default="archived")
 
 
+class WikiCategory(Base):
+    __tablename__ = "wiki_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    slug: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    display_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 class WikiPage(Base):
     __tablename__ = "wiki_pages"
     __table_args__ = (Index("ux_wiki_page_id", "page_id", unique=True),)
@@ -151,6 +164,7 @@ class WikiPage(Base):
     source_refs_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     status: Mapped[str] = mapped_column(String(80), nullable=False, default="active")
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("wiki_categories.id"), nullable=True)
     last_updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_by: Mapped[str] = mapped_column(String(120), nullable=False, default="system")
 
@@ -238,6 +252,9 @@ class PushSettings(Base):
     frequency_hours: Mapped[int] = mapped_column(Integer, default=4, nullable=False)
     items_per_push: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    push_days: Mapped[str] = mapped_column(String(20), default="1,2,3,4,5", nullable=False)
+    push_time: Mapped[str] = mapped_column(String(200), default="09:00", nullable=False)
+    total_push_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class PushHistory(Base):
@@ -245,6 +262,8 @@ class PushHistory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     raw_source_id: Mapped[int] = mapped_column(ForeignKey("raw_sources.id"), nullable=False)
+    wiki_page_id: Mapped[int | None] = mapped_column(ForeignKey("wiki_pages.id"), nullable=True)
+    category_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     pushed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -6,8 +6,8 @@
 <div class="page-actions">
   {{ ui.page_header("我的知识库", "这里展示已确认的知识页面、方法论和 SOP。可批量删除不需要的页面。") }}
   <div class="button-row">
-    <a class="btn primary" href="/">输入新信息</a>
-    <a class="btn secondary" href="/ui/sources">查看来源证据</a>
+    <a class="btn primary" href="/ui/sync">同步新内容</a>
+    <a class="btn secondary" href="/ui/sources">原始资料</a>
     <button class="btn secondary small" id="wiki-batch-btn" onclick="enterWikiBatch()">☑ 批量管理</button>
   </div>
 </div>
@@ -33,15 +33,19 @@
 
 <section class="wiki-layout">
   <aside class="glass-card wiki-tree">
-    <div class="wiki-level">
-      <span>一级目录</span>
-      <strong>内容类型</strong>
+    <div class="wiki-level" style="display:flex;justify-content:space-between;align-items:center;">
+      <div><span>知识分类</span><strong>文件夹</strong></div>
+      <button class="wiki-prefs-btn" onclick="openPrefsPanel()" title="偏好设置">⚙️</button>
     </div>
     <nav class="wiki-primary-nav">
-      {% for section in wiki_sections %}
-        <a class="tree-item {{ 'active' if active_section.id == section.id else '' }}" href="/ui/wiki?section={{ section.id }}">
-          <span>{{ section.name }}</span>
-          <b>{{ section_counts.get(section.id, 0) }}</b>
+      <a class="tree-item {{ 'active' if not active_category else '' }}" href="/ui/wiki">
+        <span>全部</span>
+        <b>{{ total_page_count }}</b>
+      </a>
+      {% for cat in wiki_categories %}
+        <a class="tree-item {{ 'active' if active_category and active_category.id == cat.id else '' }}" href="/ui/wiki?category={{ cat.id }}">
+          <span class="cat-name">📁 {{ cat.name }} <button class="cat-rename-btn" title="重命名" onclick="event.preventDefault();event.stopPropagation();renameCat({{ cat.id }}, '{{ cat.name }}')">✏️</button></span>
+          <b>{{ cat.count }}</b>
         </a>
       {% endfor %}
     </nav>
@@ -53,7 +57,7 @@
       {% for page in pages[:12] %}
         <div style="display:flex;align-items:center;gap:6px;">
           <input type="checkbox" class="wiki-batch-cb" name="page_ids" value="{{ page.page_id }}" form="wiki-batch-form" style="display:none;width:16px;height:16px;cursor:pointer;">
-          <a class="wiki-page-link {{ 'active' if selected_page and selected_page.page_id == page.page_id else '' }}" href="/ui/wiki?section={{ active_section.id }}&page_id={{ page.page_id }}" style="flex:1;">
+          <a class="wiki-page-link {{ 'active' if selected_page and selected_page.page_id == page.page_id else '' }}" href="/ui/wiki?section={{ active_section.id }}&page_id={{ page.page_id }}{% if active_category %}&category={{ active_category.id }}{% endif %}" style="flex:1;">
             <span>{{ page.title }}</span>
             <small>{{ page.status }} · {{ page.last_updated_at.strftime("%Y/%m/%d") }}</small>
           </a>
@@ -172,5 +176,63 @@ function wikiUpdateCount() {
   document.getElementById('wiki-selected-count').textContent = '已选 ' + count + ' 条';
 }
 document.addEventListener('change', e => { if (e.target.classList.contains('wiki-batch-cb')) wikiUpdateCount(); });
+
+// Rename category
+async function renameCat(id, currentName) {
+  const newName = prompt('重命名分类', currentName);
+  if (!newName || newName.trim() === currentName) return;
+  const res = await fetch('/api/wiki/categories/' + id + '/rename', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: newName.trim()})
+  });
+  if (res.ok) location.reload();
+  else alert('重命名失败');
+}
+
+// Preferences panel
+function openPrefsPanel() {
+  const overlay = document.createElement('div');
+  overlay.className = 'wiki-prefs-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;z-index:9999;';
+  overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:2rem;max-width:420px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.12);"><h2 style="margin:0 0 12px;font-size:1.1rem;">⚙️ 分类偏好设置</h2><p style="font-size:0.82rem;color:#999;margin:0 0 16px;">调节各分类的推送偏好（0-100%）</p><style>.wiki-pref-slider{-webkit-appearance:none;appearance:none;height:6px;border-radius:3px;outline:none;cursor:pointer;}.wiki-pref-slider::-webkit-slider-thumb{-webkit-appearance:none;width:0;height:0;border:none;box-shadow:none;background:transparent;}.wiki-pref-slider::-moz-range-thumb{width:0;height:0;border:none;background:transparent;}</style><div id="prefs-loading">加载中...</div><div id="prefs-list" style="display:none;"></div><div style="display:flex;gap:8px;margin-top:16px;"><button class="btn primary" id="prefs-save-btn" style="display:none;" onclick="savePrefsPanel(this)">保存</button><button class="btn ghost" onclick="document.querySelector(\'.wiki-prefs-overlay\').remove()">关闭</button></div></div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  // Load preferences
+  fetch('/api/push/preferences').then(r => r.json()).then(data => {
+    const list = overlay.querySelector('#prefs-list');
+    const loading = overlay.querySelector('#prefs-loading');
+    loading.style.display = 'none';
+    list.style.display = 'block';
+    if (!data.length) { list.innerHTML = '<p style="color:#999;font-size:0.9rem;">暂无分类</p>'; return; }
+    overlay.querySelector('#prefs-save-btn').style.display = '';
+    data.forEach(item => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:10px;margin-bottom:10px;';
+      row.innerHTML = `<span style="min-width:60px;font-size:0.9rem;">${item.category}</span><input type="range" min="0" max="100" value="${item.score}" data-cat="${item.category}" class="wiki-pref-slider" style="flex:1;background:linear-gradient(to right,#215f52 0%,#215f52 ${item.score}%,#eee ${item.score}%,#eee 100%);"><span style="min-width:28px;text-align:right;font-size:0.82rem;color:#666;">${item.score}</span>`;
+      const slider = row.querySelector('input[type=range]');
+      slider.addEventListener('input', () => {
+        row.querySelector('span:last-child').textContent = slider.value;
+        slider.style.background = `linear-gradient(to right,#215f52 0%,#215f52 ${slider.value}%,#eee ${slider.value}%,#eee 100%)`;
+      });
+      list.appendChild(row);
+    });
+  });
+}
+
+async function savePrefsPanel(btn) {
+  const overlay = document.querySelector('.wiki-prefs-overlay');
+  const prefs = {};
+  overlay.querySelectorAll('input[type=range]').forEach(s => { prefs[s.dataset.cat] = parseInt(s.value); });
+  await fetch('/api/push/preferences', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:prefs})});
+  overlay.remove();
+}
 </script>
+
+<style>
+.cat-rename-btn{border:none;background:none;font-size:0.7rem;cursor:pointer;opacity:0;padding:0 2px;transition:opacity 0.15s;vertical-align:middle;}
+.tree-item:hover .cat-rename-btn{opacity:0.6;}
+.cat-rename-btn:hover{opacity:1!important;}
+.wiki-prefs-btn{border:none;background:none;font-size:1rem;cursor:pointer;opacity:0.5;padding:2px 4px;}
+.wiki-prefs-btn:hover{opacity:1;}
+</style>
 {% endblock %}
