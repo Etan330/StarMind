@@ -128,6 +128,17 @@ def test_creator_mode_js_helper_exists():
     assert "function initCreatorDistillPanel" in app_js
 
 
+def test_creator_results_js_groups_items_and_uses_compact_checkboxes():
+    """扫描结果应按最新/高赞分组，并使用小型左对齐勾选框"""
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert "最新 10 条" in app_js
+    assert "高赞 10 条" in app_js
+    assert "creator-work-checkbox" in app_js
+    assert "creator-work-stats" in app_js
+    assert "share_count" in app_js
+
+
 # ─── Task 2: Creator Input Normalization ───────────────────────────────────
 
 

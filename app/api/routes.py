@@ -3350,6 +3350,7 @@ async def prepare_selected_creator_items(request: Request, db: Session = Depends
             "like_count": item.get("like_count") or 0,
             "comment_count": item.get("comment_count") or 0,
             "collect_count": item.get("collect_count") or 0,
+            "share_count": item.get("share_count") or 0,
             "cover_url": str(item.get("cover_url") or "").strip(),
             "extract_prompt_version": "sync_extract_v1",
         }

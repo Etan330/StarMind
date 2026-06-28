@@ -225,6 +225,7 @@ def normalize_creator_work(platform: str, item: dict[str, Any]) -> dict[str, Any
         "like_count": _int_value(item.get("like_count") or item.get("likes") or item.get("likeCount")),
         "comment_count": _int_value(item.get("comment_count") or item.get("comments") or item.get("commentCount")),
         "collect_count": _int_value(item.get("collect_count") or item.get("collects") or item.get("collectCount")),
+        "share_count": _int_value(item.get("share_count") or item.get("shares") or item.get("shareCount")),
         "cover_url": str(item.get("cover_url") or item.get("cover") or ""),
         "bucket": str(item.get("bucket") or ""),
         "scan_status": str(item.get("scan_status") or "ok"),
@@ -277,6 +278,7 @@ def _creator_work_extract_script(platform: str) -> str:
       like_count: parseCount(countText),
       comment_count: 0,
       collect_count: 0,
+      share_count: 0,
       cover_url: img?.src || "",
       published_at: ""
     }});

@@ -1449,6 +1449,77 @@ select:focus {
   background: var(--color-primary-soft);
 }
 
+.creator-work-section {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.creator-work-section h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 15px;
+}
+
+.creator-work-list {
+  display: grid;
+  gap: 8px;
+}
+
+.creator-work-item {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+}
+
+.creator-work-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 3px 0 0;
+  accent-color: var(--color-primary);
+}
+
+.creator-work-body {
+  min-width: 0;
+}
+
+.creator-work-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.creator-work-title {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.creator-work-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.creator-work-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 5px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
 .source-avatar {
   display: grid;
   place-items: center;

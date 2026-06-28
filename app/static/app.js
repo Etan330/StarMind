@@ -1156,20 +1156,52 @@
     const renderResults = () => {
       if (!results) return
       results.hidden = false
-      results.innerHTML = scannedItems.map((item) => `
-        <div class="source-item" data-item-id="${escapeHtml(item.id)}">
-          <label class="source-item-check">
-            <input type="checkbox" data-item-checkbox value="${escapeHtml(item.id)}">
-          </label>
-          <div class="source-item-body">
-            <div class="source-item-title">${escapeHtml(item.title)}</div>
-            <div class="source-item-meta">
-              ${item.author ? `<span>${escapeHtml(item.author)}</span>` : ""}
+
+      const numberText = (value) => {
+        const numeric = Number(value || 0)
+        if (!numeric) return ""
+        if (numeric >= 10000) return `${(numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1)}万`
+        return String(numeric)
+      }
+
+      const itemStats = (item) => [
+        ["点赞", item.like_count],
+        ["评论", item.comment_count],
+        ["收藏", item.collect_count],
+        ["转发", item.share_count],
+      ].map(([label, value]) => {
+        const text = numberText(value)
+        return text ? `<span>${label} ${escapeHtml(text)}</span>` : ""
+      }).join("")
+
+      const itemCard = (item) => `
+        <div class="creator-work-item" data-item-id="${escapeHtml(item.id)}">
+          <input class="creator-work-checkbox" type="checkbox" data-item-checkbox value="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.title)}">
+          <div class="creator-work-body">
+            <div class="creator-work-title-row">
+              <strong class="creator-work-title">${escapeHtml(item.title)}</strong>
+              ${item.bucket === "both" ? '<span class="creator-work-badge">最新 + 高赞</span>' : item.bucket === "top_liked" ? '<span class="creator-work-badge">高赞</span>' : '<span class="creator-work-badge">最新</span>'}
+            </div>
+            <div class="creator-work-stats">
+              ${itemStats(item)}
               ${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">查看原文</a>` : ""}
             </div>
           </div>
         </div>
-      `).join("")
+      `
+
+      const latestItems = scannedItems.filter((item) => item.bucket === "latest" || item.bucket === "both")
+      const topLikedItems = scannedItems.filter((item) => item.bucket === "top_liked")
+      results.innerHTML = `
+        <section class="creator-work-section">
+          <h3>最新 10 条</h3>
+          <div class="creator-work-list">${latestItems.map(itemCard).join("") || '<p class="muted">暂无最新作品</p>'}</div>
+        </section>
+        <section class="creator-work-section">
+          <h3>高赞 10 条</h3>
+          <div class="creator-work-list">${topLikedItems.map(itemCard).join("") || '<p class="muted">暂无高赞作品</p>'}</div>
+        </section>
+      `
 
       // 绑定复选框事件
       results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
