@@ -3,58 +3,167 @@
 {% set title = "同步收藏夹" %}
 
 {% block content %}
-{{ ui.page_header("收藏来源管理", "点上方平台标签，在本页直接进入该平台的采集流程；无需跳转。", "连接来源") }}
+{% set mode = sync_mode or "sync" %}
+<div class="sync-shell" data-sync-mode="{{ mode }}">
+  <aside class="sync-sidebar" aria-label="同步入口">
+    <a class="sync-side-link{{ ' is-active' if mode == 'sync' else '' }}" href="/ui/sync?mode=sync">同步收藏</a>
+    <a class="sync-side-link{{ ' is-active' if mode == 'link' else '' }}" href="/ui/sync?mode=link">粘贴链接</a>
+    <a class="sync-side-link{{ ' is-active' if mode == 'creator' else '' }}" href="/ui/sync?mode=creator">输入博主</a>
+    <a class="sync-side-link{{ ' is-active' if mode == 'idea' else '' }}" href="/ui/sync?mode=idea">写想法</a>
+  </aside>
 
-{% if live_platforms %}
-<section class="glass-card v1-section platform-tab-section" data-platform-section>
-  <div class="platform-tabbar" role="tablist" data-platform-tabs>
-    {% for p in live_platforms %}
-      <button class="platform-tab{{ ' is-active' if loop.first else '' }}" type="button" role="tab"
-              data-platform-tab="{{ p.platform }}" aria-selected="{{ 'true' if loop.first else 'false' }}">
-        {% if p.logo_url %}<img src="{{ p.logo_url }}" alt="{{ p.name }}" width="20" height="20">{% endif %}
-        <span>{{ p.name }}</span>
-      </button>
-    {% endfor %}
-  </div>
-  <div class="platform-panel-host" data-platform-panel-host data-default-platform="{{ live_platforms[0].platform }}">
-    <p class="platform-panel-loading">正在加载提取面板…</p>
-  </div>
-</section>
-{% endif %}
+  <main class="sync-main">
+    {% if mode == "sync" %}
+      {{ ui.page_header("收藏来源管理", "点上方平台标签，在本页直接进入该平台的采集流程；无需跳转。", "连接来源") }}
 
-<div class="sync-page">
-  <div class="sync-header">
-    <h1>收藏来源</h1>
-    <p>管理你的社交媒体收藏夹同步</p>
-  </div>
-
-  <div class="sync-platforms">
-    {% for platform in favorite_platforms %}
-    <div class="sync-card">
-      <div class="sync-card-left">
-        {% if platform.logo_url %}
-          <img src="{{ platform.logo_url }}" alt="{{ platform.name }}" width="32" height="32">
-        {% endif %}
-        <div>
-          <strong>{{ platform.name }}</strong>
-          {% if platform.platform != "douyin" %}
-            <small>{{ platform.auth_hint }}</small>
-          {% endif %}
+      {% if live_platforms %}
+      <section class="glass-card v1-section platform-tab-section" data-platform-section>
+        <div class="platform-tabbar" role="tablist" data-platform-tabs>
+          {% for p in live_platforms %}
+            <button class="platform-tab{{ ' is-active' if loop.first else '' }}" type="button" role="tab"
+                    data-platform-tab="{{ p.platform }}" aria-selected="{{ 'true' if loop.first else 'false' }}">
+              {% if p.logo_url %}<img src="{{ p.logo_url }}" alt="{{ p.name }}" width="20" height="20">{% endif %}
+              <span>{{ p.name }}</span>
+            </button>
+          {% endfor %}
         </div>
-      </div>
-      <div class="sync-card-right">
-        {{ ui.status_chip(platform.status_label, platform.status_tone) }}
-        <button class="btn-icon" title="定时设置" onclick="openScheduleModal('{{ platform.platform }}', '{{ platform.name }}')">⏰</button>
-        <a class="btn primary small" href="{{ platform.manage_url }}">管理</a>
-      </div>
-    </div>
-    {% endfor %}
-  </div>
+        <div class="platform-panel-host" data-platform-panel-host data-default-platform="{{ live_platforms[0].platform }}">
+          <p class="platform-panel-loading">正在加载提取面板...</p>
+        </div>
+      </section>
+      {% endif %}
 
-  <p class="sync-privacy">🔒 通过浏览器直连，不收集账号密码，数据只在你的设备。</p>
+      <div class="sync-page">
+        <div class="sync-header">
+          <h1>收藏来源</h1>
+          <p>管理你的社交媒体收藏夹同步</p>
+        </div>
+
+        <div class="sync-platforms">
+          {% for platform in favorite_platforms %}
+          <div class="sync-card">
+            <div class="sync-card-left">
+              {% if platform.logo_url %}
+                <img src="{{ platform.logo_url }}" alt="{{ platform.name }}" width="32" height="32">
+              {% endif %}
+              <div>
+                <strong>{{ platform.name }}</strong>
+                {% if platform.platform != "douyin" %}
+                  <small>{{ platform.auth_hint }}</small>
+                {% endif %}
+              </div>
+            </div>
+            <div class="sync-card-right">
+              {{ ui.status_chip(platform.status_label, platform.status_tone) }}
+              <button class="btn-icon" title="定时设置" onclick="openScheduleModal('{{ platform.platform }}', '{{ platform.name }}')">定时</button>
+              <a class="btn primary small" href="{{ platform.manage_url }}">管理</a>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <p class="sync-privacy">通过浏览器直连，不收集账号密码，数据只在你的设备。</p>
+      </div>
+    {% elif mode == "link" %}
+      <section class="feature-page sync-feature-panel">
+        <div class="feature-intro glass-card">
+          <h1>粘贴链接</h1>
+          <p>粘贴抖音、小红书或微信公众号链接，系统会自动判断平台；抖音/小红书发送到豆包或点点提取，微信公众号直接提取正文后写入原始资料。</p>
+        </div>
+        <div class="feature-form-card glass-card" data-link-extract-panel>
+          <h2>导入单条链接</h2>
+          <form class="feature-form" data-link-extract-form>
+            <input name="url" placeholder="粘贴抖音、小红书或微信公众号链接" required>
+            <input name="title" placeholder="标题，可选">
+            <textarea name="prompt" placeholder="Prompt，可选；留空使用默认提取 Prompt"></textarea>
+            <button class="btn primary full" type="submit" data-link-extract-submit>开始提取</button>
+          </form>
+          <button class="btn secondary full" type="button" data-link-extract-resume hidden>继续提取</button>
+          <p class="inline-status" data-link-extract-status>等待粘贴链接。</p>
+          <div class="notice" data-link-extract-summary hidden></div>
+          <div class="link-extract-preview" data-link-extract-preview hidden>
+            <div class="link-extract-preview-head">
+              <h3 data-link-extract-preview-title>提取结果</h3>
+              <a data-link-extract-preview-source href="/ui/sources" hidden>查看原始资料</a>
+            </div>
+            <pre data-link-extract-preview-content></pre>
+          </div>
+        </div>
+      </section>
+    {% elif mode == "creator" %}
+      <section class="feature-page sync-feature-panel">
+        <div class="feature-intro glass-card">
+          <h1>输入博主</h1>
+          <p>选择平台并输入博主主页链接，扫描作品列表后勾选要提取的内容。</p>
+        </div>
+
+        <article class="glass-card source-filter-workbench" data-creator-distill-panel data-platform="douyin">
+          <div class="panel-title-row">
+            <div>
+              <span class="section-kicker">博主作品采集</span>
+              <h2>采集博主作品并提取到知识库</h2>
+            </div>
+            {{ ui.status_chip("可执行", "success") }}
+          </div>
+
+          <div class="notice warning source-risk-note">
+            温馨提示：采集博主作品可能受平台限制，建议在合理范围内使用。
+          </div>
+
+          <ol class="process-steps source-filter-steps">
+            <li><strong>选择平台</strong><span>点击下方标签切换抖音或小红书平台。</span></li>
+            <li><strong>输入博主链接</strong><span>粘贴博主主页链接，系统会解析作品列表。</span></li>
+            <li><strong>扫描作品</strong><span>获取博主的最近作品标题列表。</span></li>
+            <li><strong>勾选提取</strong><span>选择要提取的作品，发送到豆包或点点处理。</span></li>
+          </ol>
+
+          <section class="glass-card v1-section platform-tab-section" data-creator-platform-section>
+            <div class="platform-tabbar" role="tablist" data-creator-platform-tabs>
+              <button class="platform-tab is-active" type="button" role="tab"
+                      data-creator-platform-tab="douyin" aria-selected="true">
+                <span>抖音</span>
+              </button>
+              <button class="platform-tab" type="button" role="tab"
+                      data-creator-platform-tab="xiaohongshu" aria-selected="false">
+                <span>小红书</span>
+              </button>
+            </div>
+          </section>
+
+          <div class="source-filter-controls">
+            <label>博主主页链接
+              <input type="text" data-creator-input placeholder="https://www.douyin.com/user/xxx 或 https://www.xiaohongshu.com/user/profile/xxx" required>
+            </label>
+            <button class="btn primary" type="button" data-creator-scan>扫描作品</button>
+            <button class="btn primary" type="button" data-creator-extract disabled>提取选中作品</button>
+          </div>
+
+          <div class="source-filter-status" data-creator-status>请输入博主主页链接并点击"扫描作品"。</div>
+          <div class="source-filter-results" data-creator-results hidden></div>
+        </article>
+      </section>
+    {% else %}
+      <section class="feature-page sync-feature-panel">
+        <div class="feature-intro glass-card">
+          <h1>写想法</h1>
+          <p>把临时想法直接写入原始资料，并归到临时 idea。</p>
+        </div>
+        <div class="feature-form-card glass-card">
+          <h2>记录临时 idea</h2>
+          <form class="feature-form" method="post" action="/manual/idea">
+            <input type="hidden" name="next" value="/ui/sync?mode=idea&created=manual-idea">
+            <input type="hidden" name="process_now" value="true">
+            <input name="title" placeholder="一句话标题，可选">
+            <textarea name="content" placeholder="写下你的想法" required></textarea>
+            <input name="tags" placeholder="标签，可选">
+            <button class="btn primary full" type="submit">保存想法</button>
+          </form>
+        </div>
+      </section>
+    {% endif %}
+  </main>
 </div>
 
-<!-- Schedule Modal -->
 <div class="modal-overlay" id="sync-schedule-modal" hidden>
   <div class="modal-box">
     <h2 id="schedule-modal-title">定时同步设置</h2>
@@ -78,25 +187,28 @@
 </div>
 
 <style>
+.sync-shell{display:grid;grid-template-columns:180px minmax(0,1fr);gap:24px;align-items:start;}
+.sync-sidebar{position:sticky;top:88px;display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid #eef2ef;border-radius:12px;background:#fff;}
+.sync-side-link{display:block;padding:10px 12px;border-radius:8px;color:#36423e;text-decoration:none;font-size:.92rem;}
+.sync-side-link:hover,.sync-side-link.is-active{background:#eef7f3;color:#215f52;}
+.sync-main{min-width:0;}
 .sync-page { max-width: 680px; margin: 0 auto; padding: 2rem 1rem; }
 .sync-header { margin-bottom: 2rem; }
 .sync-header h1 { font-size: 1.4rem; margin: 0 0 4px; }
 .sync-header p { color: #888; font-size: 0.9rem; margin: 0; }
 .sync-platforms { display: flex; flex-direction: column; gap: 12px; }
-.sync-card {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 18px; border-radius: 12px; background: #fff;
-  border: 1px solid #f0f0f0; transition: box-shadow 0.15s;
-}
+.sync-card {display: flex; align-items: center; justify-content: space-between;padding: 14px 18px; border-radius: 12px; background: #fff;border: 1px solid #f0f0f0; transition: box-shadow 0.15s;}
 .sync-card:hover { box-shadow: 0 2px 12px rgba(0,0,0,0.04); }
 .sync-card-left { display: flex; align-items: center; gap: 12px; }
 .sync-card-left img { border-radius: 8px; }
 .sync-card-left strong { display: block; font-size: 0.95rem; }
 .sync-card-left small { color: #999; font-size: 0.8rem; }
 .sync-card-right { display: flex; align-items: center; gap: 8px; }
-.btn-icon { border: none; background: none; font-size: 1.1rem; cursor: pointer; padding: 4px; border-radius: 6px; }
+.btn-icon { border: none; background: none; font-size: .86rem; cursor: pointer; padding: 4px 6px; border-radius: 6px; }
 .btn-icon:hover { background: #f0f7f5; }
 .sync-privacy { margin-top: 2rem; font-size: 0.82rem; color: #aaa; text-align: center; }
+.sync-feature-panel{max-width:760px;margin:0 auto;}
+.inline-status{font-size:.88rem;color:#60706b;margin:12px 0 0;}
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 999; }
 .modal-overlay[hidden] { display: none; }
 .modal-box { background: #fff; border-radius: 16px; padding: 2rem; max-width: 380px; width: 90%; box-shadow: 0 8px 32px rgba(0,0,0,0.1); }
@@ -109,6 +221,7 @@
 .form-row { display: flex; align-items: center; gap: 8px; margin-bottom: 1rem; font-size: 0.9rem; }
 .form-row input { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; }
 .modal-actions { display: flex; gap: 8px; }
+@media(max-width:860px){.sync-shell{grid-template-columns:1fr}.sync-sidebar{position:static;flex-direction:row;overflow-x:auto}.sync-side-link{white-space:nowrap}}
 </style>
 {% endblock %}
 
@@ -117,7 +230,7 @@
 var currentPlatform = '';
 function openScheduleModal(platform, name) {
   currentPlatform = platform;
-  document.getElementById('schedule-modal-title').textContent = '定时同步 — ' + name;
+  document.getElementById('schedule-modal-title').textContent = '定时同步 - ' + name;
   document.getElementById('schedule-connector-platform').value = platform;
   document.getElementById('sync-schedule-modal').hidden = false;
 }

@@ -323,6 +323,41 @@
   }
   document.querySelectorAll("[data-source-shell]").forEach(initSourceShell)
 
+  const setBusy = (button, busy, text) => {
+    if (!button) return
+    if (busy) {
+      button.dataset.originalText = button.textContent || ""
+      button.textContent = text || "处理中..."
+      button.disabled = true
+    } else {
+      button.textContent = button.dataset.originalText || button.textContent || "继续"
+      button.disabled = false
+    }
+  }
+
+
+  const apiPost = async (url, payload) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const detail = body.detail || body.error
+      const message = typeof detail === "object" && detail !== null ? detail.message || JSON.stringify(detail) : detail
+      const error = new Error(message || `请求失败：${response.status}`)
+      if (typeof detail === "object" && detail !== null) {
+        error.code = detail.code || body.code || ""
+        error.detail = detail
+      }
+      throw error
+    }
+    return body
+  }
+
+  const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]))
+
   function initSourceFilter(root) {
     if (!root || root.dataset.bound === "1") return
     root.dataset.bound = "1"
@@ -398,40 +433,6 @@
       status.textContent = message
       status.dataset.tone = tone
     }
-
-    const setBusy = (button, busy, text) => {
-      if (!button) return
-      if (busy) {
-        button.dataset.originalText = button.textContent || ""
-        button.textContent = text || "处理中..."
-        button.disabled = true
-      } else {
-        button.textContent = button.dataset.originalText || button.textContent || "继续"
-        button.disabled = false
-      }
-    }
-
-    const apiPost = async (url, payload) => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        const detail = body.detail || body.error
-        const message = typeof detail === "object" && detail !== null ? detail.message || JSON.stringify(detail) : detail
-        const error = new Error(message || `请求失败：${response.status}`)
-        if (typeof detail === "object" && detail !== null) {
-          error.code = detail.code || body.code || ""
-          error.detail = detail
-        }
-        throw error
-      }
-      return body
-    }
-
-    const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]))
 
     const readSavedState = () => {
       if (!canResume) return null
@@ -956,6 +957,256 @@
     }
   }
   document.querySelectorAll("[data-source-filter]").forEach(initSourceFilter)
+
+  function initLinkExtractPanel(panel) {
+    if (!panel || panel.dataset.bound === "1") return
+    panel.dataset.bound = "1"
+    const form = panel.querySelector("[data-link-extract-form]")
+    const submitButton = panel.querySelector("[data-link-extract-submit]")
+    const resumeButton = panel.querySelector("[data-link-extract-resume]")
+    const status = panel.querySelector("[data-link-extract-status]")
+    const summary = panel.querySelector("[data-link-extract-summary]")
+    const preview = panel.querySelector("[data-link-extract-preview]")
+    const previewTitle = panel.querySelector("[data-link-extract-preview-title]")
+    const previewSource = panel.querySelector("[data-link-extract-preview-source]")
+    const previewContent = panel.querySelector("[data-link-extract-preview-content]")
+    let selectedCandidateIds = []
+    let extractEndpoint = ""
+    let currentJobId = null
+    const setStatusText = (message, tone) => {
+      if (!status) return
+      status.textContent = message
+      status.dataset.tone = tone || ""
+    }
+    const showPreview = (payload) => {
+      const data = payload?.preview || payload
+      if (!preview || !data || !data.content) return
+      preview.hidden = false
+      if (previewTitle) previewTitle.textContent = data.title || payload?.title || "提取结果"
+      if (previewContent) previewContent.innerHTML = escapeHtml(data.content)
+      if (previewSource && data.raw_source_id) {
+        previewSource.hidden = false
+        previewSource.href = `/ui/sources?source_id=${encodeURIComponent(data.raw_source_id)}`
+      }
+    }
+    const showFirstPreview = (items = []) => {
+      const item = items.find((current) => current && current.success && current.preview?.content)
+      if (item) showPreview(item)
+    }
+    const runExtraction = async () => {
+      if (!extractEndpoint || !selectedCandidateIds.length) return
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      if (currentJobId) payload.job_id = currentJobId
+      const extracted = await apiPost(extractEndpoint, payload)
+      currentJobId = extracted.job_id || currentJobId
+      if (extracted.status === "paused") {
+        const remaining = extracted.pending_remaining != null ? extracted.pending_remaining : "若干"
+        setStatusText(`${extracted.message || "检测到登录或人机验证，已暂停。"} 本轮已入库 ${extracted.success_count || 0} 条，剩余 ${remaining} 条。`, "bad")
+        if (resumeButton) resumeButton.hidden = false
+        return
+      }
+      if (resumeButton) resumeButton.hidden = true
+      setStatusText(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。`, "ok")
+      if (summary) {
+        summary.hidden = false
+        summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
+      }
+      showFirstPreview(extracted.items || [])
+    }
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault()
+      setBusy(submitButton, true, "准备中...")
+      setStatusText("正在识别平台并准备提取。")
+      try {
+        const data = Object.fromEntries(new FormData(form).entries())
+        const prepared = await apiPost("/api/intake/link-extract", data)
+        if (prepared.status === "ingested") {
+          selectedCandidateIds = prepared.candidate_id ? [prepared.candidate_id] : []
+          extractEndpoint = ""
+          currentJobId = null
+          if (resumeButton) resumeButton.hidden = true
+          setStatusText("已提取微信公众号正文并写入原始资料库。", "ok")
+          if (summary) {
+            summary.hidden = false
+            summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${prepared.candidate_id || "-"}`
+          }
+          showPreview(prepared)
+          return
+        }
+        selectedCandidateIds = prepared.candidate_ids || []
+        extractEndpoint = prepared.extract_endpoint || ""
+        currentJobId = null
+        setStatusText(prepared.platform === "xiaohongshu" ? "已识别为小红书，正在发送到点点。" : "已识别为抖音，正在发送到豆包。")
+        await runExtraction()
+      } catch (error) {
+        const detail = error?.detail || {}
+        if (detail.code === "unsupported_link_extract_platform") {
+          setStatusText(detail.message || "当前平台暂不支持自动提取。", "bad")
+        } else if (error.code === "xiaohongshu_diandian_not_ready") {
+          setStatusText("小红书点点页面未就绪。请打开 https://www.xiaohongshu.com/ai_chat 后重试。", "bad")
+        } else if (error.code === "doubao_login_required") {
+          setStatusText("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录后回到这里重试。", "bad")
+        } else {
+          setStatusText(error.message || "链接提取失败", "bad")
+        }
+      } finally {
+        setBusy(submitButton, false)
+      }
+    })
+    resumeButton?.addEventListener("click", async () => {
+      setBusy(resumeButton, true, "续跑中...")
+      try {
+        await runExtraction()
+      } catch (error) {
+        setStatusText(error.message || "续跑失败", "bad")
+      } finally {
+        setBusy(resumeButton, false)
+      }
+    })
+  }
+  document.querySelectorAll("[data-link-extract-panel]").forEach(initLinkExtractPanel)
+
+  // 博主蒸馏面板初始化
+  function initCreatorDistillPanel(panel) {
+    if (!panel || panel.dataset.bound === "1") return
+    panel.dataset.bound = "1"
+
+    const tabbar = panel.querySelector("[data-creator-platform-tabs]")
+    const tabs = Array.from(tabbar?.querySelectorAll("[data-creator-platform-tab]") || [])
+    const creatorInput = panel.querySelector("[data-creator-input]")
+    const scanButton = panel.querySelector("[data-creator-scan]")
+    const extractButton = panel.querySelector("[data-creator-extract]")
+    const status = panel.querySelector("[data-creator-status]")
+    const results = panel.querySelector("[data-creator-results]")
+
+    let currentPlatform = "douyin"
+    let scannedItems = []
+    let selectedItemIds = []
+
+    const setStatusText = (message, tone) => {
+      if (!status) return
+      status.textContent = message
+      status.dataset.tone = tone || ""
+    }
+
+    // 平台切换
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const platform = tab.dataset.creatorPlatformTab
+        currentPlatform = platform
+        tabs.forEach((t) => {
+          const active = t.dataset.creatorPlatformTab === platform
+          t.classList.toggle("is-active", active)
+          t.setAttribute("aria-selected", active ? "true" : "false")
+        })
+        // 清空扫描结果
+        scannedItems = []
+        selectedItemIds = []
+        if (results) {
+          results.innerHTML = ""
+          results.hidden = true
+        }
+        if (extractButton) extractButton.disabled = true
+        setStatusText(`已切换到${platform === "douyin" ? "抖音" : "小红书"}平台，请输入博主链接。`)
+      })
+    })
+
+    // 扫描作品
+    scanButton?.addEventListener("click", async () => {
+      const creatorUrl = creatorInput?.value?.trim()
+      if (!creatorUrl) {
+        setStatusText("请先输入博主主页链接", "bad")
+        return
+      }
+
+      setBusy(scanButton, true, "扫描中...")
+      setStatusText("正在获取博主作品列表...")
+      if (results) results.hidden = true
+
+      try {
+        // TODO: 替换为实际的 API 端点
+        const response = await apiPost("/api/creator/scan", {
+          platform: currentPlatform,
+          creator_url: creatorUrl,
+        })
+        scannedItems = response.items || []
+        selectedItemIds = []
+
+        if (scannedItems.length === 0) {
+          setStatusText("未找到作品，请检查链接是否正确。", "bad")
+        } else {
+          setStatusText(`找到 ${scannedItems.length} 个作品，请勾选要提取的内容。`, "ok")
+          renderResults()
+          if (extractButton) extractButton.disabled = false
+        }
+      } catch (error) {
+        setStatusText(error.message || "扫描失败", "bad")
+      } finally {
+        setBusy(scanButton, false)
+      }
+    })
+
+    // 渲染作品列表
+    const renderResults = () => {
+      if (!results) return
+      results.hidden = false
+      results.innerHTML = scannedItems.map((item) => `
+        <div class="source-item" data-item-id="${escapeHtml(item.id)}">
+          <label class="source-item-check">
+            <input type="checkbox" data-item-checkbox value="${escapeHtml(item.id)}">
+          </label>
+          <div class="source-item-body">
+            <div class="source-item-title">${escapeHtml(item.title)}</div>
+            <div class="source-item-meta">
+              ${item.author ? `<span>${escapeHtml(item.author)}</span>` : ""}
+              ${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">查看原文</a>` : ""}
+            </div>
+          </div>
+        </div>
+      `).join("")
+
+      // 绑定复选框事件
+      results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+        checkbox.addEventListener("change", () => {
+          selectedItemIds = Array.from(
+            results.querySelectorAll("[data-item-checkbox]:checked")
+          ).map((cb) => cb.value)
+        })
+      })
+    }
+
+    // 提取选中的作品
+    extractButton?.addEventListener("click", async () => {
+      if (selectedItemIds.length === 0) {
+        setStatusText("请先勾选要提取的作品", "bad")
+        return
+      }
+
+      setBusy(extractButton, true, "提取中...")
+      setStatusText(`正在提取 ${selectedItemIds.length} 个作品...`)
+
+      try {
+        // TODO: 替换为实际的 API 端点
+        const response = await apiPost("/api/creator/extract", {
+          platform: currentPlatform,
+          item_ids: selectedItemIds,
+        })
+        setStatusText(`提取完成：成功 ${response.success_count || 0} 条，失败 ${response.failed_count || 0} 条。`, "ok")
+        // 清空选择
+        selectedItemIds = []
+        if (results) {
+          results.querySelectorAll("[data-item-checkbox]").forEach((cb) => {
+            cb.checked = false
+          })
+        }
+      } catch (error) {
+        setStatusText(error.message || "提取失败", "bad")
+      } finally {
+        setBusy(extractButton, false)
+      }
+    })
+  }
+  document.querySelectorAll("[data-creator-distill-panel]").forEach(initCreatorDistillPanel)
 
   // 同步收藏页：顶部平台标签栏，点标签按需 AJAX 注入该平台提取面板，URL 同步 ?platform=。
   // 独立页 /ui/source-setup/{platform} 仍在（片段来源 + 旧书签兼容）。
