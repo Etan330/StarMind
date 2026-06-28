@@ -3002,6 +3002,21 @@ def delete_conversation(convo_id: str, db: Session = Depends(get_db)):
     return {"status": "deleted"}
 
 
+@router.post("/api/conversations/{convo_id}/rename")
+async def rename_conversation(convo_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+    data = await request_data(request)
+    title = (data.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    convo.title = title
+    db.commit()
+    return {"status": "renamed", "title": title}
+
+
 # --- CDP Status ---
 
 
@@ -4075,6 +4090,37 @@ async def push_test_api(db: Session = Depends(get_db)):
     from app.services.push_scheduler_service import PushSchedulerService
     items = await PushSchedulerService(db).generate_push_items()
     return items
+
+
+@router.get("/api/push/pending-feedback")
+def pending_feedback_api(db: Session = Depends(get_db)):
+    """Return push items awaiting Like/Unlike feedback (every 5th push without feedback yet)."""
+    from app.models import PushHistory
+    # Find pushes where total_push_count was a multiple of 5 and no feedback given
+    pending = (
+        db.query(PushHistory)
+        .filter(PushHistory.feedback == None)  # noqa: E711
+        .order_by(PushHistory.pushed_at.desc())
+        .limit(20)
+        .all()
+    )
+    # Only show ones at 5th intervals: check if their sequence position % 5 == 0
+    # Simpler: just show the most recent one without feedback if total_push_count % 5 == 0
+    from app.models import PushSettings
+    settings = db.query(PushSettings).first()
+    if not settings or settings.total_push_count % 5 != 0:
+        return []
+    # Get the latest push without feedback
+    latest = db.query(PushHistory).filter(PushHistory.feedback == None).order_by(PushHistory.pushed_at.desc()).first()  # noqa: E711
+    if not latest:
+        return []
+    from app.models import WikiPage
+    page = db.get(WikiPage, latest.wiki_page_id) if latest.wiki_page_id else None
+    return [{
+        "push_id": latest.id,
+        "title": page.title if page else "",
+        "category": latest.category_name or "",
+    }]
 
 
 @router.post("/api/push/preference-feedback")

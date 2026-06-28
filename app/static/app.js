@@ -635,25 +635,30 @@
 
 // ─── Push Notification Polling ──────────────────────────────────────────────
 (function() {
-  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  // Check for pending feedback on page load (user opens the app)
+  fetch('/api/push/pending-feedback').then(function(r){ return r.json(); }).then(function(items){
+    if(!items.length) return;
+    var item = items[0];
+    showFeedbackBanner(item);
+  }).catch(function(){});
 
   function showFeedbackBanner(item) {
-    // Show a fixed banner at top for Like/Unlike
     var banner = document.createElement('div');
     banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#fff;border-bottom:2px solid #215f52;padding:16px 24px;box-shadow:0 4px 16px rgba(0,0,0,0.1);display:flex;align-items:center;gap:16px;';
-    banner.innerHTML = '<div style="flex:1;"><strong>这次推送对你有帮助吗？</strong><div style="font-size:.85rem;color:#666;margin-top:4px;">【' + item.category + '】' + item.title + '</div></div><button id="fb-like" style="border:none;background:#215f52;color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.9rem;">👍 有帮助</button><button id="fb-unlike" style="border:none;background:#eee;color:#333;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.9rem;">👎 不相关</button>';
+    banner.innerHTML = '<div style="flex:1;"><strong>这次推送对你有帮助吗？</strong><div style="font-size:.85rem;color:#666;margin-top:4px;">【' + item.category + '】' + item.title + '</div></div><button class="fb-like" style="border:none;background:#215f52;color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.9rem;">👍 有帮助</button><button class="fb-unlike" style="border:none;background:#eee;color:#333;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.9rem;">👎 不相关</button>';
     document.body.appendChild(banner);
 
     function sendFeedback(fb) {
       fetch('/api/push/preference-feedback', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({push_history_id:item.push_id,feedback:fb})});
       banner.remove();
     }
-    banner.querySelector('#fb-like').onclick = function(){ sendFeedback('like'); };
-    banner.querySelector('#fb-unlike').onclick = function(){ sendFeedback('unlike'); };
-    // Auto dismiss after 30s
-    setTimeout(function(){ if(banner.parentElement) banner.remove(); }, 30000);
+    banner.querySelector('.fb-like').onclick = function(){ sendFeedback('like'); };
+    banner.querySelector('.fb-unlike').onclick = function(){ sendFeedback('unlike'); };
+    setTimeout(function(){ if(banner.parentElement) banner.remove(); }, 60000);
   }
 
+  // Notification polling (only if permission granted)
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
   setInterval(async () => {
     try {
       const res = await fetch('/api/push/items');
@@ -664,10 +669,6 @@
           body: '【' + item.category + '】' + item.title + '\n' + item.summary,
           tag: 'push-' + item.push_id
         });
-        // Show feedback UI on every 5th push
-        if (item.show_feedback) {
-          showFeedbackBanner(item);
-        }
       });
     } catch(e) {}
   }, 60000);
