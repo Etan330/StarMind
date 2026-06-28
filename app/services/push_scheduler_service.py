@@ -65,55 +65,45 @@ class PushSchedulerService:
             never_pushed = [(p, cat) for p, cat in pages if p.id not in all_pushed_ids]
             candidates = never_pushed if never_pushed else pages
 
-        # Weighted selection: higher preference = more likely to appear
-        # Also factor in recency — newer content gets a slight boost
-        weighted = []
+        # Step 1: Pick ONE category based on preference proportion
+        # e.g. A=50, B=100 → total=150 → A has 1/3 chance, B has 2/3 chance
+        cat_weights = {}
         for page, cat_name in candidates:
-            pref_weight = prefs.get(cat_name, 50) / 100.0
-            weighted.append((page, cat_name, max(pref_weight, 0.05)))
+            if cat_name not in cat_weights:
+                cat_weights[cat_name] = prefs.get(cat_name, 50)
+        total_pref = sum(cat_weights.values()) or 1
+        cat_list = list(cat_weights.keys())
+        cat_probs = [cat_weights[c] / total_pref for c in cat_list]
+        chosen_cat = random.choices(cat_list, weights=cat_probs, k=1)[0]
 
-        # Select without replacement to avoid duplicates in same push
-        items_count = min(settings.items_per_push, len(weighted))
-        if not weighted:
+        # Step 2: Random pick ONE page from that category
+        cat_pages = [p for p, cn in candidates if cn == chosen_cat]
+        if not cat_pages:
             return []
-        selected = []
-        pool = list(weighted)
-        for _ in range(items_count):
-            if not pool:
-                break
-            weights = [w[2] for w in pool]
-            chosen = random.choices(pool, weights=weights, k=1)[0]
-            selected.append(chosen)
-            pool.remove(chosen)
+        chosen_page = random.choice(cat_pages)
 
-        # Deduplicate and record
-        seen = set()
-        results = []
-        for page, cat_name, _ in selected:
-            if page.id in seen:
-                continue
-            seen.add(page.id)
-            # Record push history
-            settings.total_push_count += 1
-            history = PushHistory(
-                raw_source_id=self._get_raw_source_id(page),
-                wiki_page_id=page.id,
-                category_name=cat_name,
-            )
-            self.db.add(history)
-            self.db.flush()
+        # Record push history
+        settings.total_push_count += 1
+        history = PushHistory(
+            raw_source_id=self._get_raw_source_id(chosen_page),
+            wiki_page_id=chosen_page.id,
+            category_name=chosen_cat,
+        )
+        self.db.add(history)
+        self.db.flush()
 
-            show_feedback = (settings.total_push_count % 5 == 0)
-            results.append({
-                "push_id": history.id,
-                "title": page.title,
-                "summary": self._read_summary(page),
-                "category": cat_name or "未分类",
-                "show_feedback": show_feedback,
-            })
+        show_feedback = (settings.total_push_count % 5 == 0)
+        results = [{
+            "push_id": history.id,
+            "title": chosen_page.title,
+            "summary": self._read_summary(chosen_page),
+            "category": chosen_cat,
+            "show_feedback": show_feedback,
+        }]
 
         self.db.commit()
         return results
+
 
     def handle_feedback(self, push_history_id: int, feedback: str) -> dict:
         """Process like/unlike feedback. Adjust preference ±10. Unlike → move to blacklist."""

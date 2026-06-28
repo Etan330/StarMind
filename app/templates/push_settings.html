@@ -1,7 +1,6 @@
 {% extends "base.html" %}
-{% import "_components.html" as ui %}
-{% set title = "知识推送设置" %}
 {% set active = "push" %}
+{% set title = "知识推送设置" %}
 
 {% block content %}
 <div class="push-page">
@@ -10,8 +9,8 @@
     <p>设置推送时间和偏好，让知识主动找到你</p>
   </div>
 
-  <form id="push-schedule-form" class="push-section">
-    <h2>推送时间</h2>
+  <div class="push-section">
+    <h2>推送日期</h2>
     <div class="day-picker">
       {% set day_names = ["一", "二", "三", "四", "五", "六", "日"] %}
       {% for i in range(1, 8) %}
@@ -21,134 +20,276 @@
       </label>
       {% endfor %}
     </div>
-    <div id="time-slots">
-      {% if push_times %}
-      {% for t in push_times %}
-      <div class="time-slot-row">
-        <input type="time" name="push_times" value="{{ t }}">
-        <button type="button" class="btn-icon time-remove" onclick="this.parentElement.remove()">✕</button>
-      </div>
-      {% endfor %}
-      {% else %}
-      <div class="time-slot-row">
-        <input type="time" name="push_times" value="">
-        <button type="button" class="btn-icon time-remove" onclick="this.parentElement.remove()">✕</button>
-      </div>
-      {% endif %}
-    </div>
-    <button type="button" class="btn-add-time" onclick="addTimeSlot()">＋ 添加时间</button>
-  </form>
+  </div>
 
-  <form id="push-preferences-form" class="push-section">
+  <div class="push-section">
+    <h2>推送时间</h2>
+    <div id="time-list">
+      {% for t in push_times %}
+      <div class="time-row"><span class="time-val">{{ t }}</span><button class="time-del">✕</button></div>
+      {% endfor %}
+    </div>
+    <button id="add-time-btn" class="btn-add">＋ 添加时间</button>
+  </div>
+
+  <div class="push-section">
     <h2>分类偏好</h2>
-    <p class="hint">数值越高，该分类内容推送越频繁</p>
+    <p class="hint">点击进度条任意位置设置偏好程度</p>
     {% if categories %}
     {% for cat in categories %}
     <div class="pref-row">
       <span class="pref-name">{{ cat.name }}</span>
-      <input type="range" min="0" max="100" value="{{ cat.score }}" name="pref_{{ cat.name }}" class="pref-slider">
-      <span class="pref-val">{{ cat.score }}</span>
+      <div class="pref-bar" data-cat="{{ cat.name }}" data-value="{{ cat.score }}">
+        <div class="pref-fill" style="width:{{ cat.score }}%"></div>
+      </div>
+      <span class="pref-num">{{ cat.score }}%</span>
     </div>
     {% endfor %}
     {% else %}
-    <p class="hint">暂无分类，同步内容后自动生成</p>
+    <p class="hint">暂无分类，同步内容并沉淀后自动生成</p>
     {% endif %}
-  </form>
+  </div>
 
-  <button id="save-all-btn" class="btn primary" style="width:100%;margin-top:1.5rem;">保存设置</button>
+  <button id="save-btn" class="btn primary" style="width:100%;margin-top:1.5rem;">保存设置</button>
 </div>
 
-<!-- Notification permission dialog -->
-<div class="modal-overlay" id="notification-modal" hidden>
+<div class="modal-bg" id="modal" hidden>
   <div class="modal-box">
-    <h2>开启推送通知？</h2>
-    <p>到达推送时间时，通过浏览器桌面通知提醒你。</p>
-    <div class="modal-actions">
-      <button class="btn primary" id="notification-yes">好的，开启</button>
-      <button class="btn ghost" id="notification-no">暂时不用</button>
+    <h2 id="modal-title">通知设置</h2>
+    <p id="modal-msg"></p>
+    <div class="modal-btns">
+      <button class="btn primary" id="modal-ok">确定</button>
+      <button class="btn ghost" id="modal-cancel">关闭</button>
     </div>
   </div>
 </div>
-
-<style>
-.push-page { max-width: 560px; margin: 0 auto; padding: 2rem 1rem; }
-.push-header { margin-bottom: 2rem; }
-.push-header h1 { font-size: 1.4rem; margin: 0 0 4px; }
-.push-header p { color: #888; font-size: 0.9rem; margin: 0; }
-.push-section { margin-bottom: 2rem; }
-.push-section h2 { font-size: 1rem; margin: 0 0 12px; color: #333; }
-.hint { font-size: 0.82rem; color: #999; margin: 0 0 12px; }
-.day-picker { display: flex; gap: 8px; margin-bottom: 1rem; }
-.day-chip { cursor: pointer; }
-.day-chip input { display: none; }
-.day-chip span { display: inline-block; width: 36px; height: 36px; line-height: 36px; text-align: center; border-radius: 50%; border: 1px solid #e0e0e0; font-size: 0.85rem; transition: all 0.15s; }
-.day-chip input:checked + span { background: #215f52; color: #fff; border-color: #215f52; }
-.time-slot-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.time-slot-row input[type="time"] { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; }
-.time-remove { font-size: 0.9rem; color: #999; }
-.time-remove:hover { color: #e55; }
-.btn-add-time { border: 1px dashed #ccc; background: none; padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; cursor: pointer; color: #666; margin-top: 4px; }
-.btn-add-time:hover { border-color: #215f52; color: #215f52; }
-.pref-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
-.pref-name { min-width: 72px; font-size: 0.9rem; }
-.pref-slider { flex: 1; -webkit-appearance: none; appearance: none; height: 8px; border-radius: 4px; background: #eee; outline: none; cursor: pointer; }
-.pref-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #215f52; cursor: pointer; }
-.pref-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #215f52; cursor: pointer; border: none; }
-.pref-val { min-width: 28px; text-align: right; font-size: 0.82rem; color: #666; }
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); display: flex; align-items: center; justify-content: center; z-index: 999; }
-.modal-overlay[hidden] { display: none; }
-.modal-box { background: #fff; border-radius: 16px; padding: 2rem; max-width: 340px; width: 90%; text-align: center; }
-.modal-box h2 { font-size: 1.1rem; margin: 0 0 8px; }
-.modal-box p { font-size: 0.9rem; color: #666; margin: 0 0 1.5rem; }
-.modal-actions { display: flex; gap: 8px; justify-content: center; }
-</style>
 {% endblock %}
 
 {% block scripts %}
+<style>
+.push-page{max-width:560px;margin:0 auto;padding:2rem 1rem;}
+.push-header{margin-bottom:2rem;}
+.push-header h1{font-size:1.4rem;margin:0 0 4px;}
+.push-header p{color:#888;font-size:.9rem;margin:0;}
+.push-section{margin-bottom:1.5rem;}
+.push-section h2{font-size:1rem;margin:0 0 10px;color:#333;}
+.hint{font-size:.82rem;color:#999;margin:0 0 10px;}
+.day-picker{display:flex;gap:8px;}
+.day-chip{cursor:pointer;}
+.day-chip input{display:none;}
+.day-chip span{display:inline-block;width:36px;height:36px;line-height:36px;text-align:center;border-radius:50%;border:1px solid #e0e0e0;font-size:.85rem;transition:all .15s;}
+.day-chip input:checked+span{background:#215f52;color:#fff;border-color:#215f52;}
+.time-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.time-val{font-size:.95rem;font-variant-numeric:tabular-nums;min-width:50px;cursor:pointer;padding:2px 6px;border-radius:4px;}
+.time-val:hover{background:#f0f7f5;}
+.time-del{border:none;background:none;color:#ccc;cursor:pointer;font-size:.9rem;}
+.time-del:hover{color:#e55;}
+.btn-add{border:1px dashed #ccc;background:none;padding:6px 14px;border-radius:6px;font-size:.85rem;cursor:pointer;color:#666;margin-top:4px;}
+.btn-add:hover{border-color:#215f52;color:#215f52;}
+.pref-row{display:flex;align-items:center;gap:10px;margin-bottom:10px;}
+.pref-name{min-width:60px;font-size:.9rem;}
+.pref-bar{flex:1;height:8px;background:#eee;border-radius:4px;cursor:pointer;position:relative;}
+.pref-fill{height:100%;background:#215f52;border-radius:4px;transition:width .1s;}
+.pref-num{min-width:36px;text-align:right;font-size:.82rem;color:#666;}
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.3);display:flex;align-items:center;justify-content:center;z-index:9999;}
+.modal-bg[hidden]{display:none;}
+.modal-box{background:#fff;border-radius:16px;padding:2rem;max-width:360px;width:90%;text-align:center;}
+.modal-box h2{font-size:1.1rem;margin:0 0 8px;}
+.modal-box p{font-size:.88rem;color:#555;margin:0 0 1.2rem;line-height:1.5;}
+.modal-btns{display:flex;gap:8px;justify-content:center;}
+.wh-wrap{display:flex;align-items:center;justify-content:center;gap:8px;position:relative;height:160px;}
+.wh-col{height:160px;width:56px;overflow-y:scroll;scroll-snap-type:y mandatory;-webkit-overflow-scrolling:touch;text-align:center;}
+.wh-col::-webkit-scrollbar{display:none;}
+.wh-item{height:40px;line-height:40px;scroll-snap-align:center;font-size:1.1rem;color:#bbb;}
+.wh-sep{font-size:1.5rem;font-weight:bold;color:#333;}
+.wh-highlight{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:130px;height:40px;border-top:1px solid #215f52;border-bottom:1px solid #215f52;pointer-events:none;}
+</style>
 <script>
-function addTimeSlot() {
-  const row = document.createElement('div');
-  row.className = 'time-slot-row';
-  row.innerHTML = '<input type="time" name="push_times" value=""><button type="button" class="btn-icon time-remove" onclick="this.parentElement.remove()">✕</button>';
-  document.getElementById('time-slots').appendChild(row);
-  if (window.initTimePickers) window.initTimePickers();
-}
+(function(){
+  // --- Time picker (scroll wheel) ---
+  var timeList = document.getElementById('time-list');
 
-document.querySelectorAll('.pref-slider').forEach(s => {
-  function updateFill(el) { el.style.background = `linear-gradient(to right, #215f52 0%, #215f52 ${el.value}%, #eee ${el.value}%, #eee 100%)`; }
-  updateFill(s);
-  s.addEventListener('input', () => { s.nextElementSibling.textContent = s.value; updateFill(s); });
-});
+  function pad(n){ return String(n).padStart(2,'0'); }
 
-document.getElementById('save-all-btn').addEventListener('click', async () => {
-  const days = [...document.querySelectorAll('#push-schedule-form input[name="days"]:checked')].map(i => parseInt(i.value));
-  const times = [...document.querySelectorAll('#push-schedule-form input[name="push_times"]')].map(i => i.value).filter(Boolean);
-  await fetch('/api/push/schedule', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days, times})});
+  function openTimePicker(span){
+    var parts = span.textContent.split(':');
+    var curH = parseInt(parts[0])||0, curM = parseInt(parts[1])||0;
 
-  // Save preferences
-  const prefs = {};
-  document.querySelectorAll('.pref-slider').forEach(s => { prefs[s.name.replace('pref_','')] = parseInt(s.value); });
-  if (Object.keys(prefs).length) {
-    await fetch('/api/push/preferences', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:prefs})});
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-bg';
+
+    // Build wheel HTML
+    var hItems = '', mItems = '';
+    for(var c=0;c<3;c++) for(var i=0;i<24;i++) hItems += '<div class="wh-item" data-v="'+i+'">'+pad(i)+'</div>';
+    for(var c=0;c<3;c++) for(var i=0;i<60;i++) mItems += '<div class="wh-item" data-v="'+i+'">'+pad(i)+'</div>';
+
+    overlay.innerHTML = '<div class="modal-box" style="padding:1.5rem;"><h2 style="margin:0 0 12px;">选择时间</h2><div class="wh-wrap"><div class="wh-col" id="wh-h">'+hItems+'</div><span class="wh-sep">:</span><div class="wh-col" id="wh-m">'+mItems+'</div><div class="wh-highlight"></div></div><div class="modal-btns" style="margin-top:16px;"><button class="btn primary" id="tp-ok">确定</button><button class="btn ghost" id="tp-cancel">取消</button></div></div>';
+    document.body.appendChild(overlay);
+
+    var hCol = overlay.querySelector('#wh-h');
+    var mCol = overlay.querySelector('#wh-m');
+    var itemH = 40;
+
+    // Scroll to current value (middle copy)
+    hCol.scrollTop = (24 + curH) * itemH - 60;
+    mCol.scrollTop = (60 + curM) * itemH - 60;
+
+    function getVal(col, count){ return Math.round((col.scrollTop + 60) / itemH) % count; }
+    function loopScroll(col, count){
+      var oneSet = count * itemH;
+      if(col.scrollTop < oneSet * 0.5) col.scrollTop += oneSet;
+      else if(col.scrollTop > oneSet * 1.5) col.scrollTop -= oneSet;
+    }
+
+    hCol.onscroll = function(){ loopScroll(hCol, 24); };
+    mCol.onscroll = function(){ loopScroll(mCol, 60); };
+
+    overlay.querySelector('#tp-ok').onclick = function(){
+      var h = getVal(hCol, 24), m = getVal(mCol, 60);
+      span.textContent = pad(h) + ':' + pad(m);
+      overlay.remove();
+    };
+    overlay.querySelector('#tp-cancel').onclick = function(){ overlay.remove(); };
+    overlay.onclick = function(e){ if(e.target===overlay) overlay.remove(); };
   }
 
-  // Show notification dialog
-  if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-    document.getElementById('notification-modal').hidden = false;
-  } else {
-    alert('设置已保存');
+  function addTimeRow(val) {
+    var row = document.createElement('div');
+    row.className = 'time-row';
+    row.innerHTML = '<span class="time-val">' + val + '</span><button class="time-del">✕</button>';
+    row.querySelector('.time-del').onclick = function(){ row.remove(); };
+    row.querySelector('.time-val').onclick = function(){ openTimePicker(this); };
+    timeList.appendChild(row);
   }
-});
 
-document.getElementById('notification-yes')?.addEventListener('click', async () => {
-  const perm = await Notification.requestPermission();
-  document.getElementById('notification-modal').hidden = true;
-  alert(perm === 'granted' ? '通知已开启，设置已保存' : '通知被拒绝，但设置已保存');
-});
+  document.getElementById('add-time-btn').onclick = function(){
+    var now = new Date();
+    var curH = now.getHours(), curM = now.getMinutes();
+    // Open picker directly, only add to list on confirm
+    openTimePickerForNew(curH, curM);
+  };
 
-document.getElementById('notification-no')?.addEventListener('click', () => {
-  document.getElementById('notification-modal').hidden = true;
-  alert('设置已保存');
-});
+  function openTimePickerForNew(curH, curM){
+    var overlay = document.createElement('div');
+    overlay.className = 'modal-bg';
+    var hItems = '', mItems = '';
+    for(var c=0;c<3;c++) for(var i=0;i<24;i++) hItems += '<div class="wh-item" data-v="'+i+'">'+pad(i)+'</div>';
+    for(var c=0;c<3;c++) for(var i=0;i<60;i++) mItems += '<div class="wh-item" data-v="'+i+'">'+pad(i)+'</div>';
+    overlay.innerHTML = '<div class="modal-box" style="padding:1.5rem;"><h2 style="margin:0 0 12px;">添加推送时间</h2><div class="wh-wrap"><div class="wh-col" id="wh-h2">'+hItems+'</div><span class="wh-sep">:</span><div class="wh-col" id="wh-m2">'+mItems+'</div><div class="wh-highlight"></div></div><div class="modal-btns" style="margin-top:16px;"><button class="btn primary" id="tp-ok2">添加</button><button class="btn ghost" id="tp-cancel2">取消</button></div></div>';
+    document.body.appendChild(overlay);
+    var hCol = overlay.querySelector('#wh-h2');
+    var mCol = overlay.querySelector('#wh-m2');
+    var itemH = 40;
+    hCol.scrollTop = (24 + curH) * itemH - 60;
+    mCol.scrollTop = (60 + curM) * itemH - 60;
+    function getVal(col, count){ return Math.round((col.scrollTop + 60) / itemH) % count; }
+    function loopScroll(col, count){ var oneSet = count * itemH; if(col.scrollTop < oneSet*0.5) col.scrollTop += oneSet; else if(col.scrollTop > oneSet*1.5) col.scrollTop -= oneSet; }
+    hCol.onscroll = function(){ loopScroll(hCol, 24); };
+    mCol.onscroll = function(){ loopScroll(mCol, 60); };
+    overlay.querySelector('#tp-ok2').onclick = function(){
+      var h = getVal(hCol, 24), m = getVal(mCol, 60);
+      addTimeRow(pad(h) + ':' + pad(m));
+      overlay.remove();
+    };
+    overlay.querySelector('#tp-cancel2').onclick = function(){ overlay.remove(); };
+    overlay.onclick = function(e){ if(e.target===overlay) overlay.remove(); };
+  }
+
+  // Existing rows: bind click to open picker + delete
+  timeList.querySelectorAll('.time-row').forEach(function(row){
+    row.querySelector('.time-val').onclick = function(){ openTimePicker(this); };
+    row.querySelector('.time-del').onclick = function(){ row.remove(); };
+  });
+
+  // --- Preference bars (click + drag) ---
+  document.querySelectorAll('.pref-bar').forEach(function(bar){
+    function setVal(e){
+      var rect = bar.getBoundingClientRect();
+      var pct = Math.round(((e.clientX - rect.left) / rect.width) * 100);
+      pct = Math.max(0, Math.min(100, pct));
+      bar.dataset.value = pct;
+      bar.querySelector('.pref-fill').style.width = pct + '%';
+      bar.nextElementSibling.textContent = pct + '%';
+    }
+    bar.onmousedown = function(e){
+      setVal(e);
+      function onMove(ev){ setVal(ev); }
+      function onUp(){ document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    };
+  });
+
+  // --- Save ---
+  document.getElementById('save-btn').onclick = async function(){
+    var btn = this;
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+
+    var days = [];
+    document.querySelectorAll('input[name="days"]:checked').forEach(function(i){ days.push(parseInt(i.value)); });
+    var times = [];
+    timeList.querySelectorAll('.time-val').forEach(function(s){ if(s.textContent.trim()) times.push(s.textContent.trim()); });
+    var prefs = {};
+    document.querySelectorAll('.pref-bar').forEach(function(bar){ prefs[bar.dataset.cat] = parseInt(bar.dataset.value); });
+
+    try {
+      var r = await fetch('/api/push/schedule', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({days:days,times:times})});
+      if(!r.ok) throw new Error('schedule save failed');
+      if(Object.keys(prefs).length){
+        var r2 = await fetch('/api/push/preferences', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:prefs})});
+        if(!r2.ok) throw new Error('preferences save failed');
+      }
+      btn.textContent = '✅ 已保存';
+      // Reload page after short delay to show fresh data
+      setTimeout(function(){ window.location.reload(); }, 1000);
+    } catch(e) {
+      btn.textContent = '❌ 保存失败';
+      setTimeout(function(){ btn.textContent = '保存设置'; btn.disabled = false; }, 2000);
+      return;
+    }
+
+    // Notification check — open system settings for the specific browser
+    var openNotifSettings = function(){
+      // macOS: open notification settings for Google Chrome specifically
+      var bundleId = 'com.google.Chrome';
+      if(navigator.userAgent.includes('Arc')) bundleId = 'company.thebrowser.Browser';
+      else if(navigator.userAgent.includes('Edg')) bundleId = 'com.microsoft.edgemac';
+      else if(navigator.userAgent.includes('Safari') && !navigator.userAgent.includes('Chrome')) bundleId = 'com.apple.Safari';
+      window.open('x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=' + bundleId, '_blank');
+    };
+    if(typeof Notification==='undefined'){
+      showModal('提示','你的浏览器不支持通知');
+    } else if(Notification.permission==='granted'){
+      try{ new Notification('StarMind',{body:'推送测试 - 如果你看到这条就没问题 ✅'}); }catch(e){}
+      showModal('✅ 设置已保存','发了一条测试通知。如果没看到桌面弹窗，点下方按钮直接跳转到浏览器通知设置。');
+      document.getElementById('modal-ok').textContent = '打开通知设置';
+      document.getElementById('modal-ok').onclick = function(){ openNotifSettings(); document.getElementById('modal').hidden=true; };
+    } else if(Notification.permission==='denied'){
+      showModal('⚠️ 通知被屏蔽','点击下方按钮直接跳转到浏览器通知设置页面。');
+      document.getElementById('modal-ok').textContent = '打开通知设置';
+      document.getElementById('modal-ok').onclick = function(){ openNotifSettings(); document.getElementById('modal').hidden=true; };
+    } else {
+      showModal('开启通知？','推送需要通知权限，点确定授权。');
+      document.getElementById('modal-ok').textContent = '确定';
+      document.getElementById('modal-ok').onclick = async function(){
+        var perm = await Notification.requestPermission();
+        document.getElementById('modal').hidden=true;
+        if(perm!=='granted') openNotifSettings();
+      };
+      return;
+    }
+  };
+
+  // --- Modal ---
+  function showModal(title, msg){
+    document.getElementById('modal-title').textContent = title;
+    document.getElementById('modal-msg').innerHTML = msg;
+    document.getElementById('modal').hidden = false;
+  }
+  document.getElementById('modal-ok').onclick = function(){ document.getElementById('modal').hidden=true; };
+  document.getElementById('modal-cancel').onclick = function(){ document.getElementById('modal').hidden=true; };
+  document.getElementById('modal').onclick = function(e){ if(e.target===this) this.hidden=true; };
+})();
 </script>
 {% endblock %}

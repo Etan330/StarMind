@@ -56,8 +56,8 @@
       <a class="{{ 'active' if active == 'push' else '' }}" href="/ui/push-settings">推送</a>
       <a class="{{ 'active' if active == 'settings' else '' }}" href="/ui/settings">设置</a>
     </nav>
-    {% block scripts %}{% endblock %}
     <script src="/static/app.js"></script>
-    <script src="/static/time-picker.js?v=2"></script>
+    {% block scripts %}{% endblock %}
+    <script src="/static/time-picker.js?v=3"></script>
   </body>
 </html>

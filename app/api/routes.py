@@ -3212,45 +3212,74 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     limit = int(data.get("limit") or 500)
     homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
 
-    # Always fetch a large batch to scroll past duplicates at the top
-    fetch_limit = max(limit * 3, 50)
-
-    try:
-        if platform == "bilibili":
-            favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
-            items = await bilibili_collector.extract_favorites(url=favorites_url, limit=fetch_limit)
-        elif platform == "xiaohongshu":
-            favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
-            items = await xiaohongshu_collector.extract_favorites(url=favorites_url, limit=fetch_limit)
-        elif platform == "douyin":
-            if homepage_url:
-                await douyin_browser_collector.open(homepage_url)
-            items = await douyin_browser_collector.extract_visible_video_links(limit=fetch_limit, require_collection_page=False)
-        else:
-            raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
-    except _CDPErr as exc:
-        raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
-    except BrowserDependencyMissing as exc:
-        raise HTTPException(status_code=503, detail={"code": "browser_missing", "message": str(exc)}) from exc
-    except DouyinPageNotReady as exc:
-        raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
-
-    # Filter out already-seen items (dedup against SyncLedger + RawSource)
+    # Keep fetching until we have enough new items or platform is exhausted
     from app.services.url_normalizer import normalize_url as _norm_url
-    existing_urls = set()
-    for ledger in db.query(SyncLedgerItem).filter(SyncLedgerItem.platform == platform).all():
-        existing_urls.add(ledger.canonical_url)
-        existing_urls.add(ledger.raw_url)
+    import re
+
+    # Build dedup set based on note_id — only exclude SUCCESSFULLY ingested items
+    def _extract_note_id(url: str) -> str:
+        path = url.split('?')[0].rstrip('/')
+        return path.split('/')[-1]
+
+    existing_note_ids = set()
+    # Only count ledger items that were successfully processed (not failed/skipped)
+    for ledger in db.query(SyncLedgerItem).filter(
+        SyncLedgerItem.platform == platform,
+        SyncLedgerItem.raw_source_id != None,  # noqa: E711
+    ).all():
+        existing_note_ids.add(_extract_note_id(ledger.raw_url))
+        existing_note_ids.add(_extract_note_id(ledger.canonical_url))
     for rs in db.query(RawSource).filter(RawSource.platform == platform).all():
-        existing_urls.add(rs.canonical_url)
-        existing_urls.add(rs.source_url)
+        existing_note_ids.add(_extract_note_id(rs.canonical_url))
+        existing_note_ids.add(_extract_note_id(rs.source_url))
+    existing_note_ids.discard('')
 
     deduped_items = []
-    for i in items:
-        norm = _norm_url(i.raw_url, i.platform)
-        if i.raw_url in existing_urls or norm.canonical_url in existing_urls:
-            continue
-        deduped_items.append(i)
+    fetch_limit = max(limit * 2, 30)
+    max_attempts = 5
+    seen_raw_urls = set()
+
+    for attempt in range(max_attempts):
+        try:
+            if platform == "bilibili":
+                favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
+                items = await bilibili_collector.extract_favorites(url=favorites_url, limit=fetch_limit)
+            elif platform == "xiaohongshu":
+                favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
+                items = await xiaohongshu_collector.extract_favorites(url=favorites_url, limit=fetch_limit)
+            elif platform == "douyin":
+                if homepage_url and attempt == 0:
+                    await douyin_browser_collector.open(homepage_url)
+                items = await douyin_browser_collector.extract_visible_video_links(limit=fetch_limit, require_collection_page=False)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+        except _CDPErr as exc:
+            raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
+        except BrowserDependencyMissing as exc:
+            raise HTTPException(status_code=503, detail={"code": "browser_missing", "message": str(exc)}) from exc
+        except DouyinPageNotReady as exc:
+            raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
+
+        new_in_batch = False
+        for i in items:
+            if i.raw_url in seen_raw_urls:
+                continue
+            seen_raw_urls.add(i.raw_url)
+            note_id = _extract_note_id(i.raw_url)
+            if note_id and note_id in existing_note_ids:
+                continue
+            deduped_items.append(i)
+            new_in_batch = True
+            if len(deduped_items) >= limit:
+                break
+
+        if len(deduped_items) >= limit:
+            break
+        # If this batch returned nothing new or fewer items than requested, platform is exhausted
+        if not new_in_batch or len(items) < fetch_limit:
+            break
+        # Increase fetch range to scroll deeper
+        fetch_limit = fetch_limit + max(limit * 2, 30)
 
     # Return up to the user's requested limit
     final_items = deduped_items[:limit]
@@ -4014,6 +4043,35 @@ async def save_push_schedule(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/api/push/items")
 async def push_items_api(db: Session = Depends(get_db)):
+    """Return push items only if current time matches a scheduled push time."""
+    from datetime import datetime
+    from app.models import PushSettings
+    settings = db.query(PushSettings).first()
+    if not settings or settings.is_paused or not settings.push_time:
+        return []
+    now = datetime.now()
+    current_day = now.isoweekday()
+    current_time = now.strftime("%H:%M")
+    push_days = [int(d) for d in (settings.push_days or "").split(",") if d.isdigit()]
+    push_times = [t.strip() for t in (settings.push_time or "").split(",") if t.strip()]
+    if current_day not in push_days or current_time not in push_times:
+        return []
+    # Check if we already pushed this minute (prevent double push)
+    from app.models import PushHistory
+    last_push = db.query(PushHistory).order_by(PushHistory.pushed_at.desc()).first()
+    if last_push and last_push.pushed_at:
+        last_min = last_push.pushed_at.strftime("%Y-%m-%d %H:%M")
+        now_min = now.strftime("%Y-%m-%d %H:%M")
+        if last_min == now_min:
+            return []
+    from app.services.push_scheduler_service import PushSchedulerService
+    items = await PushSchedulerService(db).generate_push_items()
+    return items
+
+
+@router.post("/api/push/test")
+async def push_test_api(db: Session = Depends(get_db)):
+    """Manually trigger a push right now (for testing)."""
     from app.services.push_scheduler_service import PushSchedulerService
     items = await PushSchedulerService(db).generate_push_items()
     return items
