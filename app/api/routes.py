@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import random
 import re
+from html.parser import HTMLParser
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from uuid import uuid4
+
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -376,11 +380,11 @@ FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
         "workflow": "打开官网 → 登录小红书 → 自动进入收藏页 → 扫描标题并预筛选",
     },
     "bilibili": {
-        "status_label": "可执行预筛选",
-        "status_tone": "success",
-        "support_level": "live",
-        "capability": "本地浏览器登录后，可自动尝试进入收藏页并扫描可见视频标题。",
-        "workflow": "打开官网 → 登录 B站 → 自动进入收藏页 → 扫描标题并预筛选",
+        "status_label": "待接入",
+        "status_tone": "neutral",
+        "support_level": "planned",
+        "capability": "暂时只作为收藏来源展示，不进入同步收藏顶部实现区。",
+        "workflow": "等待 B站解析器接入",
     },
 }
 
@@ -780,6 +784,229 @@ def duplicate_query_params(existing_context: dict[str, Any]) -> str:
         "existing_url": existing_context.get("candidate").canonical_url if candidate else "",
     }
     return urlencode({key: value for key, value in params.items() if value})
+
+
+def extraction_endpoint_for_platform(platform: str) -> str:
+    if platform == "xiaohongshu":
+        return "/api/xiaohongshu/diandian/extract-selected"
+    if platform == "douyin":
+        return "/api/doubao/extract-selected"
+    return ""
+
+
+class WechatArticleParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self._capture_title = False
+        self._in_content = False
+        self._content_depth = 0
+        self._skip_depth = 0
+        self._blocks: list[str] = []
+        self._current: list[str] = []
+        self._current_prefix = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = dict(attrs)
+        tag = tag.lower()
+        if tag == "meta" and attr.get("property") == "og:title" and attr.get("content") and not self.title:
+            self.title = html.unescape(str(attr["content"])).strip()
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+            return
+        if attr.get("id") == "activity-name":
+            self._capture_title = True
+        if attr.get("id") == "js_content":
+            self._in_content = True
+            self._content_depth = 1
+            return
+        if self._in_content:
+            self._content_depth += 1
+            if tag in {"p", "section", "div", "li", "blockquote"}:
+                self._flush_current()
+                self._current_prefix = "- " if tag == "li" else ""
+            elif tag in {"h1", "h2", "h3"}:
+                self._flush_current()
+                self._current_prefix = {"h1": "# ", "h2": "## ", "h3": "### "}[tag]
+            elif tag == "br":
+                self._current.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._skip_depth:
+            if tag in {"script", "style"}:
+                self._skip_depth -= 1
+            return
+        if tag == "h1" and self._capture_title:
+            self._capture_title = False
+        if self._in_content:
+            if tag in {"p", "section", "div", "li", "blockquote", "h1", "h2", "h3"}:
+                self._flush_current()
+            self._content_depth -= 1
+            if self._content_depth <= 0:
+                self._in_content = False
+                self._content_depth = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        text = re.sub(r"\s+", " ", data or " ").strip()
+        if not text:
+            return
+        if self._capture_title and not self.title:
+            self.title = text
+        if self._in_content:
+            self._current.append(text)
+
+    def content_markdown(self) -> str:
+        self._flush_current()
+        return "\n\n".join(block for block in self._blocks if block).strip()
+
+    def _flush_current(self) -> None:
+        text = " ".join(part.strip() for part in self._current if part.strip()).strip()
+        if text:
+            self._blocks.append(f"{self._current_prefix}{text}".strip())
+        self._current = []
+        self._current_prefix = ""
+
+
+async def fetch_wechat_article_html_from_browser(url: str) -> str:
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    await cdp_proxy.connect()
+    tab = await cdp_proxy.new_tab(url)
+    try:
+        await cdp_proxy.wait_for_load(tab, timeout=12)
+        for _ in range(6):
+            html_text = await cdp_proxy.eval_script(
+                tab,
+                "document.querySelector('#js_content') ? document.documentElement.outerHTML : ''",
+            )
+            if str(html_text or "").strip():
+                return str(html_text)
+            await asyncio.sleep(0.8)
+        html_text = await cdp_proxy.eval_script(tab, "document.documentElement.outerHTML")
+        if str(html_text or "").strip():
+            return str(html_text)
+        raise _CDPErr("微信公众号文章页面没有返回可读取正文")
+    finally:
+        await cdp_proxy.close_tab(tab)
+
+
+async def fetch_wechat_article_html(url: str) -> str:
+    return await fetch_wechat_article_html_from_browser(url)
+
+
+def parse_wechat_article(html_text: str) -> tuple[str, str]:
+    parser = WechatArticleParser()
+    parser.feed(html_text)
+    title = parser.title.strip() or "微信公众号文章"
+    content = parser.content_markdown()
+    if not content:
+        raise ValueError("wechat article content not found")
+    return title, content
+
+
+def content_preview_payload(raw_source: RawSource, content: str | None = None, limit: int = 5000) -> dict[str, Any]:
+    text = str(content if content is not None else read_local_text(raw_source.transcript_path)).strip()
+    return {
+        "raw_source_id": raw_source.id,
+        "title": raw_source.title,
+        "content": text[:limit],
+        "truncated": len(text) > limit,
+        "source_url": raw_source.source_url,
+    }
+
+
+def review_original_source(page: WikiPage, source_map: dict[int, RawSource]) -> dict[str, Any]:
+    refs = page_json_list(page.source_refs_json)
+    for ref in refs:
+        raw_source = source_map.get(int(ref.get("raw_source_id") or 0))
+        if not raw_source:
+            continue
+        text = read_local_text(raw_source.transcript_path).strip()
+        if text:
+            return {
+                "raw_source_id": raw_source.id,
+                "title": raw_source.title or "原文内容",
+                "text": text,
+            }
+    return {"raw_source_id": None, "title": "原文内容", "text": ""}
+
+
+def primary_raw_source_for_page(page: WikiPage, db: Session) -> RawSource | None:
+    refs = page_json_list(page.source_refs_json)
+    for ref in refs:
+        raw_source_id = int(ref.get("raw_source_id") or 0)
+        if raw_source_id:
+            raw_source = db.get(RawSource, raw_source_id)
+            if raw_source:
+                return raw_source
+    return None
+
+
+def create_passive_link_candidate(
+    db: Session,
+    raw_url: str,
+    title: str = "",
+    tags: str = "",
+    metadata: dict[str, Any] | None = None,
+    author: str | None = None,
+    content_type: str | None = None,
+) -> tuple[CandidateItem, SyncLedgerItem, bool]:
+    normalized = normalize_url(raw_url, "" or None)
+    existing = (
+        db.query(SyncLedgerItem)
+        .filter(
+            or_(
+                (SyncLedgerItem.platform == normalized.platform) & (SyncLedgerItem.external_item_id == normalized.external_item_id),
+                SyncLedgerItem.canonical_url == normalized.canonical_url,
+            )
+        )
+        .first()
+    )
+    if existing and existing.candidate_id:
+        candidate = db.get(CandidateItem, existing.candidate_id)
+        if candidate:
+            return candidate, existing, True
+
+    candidate_metadata = {"source": "passive_link", "tags": tags}
+    candidate_metadata.update(metadata or {})
+    candidate = CandidateItem(
+        source_type="passive_link",
+        platform=normalized.platform,
+        external_item_id=normalized.external_item_id,
+        canonical_url=normalized.canonical_url,
+        raw_url=raw_url,
+        title=title or raw_url or "Untitled passive link",
+        author=author,
+        content_type=content_type or ("note" if normalized.platform == "xiaohongshu" else "video" if normalized.platform == "douyin" else None),
+        metadata_json=json.dumps(candidate_metadata, ensure_ascii=False),
+        status=PENDING_CLASSIFICATION,
+    )
+    db.add(candidate)
+    db.flush()
+    if existing:
+        existing.candidate_id = candidate.id
+        existing.raw_url = existing.raw_url or raw_url
+        existing.canonical_url = existing.canonical_url or normalized.canonical_url
+        ledger = existing
+        duplicated = True
+    else:
+        ledger = SyncLedgerItem(
+            connector_id=None,
+            platform=normalized.platform,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=raw_url,
+            scan_run_id=f"passive_{candidate.id}",
+            candidate_id=candidate.id,
+        )
+        db.add(ledger)
+        duplicated = False
+    db.commit()
+    db.refresh(candidate)
+    return candidate, ledger, duplicated
 
 
 def task_view_model(db: Session, candidate: CandidateItem, raw_source: RawSource | None, pages: list[WikiPage]) -> dict[str, Any]:
@@ -1397,6 +1624,7 @@ def review_page(page_id: str, request: Request, db: Session = Depends(get_db)):
             suggested_questions=suggested_questions(page.title),
             refs=refs,
             source_map=source_map,
+            original_source=review_original_source(page, source_map),
             validation_error=request.query_params.get("error"),
             saved=request.query_params.get("saved"),
         ),
@@ -1422,6 +1650,13 @@ async def confirm_review_page(page_id: str, request: Request, db: Session = Depe
     path = Path(page.markdown_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown, encoding="utf-8")
+    original_text = str(data.get("original_text") or "").strip()
+    if original_text:
+        raw_source = primary_raw_source_for_page(page, db)
+        if raw_source and raw_source.transcript_path:
+            Path(raw_source.transcript_path).write_text(original_text, encoding="utf-8")
+            if raw_source.clean_text_path:
+                Path(raw_source.clean_text_path).write_text(original_text, encoding="utf-8")
     page.status = "active"
     page.updated_by = "user_reviewed"
     db.commit()
@@ -1464,8 +1699,11 @@ def guide_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/ui/sync", response_class=HTMLResponse)
 def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
     cards = favorite_platform_cards(db)
-    live_platforms = [card for card in cards if card["support_level"] == "live"]
+    live_platforms = [card for card in cards if card["support_level"] == "live" and card["platform"] in {"douyin", "xiaohongshu"}]
     planned_platforms = [card for card in cards if card["support_level"] != "live"]
+    mode = str(request.query_params.get("mode") or "sync").strip()
+    if mode not in {"sync", "link", "creator", "idea"}:
+        mode = "sync"
     return templates.TemplateResponse(
         request,
         "sync_favorites.html",
@@ -1476,6 +1714,7 @@ def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
             favorite_platforms=cards,
             live_platforms=live_platforms,
             planned_platforms=planned_platforms,
+            sync_mode=mode,
         ),
     )
 
@@ -2840,18 +3079,6 @@ async def passive_link(request: Request, db: Session = Depends(get_db)):
     track_event(db, "task_create_submitted", {"task_type": "passive_link"})
     normalized = normalize_url(raw_url, str(data.get("platform") or "") or None)
 
-    def find_existing_ledger():
-        return (
-            db.query(SyncLedgerItem)
-            .filter(
-                or_(
-                    (SyncLedgerItem.platform == normalized.platform) & (SyncLedgerItem.external_item_id == normalized.external_item_id),
-                    SyncLedgerItem.canonical_url == normalized.canonical_url,
-                )
-            )
-            .first()
-        )
-
     def duplicate_payload(existing: SyncLedgerItem):
         existing_context = existing_context_for_ledger(db, existing)
         track_event(db, "duplicate_detected", {"task_type": "passive_link"}, candidate_id=existing.candidate_id)
@@ -2869,14 +3096,9 @@ async def passive_link(request: Request, db: Session = Depends(get_db)):
             },
         }
 
-    existing = find_existing_ledger()
-    if existing:
-        return duplicate_payload(existing)
-
-    candidate_title = title
-    candidate_author = None
-    candidate_content_type = None
-    candidate_metadata = {"source": "passive_link", "tags": tags}
+    metadata: dict[str, Any] = {}
+    author = None
+    content_type = None
     if normalized.platform == "douyin" and truthy(data.get("transcribe"), True):
         try:
             enriched = DouyinTranscriptService().enrich_item(
@@ -2892,41 +3114,14 @@ async def passive_link(request: Request, db: Session = Depends(get_db)):
             )
         except DouyinTranscriptError as exc:
             raise HTTPException(status_code=422, detail=f"抖音链接转写失败：{exc}") from exc
-        normalized = normalize_url(enriched.raw_url, normalized.platform)
-        existing = find_existing_ledger()
-        if existing:
-            return duplicate_payload(existing)
-        candidate_title = enriched.title
-        candidate_author = enriched.author
-        candidate_content_type = enriched.content_type
-        candidate_metadata = enriched.metadata
-    candidate = CandidateItem(
-        source_type="passive_link",
-        platform=normalized.platform,
-        external_item_id=normalized.external_item_id,
-        canonical_url=normalized.canonical_url,
-        raw_url=raw_url,
-        title=candidate_title,
-        author=candidate_author,
-        content_type=candidate_content_type,
-        metadata_json=json.dumps(candidate_metadata, ensure_ascii=False),
-        status=PENDING_CLASSIFICATION,
-    )
-    db.add(candidate)
-    db.flush()
-    db.add(
-        SyncLedgerItem(
-            connector_id=None,
-            platform=normalized.platform,
-            external_item_id=normalized.external_item_id,
-            canonical_url=normalized.canonical_url,
-            raw_url=raw_url,
-            scan_run_id=f"passive_{candidate.id}",
-            candidate_id=candidate.id,
-        )
-    )
-    db.commit()
-    db.refresh(candidate)
+        raw_url = enriched.raw_url
+        title = enriched.title
+        author = enriched.author
+        content_type = enriched.content_type
+        metadata = enriched.metadata
+    candidate, ledger, duplicated = create_passive_link_candidate(db, raw_url, title, tags, metadata, author=author, content_type=content_type)
+    if duplicated:
+        return duplicate_payload(ledger)
     track_event(db, "task_created", {"task_type": "passive_link"}, candidate_id=candidate.id)
     track_event(db, "v3_task_created", {"input_type": "link", "duplicate": False}, candidate_id=candidate.id)
     if truthy(data.get("process_now"), False):
@@ -2957,6 +3152,93 @@ async def passive_link(request: Request, db: Session = Depends(get_db)):
     return {"status": "created", "candidate": candidate_to_dict(candidate)}
 
 
+@router.post("/api/intake/link-extract")
+async def intake_link_extract(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    raw_url = str(data.get("url") or data.get("raw_url") or "").strip()
+    title = str(data.get("title") or raw_url or "Untitled passive link").strip()
+    tags = str(data.get("tags") or "").strip()
+    prompt = str(data.get("prompt") or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="url is required")
+    normalized = normalize_url(raw_url, None)
+    if normalized.platform == "wechat":
+        from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+        try:
+            article_html = await fetch_wechat_article_html_from_browser(normalized.canonical_url)
+            article_title, article_markdown = parse_wechat_article(article_html)
+        except (httpx.HTTPError, ValueError, _CDPErr) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "wechat_article_extract_failed", "message": f"微信公众号正文提取失败：{exc}"},
+            ) from exc
+        metadata: dict[str, Any] = {"content": article_markdown, "title": article_title, "source": "passive_link"}
+        if prompt:
+            metadata["intake_prompt"] = prompt
+        candidate, ledger, duplicated = create_passive_link_candidate(
+            db,
+            normalized.canonical_url,
+            article_title,
+            tags,
+            metadata,
+            content_type="article",
+        )
+        ledger.classification_label = "knowledge_selected"
+        db.commit()
+        raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+        track_event(
+            db,
+            "task_created",
+            {"task_type": "passive_link", "entry": "link_extract", "platform": "wechat", "duplicate": duplicated},
+            candidate_id=candidate.id,
+            raw_source_id=raw_source.id,
+        )
+        return {
+            "status": "ingested",
+            "platform": candidate.platform,
+            "candidate_id": candidate.id,
+            "raw_source_id": raw_source.id,
+            "title": raw_source.title,
+            "preview": content_preview_payload(raw_source),
+            "duplicate": duplicated,
+        }
+
+    endpoint = extraction_endpoint_for_platform(normalized.platform)
+    if not endpoint:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "unsupported_link_extract_platform",
+                "message": "当前粘贴链接自动提取只支持抖音、小红书和微信公众号，其他链接可先加入待处理。",
+                "platform": normalized.platform,
+            },
+        )
+
+    metadata: dict[str, Any] = {"intake_prompt": prompt} if prompt else {}
+    if normalized.platform == "xiaohongshu":
+        metadata.update(
+            {
+                "xiaohongshu_share_url": xiaohongshu_share_url_from_candidate(
+                    SimpleNamespace(raw_url=raw_url, canonical_url=normalized.canonical_url),
+                    {"xiaohongshu_note_id": normalized.external_item_id},
+                ),
+                "xiaohongshu_note_id": normalized.external_item_id,
+            }
+        )
+    candidate, ledger, duplicated = create_passive_link_candidate(db, raw_url, title, tags, metadata)
+    ledger.classification_label = "knowledge_selected"
+    db.commit()
+    track_event(db, "task_created", {"task_type": "passive_link", "entry": "link_extract", "duplicate": duplicated}, candidate_id=candidate.id)
+    return {
+        "status": "prepared",
+        "platform": candidate.platform,
+        "candidate_ids": [candidate.id],
+        "extract_endpoint": endpoint,
+        "duplicate": duplicated,
+    }
+
+
 @router.post("/agent/query")
 async def agent_query(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
@@ -2972,6 +3254,39 @@ async def agent_query(request: Request, db: Session = Depends(get_db)):
     )
     return answer.model_dump()
 
+
+
+
+# --- Creator Profile Resolution ---
+
+
+@router.post("/api/creator/resolve-profile")
+async def resolve_creator_profile(request: Request, db: Session = Depends(get_db)):
+    from app.services.creator_profile_service import normalize_creator_input
+
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    value = str(data.get("value") or data.get("input") or data.get("profile_url") or "").strip()
+
+    search_results_count = data.get("search_results_count")
+    if search_results_count is not None:
+        search_results_count = int(search_results_count)
+
+    resolved_profile_url = data.get("resolved_profile_url")
+
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform is required")
+    if not value:
+        raise HTTPException(status_code=400, detail="value (or input or profile_url) is required")
+
+    result = normalize_creator_input(
+        platform=platform,
+        value=value,
+        search_results_count=search_results_count,
+        resolved_profile_url=resolved_profile_url,
+    )
+
+    return result.to_dict()
 
 # --- Chat Conversations ---
 
@@ -3655,7 +3970,16 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
             # Skip already extracted (dedup)
             c_meta = safe_json(candidate.metadata_json)
             if c_meta.get("xiaohongshu_diandian_extracted") is True:
-                items.append({"candidate_id": candidate_id, "success": True, "error": None, "skipped": True})
+                raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate_id).first()
+                items.append({
+                    "candidate_id": candidate_id,
+                    "success": True,
+                    "error": None,
+                    "skipped": True,
+                    "raw_source_id": raw_source.id if raw_source else None,
+                    "title": raw_source.title if raw_source else candidate.title,
+                    "preview": content_preview_payload(raw_source) if raw_source else None,
+                })
                 success_count += 1
                 continue
             share_text, share_url = xiaohongshu_share_text_for_candidate(candidate)
@@ -3741,7 +4065,17 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
                 wiki_page_id = page.page_id
             success_count += 1
             job["done_ids"].append(candidate.id)
-            items.append({"candidate_id": candidate.id, "success": True, "raw_source_id": raw_source.id, "wiki_page_id": wiki_page_id, "attempts": attempts, "retried": retried, "error": None})
+            items.append({
+                "candidate_id": candidate.id,
+                "success": True,
+                "raw_source_id": raw_source.id,
+                "wiki_page_id": wiki_page_id,
+                "attempts": attempts,
+                "retried": retried,
+                "error": None,
+                "title": raw_source.title,
+                "preview": content_preview_payload(raw_source),
+            })
             if i < len(pending) - 1:
                 await asyncio.sleep(random.uniform(delay_min, delay_max))
     finally:
@@ -3928,6 +4262,8 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                     "success": True,
                     "raw_source_id": raw_source.id,
                     "wiki_page_id": wiki_page_id,
+                    "title": raw_source.title,
+                    "preview": content_preview_payload(raw_source),
                 }
             )
             # 成功条之间随机延时（最后一条不必等）。
