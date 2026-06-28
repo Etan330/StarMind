@@ -797,7 +797,10 @@
         scannedItems = body.items || []
         classifiedItems = []
         selectedCandidateIds = []
-        if (summary) {
+        if (body.all_duplicates) {
+          setStatus(body.message || "收藏夹内容均已入库，请先在平台新增收藏后再扫描。", "bad")
+          if (summary) { summary.hidden = false; summary.textContent = `扫描了 ${body.total_scanned} 条，全部已入库。`; }
+        } else if (summary) {
           summary.hidden = false
           summary.textContent = `已扫描 ${body.total || scannedItems.length} 条收藏标题。下一步点击 AI 分类。`
         }
@@ -849,15 +852,43 @@
       }
       const isXiaohongshu = platform === "xiaohongshu"
       setBusy(extractButton, true, isXiaohongshu ? "点点提取中..." : "豆包提取中...")
+      // Show progress modal
+      const progressOverlay = document.createElement('div')
+      progressOverlay.className = 'distill-overlay'
+      progressOverlay.innerHTML = `
+        <div style="background:#fff;border-radius:16px;padding:2rem;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.12);">
+          <h2 style="margin:0 0 8px;font-size:1.1rem;">🤖 ${isXiaohongshu ? '点点' : '豆包'}正在提取</h2>
+          <div style="width:100%;height:8px;background:#eee;border-radius:4px;margin:16px 0;overflow:hidden;">
+            <div id="extract-progress-bar" style="height:100%;background:linear-gradient(90deg,#215f52,#3a9e85);border-radius:4px;width:5%;transition:width 0.5s;"></div>
+          </div>
+          <p id="extract-progress-text" style="font-size:0.9rem;color:#555;margin:0 0 8px;">准备中...</p>
+          <div id="extract-progress-log" style="max-height:150px;overflow-y:auto;text-align:left;background:#fafafa;border-radius:8px;padding:8px;font-size:0.8rem;color:#555;"></div>
+        </div>`
+      document.body.appendChild(progressOverlay)
+      const pBar = document.getElementById('extract-progress-bar')
+      const pText = document.getElementById('extract-progress-text')
+      const pLog = document.getElementById('extract-progress-log')
+      function updateExtractProgress(current, total, msg) {
+        const pct = Math.max(5, Math.round((current / total) * 100))
+        pBar.style.width = pct + '%'
+        pText.textContent = msg
+      }
+      function addExtractLog(msg) {
+        pLog.innerHTML += `<div style="padding:2px 0;border-bottom:1px solid #f0f0f0;">${msg}</div>`
+        pLog.scrollTop = pLog.scrollHeight
+      }
       setStatus(isXiaohongshu
-        ? `已选择 ${selected.length} 条。正在创建候选并发送到小红书点点，单条可能等待数分钟。`
-        : `已选择 ${selected.length} 条。正在创建候选并发送到豆包，单条可能等待数分钟。`)
+        ? `已选择 ${selected.length} 条。正在发送到小红书点点提取。`
+        : `已选择 ${selected.length} 条。正在发送到豆包提取。`)
       try {
+        updateExtractProgress(0, selected.length, '正在准备候选...')
+        addExtractLog('📋 准备 ' + selected.length + ' 条待提取内容')
         const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
         const preparedIds = prepared.candidate_ids || []
         if (preparedIds.length) selectedCandidateIds = preparedIds
         saveState("prepared")
         if (!selectedCandidateIds.length) {
+          progressOverlay.remove()
           setStatus("没有可提取的候选。可能这些内容已经准备过或已入库，请重新扫描/分类后再试。", "bad")
           return
         }
@@ -1007,4 +1038,45 @@
       button.classList.add("is-submitting")
     })
   })
-})()
+})();
+
+// ─── Push Notification Polling ──────────────────────────────────────────────
+(function() {
+  // Check for pending feedback on page load (user opens the app)
+  fetch('/api/push/pending-feedback').then(function(r){ return r.json(); }).then(function(items){
+    if(!items.length) return;
+    var item = items[0];
+    showFeedbackBanner(item);
+  }).catch(function(){});
+
+  function showFeedbackBanner(item) {
+    var banner = document.createElement('div');
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#fff;border-bottom:2px solid #215f52;padding:16px 24px;box-shadow:0 4px 16px rgba(0,0,0,0.1);display:flex;align-items:center;gap:16px;';
+    banner.innerHTML = '<div style="flex:1;"><strong>这次推送对你有帮助吗？</strong><div style="font-size:.85rem;color:#666;margin-top:4px;">【' + item.category + '】' + item.title + '</div></div><button class="fb-like" style="border:none;background:#215f52;color:#fff;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.9rem;">👍 有帮助</button><button class="fb-unlike" style="border:none;background:#eee;color:#333;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.9rem;">👎 不相关</button>';
+    document.body.appendChild(banner);
+
+    function sendFeedback(fb) {
+      fetch('/api/push/preference-feedback', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({push_history_id:item.push_id,feedback:fb})});
+      banner.remove();
+    }
+    banner.querySelector('.fb-like').onclick = function(){ sendFeedback('like'); };
+    banner.querySelector('.fb-unlike').onclick = function(){ sendFeedback('unlike'); };
+    setTimeout(function(){ if(banner.parentElement) banner.remove(); }, 60000);
+  }
+
+  // Notification polling (only if permission granted)
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+  setInterval(async () => {
+    try {
+      const res = await fetch('/api/push/items');
+      const items = await res.json();
+      if (!items.length) return;
+      items.forEach(item => {
+        new Notification('StarMind 知识推送', {
+          body: '【' + item.category + '】' + item.title + '\n' + item.summary,
+          tag: 'push-' + item.push_id
+        });
+      });
+    } catch(e) {}
+  }, 60000);
+})();

@@ -55,7 +55,7 @@ from app.llm import (
     test_active_connection,
     test_model_connection,
 )
-from app.models import CandidateItem, Connector, KnowledgeClassification, RawSource, RecycleBinItem, ScanEntry, ScanLog, SyncLedgerItem, WikiPage
+from app.models import CandidateItem, Connector, KnowledgeClassification, PushSettings, RawSource, RecycleBinItem, ScanEntry, ScanLog, SyncLedgerItem, WikiPage
 from app.services import (
     ClassifierService,
     RawSourceService,
@@ -2137,6 +2137,13 @@ async def distill_profile(request: Request, db: Session = Depends(get_db)):
     if not profile_url:
         raise HTTPException(status_code=400, detail="profile_url is required")
     payload = get_distill_requests()
+    # Dedup: skip if same profile_url already exists
+    existing_urls = {r.get("profile_url") for r in payload["requests"]}
+    if profile_url in existing_urls:
+        track_event(db, "v3_task_created", {"input_type": "profile", "mode": "creator", "duplicate": True})
+        if wants_html(request):
+            return RedirectResponse("/ui/distill", status_code=303)
+        return {"status": "duplicate", "message": "该博主已在蒸馏列表中"}
     request_id = f"distill-{uuid4().hex}"
     payload["requests"].insert(
         0,
@@ -2283,16 +2290,29 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/ui/wiki", response_class=HTMLResponse)
 async def wiki_page(request: Request, db: Session = Depends(get_db)):
+    from app.models import WikiCategory
+    from sqlalchemy import func
+
     track_event(db, "page_viewed", {"page": "wiki"})
     section_id = request.query_params.get("section") or "knowledge"
     active_section = next((item for item in WIKI_SECTIONS if item["id"] == section_id), WIKI_SECTIONS[0])
+
+    # Category filtering
+    category_id = request.query_params.get("category")
+    active_category = db.get(WikiCategory, int(category_id)) if category_id else None
+
     all_pages = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).all()
     query = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc())
-    if active_section["id"] == "index":
+
+    if active_category:
+        query = query.filter(WikiPage.category_id == active_category.id)
+        pages = query.all()
+    elif active_section["id"] == "index":
         pages = all_pages
     else:
         query = query.filter(WikiPage.page_type == active_section["page_type"])
         pages = query.all()
+
     page_id = request.query_params.get("page_id")
     selected_page = next((page for page in all_pages if page.page_id == page_id), None) if page_id else None
     if selected_page is None and pages:
@@ -2307,6 +2327,19 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         "skills": db.query(WikiPage).filter(WikiPage.page_type == "skill").count(),
         "index": len(all_pages),
     }
+
+    # Dynamic categories with counts
+    wiki_categories = []
+    cat_rows = (
+        db.query(WikiCategory, func.count(WikiPage.id))
+        .outerjoin(WikiPage, WikiPage.category_id == WikiCategory.id)
+        .group_by(WikiCategory.id)
+        .order_by(WikiCategory.display_order)
+        .all()
+    )
+    for cat, cnt in cat_rows:
+        wiki_categories.append(SimpleNamespace(id=cat.id, name=cat.name, slug=cat.slug, count=cnt))
+
     selected_markdown = read_wiki_markdown(selected_page)
     wiki_question = request.query_params.get("q") or ""
     wiki_answer = None
@@ -2341,6 +2374,9 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
             wiki_sections=WIKI_SECTIONS,
             section_counts=section_counts,
             active_section=active_section,
+            active_category=active_category,
+            wiki_categories=wiki_categories,
+            total_page_count=len(all_pages),
             agent_legion=get_agent_legion()["agents"],
             activation_rules=get_activation_rules()["rules"],
             created=request.query_params.get("created"),
@@ -3033,6 +3069,21 @@ def delete_conversation(convo_id: str, db: Session = Depends(get_db)):
     return {"status": "deleted"}
 
 
+@router.post("/api/conversations/{convo_id}/rename")
+async def rename_conversation(convo_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+    data = await request_data(request)
+    title = (data.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    convo.title = title
+    db.commit()
+    return {"status": "renamed", "title": title}
+
+
 # --- CDP Status ---
 
 
@@ -3243,6 +3294,24 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     limit = parse_collection_limit(data, default=10)
     homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
 
+    # 已入库去重集（仅用于「全部已入库」UX 提示，按 note_id 匹配成功入库的条目）
+    def _extract_note_id(url: str) -> str:
+        path = str(url or "").split('?')[0].rstrip('/')
+        return path.split('/')[-1]
+
+    existing_note_ids = set()
+    for ledger in db.query(SyncLedgerItem).filter(
+        SyncLedgerItem.platform == platform,
+        SyncLedgerItem.raw_source_id != None,  # noqa: E711
+    ).all():
+        existing_note_ids.add(_extract_note_id(ledger.raw_url))
+        existing_note_ids.add(_extract_note_id(ledger.canonical_url))
+    for rs in db.query(RawSource).filter(RawSource.platform == platform).all():
+        existing_note_ids.add(_extract_note_id(rs.canonical_url))
+        existing_note_ids.add(_extract_note_id(rs.source_url))
+    existing_note_ids.discard('')
+
+    # 单次采集：collector 内部已做滚动累积 + 跨快照去重（_scroll_and_collect），无需在此重复滚动循环。
     try:
         if platform == "bilibili":
             favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
@@ -3263,6 +3332,14 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     except DouyinPageNotReady as exc:
         raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
 
+    # 「全部已入库」UX 提示：本次扫到的条目里，扣掉已成功入库的，看是否一条新的都没有。
+    fresh_count = sum(
+        1 for i in items
+        if _extract_note_id(i.raw_url) not in existing_note_ids
+    )
+    total_scanned = len(items)
+    all_duplicates = total_scanned > 0 and fresh_count == 0
+
     # 落库（DB 权威源）：历史 vs 新增切分 + 跨天去重 + 回传 scan_entry_id/已分类/已提取状态。
     svc = ScanEntryService(db)
     kind = svc.determine_kind(platform)
@@ -3277,6 +3354,9 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
         "items": entries,
         "total": len(entries),
         "collection_kind": kind,
+        "total_scanned": total_scanned,
+        "all_duplicates": all_duplicates,
+        "message": "收藏夹内容均已入库，请先在平台新增收藏后再扫描" if all_duplicates else "",
         "login_required": False,
     }
 
@@ -3571,6 +3651,12 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
             if candidate is None:
                 failed_count += 1
                 items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
+                continue
+            # Skip already extracted (dedup)
+            c_meta = safe_json(candidate.metadata_json)
+            if c_meta.get("xiaohongshu_diandian_extracted") is True:
+                items.append({"candidate_id": candidate_id, "success": True, "error": None, "skipped": True})
+                success_count += 1
                 continue
             share_text, share_url = xiaohongshu_share_text_for_candidate(candidate)
             try:
@@ -4110,3 +4196,276 @@ async def toggle_auto_sync(request: Request, db: Session = Depends(get_db)):
     connector.auto_sync_enabled = enabled
     db.commit()
     return {"connector_id": connector_id, "auto_sync_enabled": enabled}
+
+
+# ─── Auto-distill API ───────────────────────────────────────────────────────
+
+
+@router.post("/api/distill/trigger")
+async def trigger_distill(db: Session = Depends(get_db)):
+    """Return count of pending items for progress UI."""
+    from app.services.auto_distill_service import AutoDistillService
+    status = AutoDistillService(db).get_distill_status()
+    return {"pending": status["pending"]}
+
+
+@router.post("/api/distill/step")
+async def distill_step(db: Session = Depends(get_db)):
+    """Distill ONE pending item. Called repeatedly by frontend for progress."""
+    from app.models import UserPreference, WikiCategory
+    from app.services.auto_distill_service import AutoDistillService
+    svc = AutoDistillService(db)
+    existing_cats = {c.name for c in db.query(WikiCategory).all()}
+    pages = await svc.distill_pending(limit=1)
+    if not pages:
+        return {"done": True, "page": None, "new_category": None}
+    p = pages[0]
+    cat = db.get(WikiCategory, p.category_id) if p.category_id else None
+    cat_name = cat.name if cat else "未分类"
+    is_new = cat_name not in existing_cats
+    remaining = svc.get_distill_status()["pending"]
+    return {
+        "done": False,
+        "page": {"id": p.id, "title": p.title, "category": cat_name},
+        "new_category": cat_name if is_new else None,
+        "remaining": remaining,
+    }
+
+
+@router.get("/api/distill/status")
+def distill_status(db: Session = Depends(get_db)):
+    from app.services.auto_distill_service import AutoDistillService
+    return AutoDistillService(db).get_distill_status()
+
+
+# ─── Wiki categories API ────────────────────────────────────────────────────
+
+
+@router.get("/api/wiki/categories")
+def wiki_categories_api(db: Session = Depends(get_db)):
+    from app.models import WikiCategory, WikiPage
+    from sqlalchemy import func
+    cats = (
+        db.query(WikiCategory, func.count(WikiPage.id))
+        .outerjoin(WikiPage, WikiPage.category_id == WikiCategory.id)
+        .group_by(WikiCategory.id)
+        .order_by(WikiCategory.display_order)
+        .all()
+    )
+    return [{"id": c.id, "name": c.name, "slug": c.slug, "count": cnt} for c, cnt in cats]
+
+
+@router.post("/api/wiki/categories/{category_id}/rename")
+async def rename_wiki_category(category_id: int, request: Request, db: Session = Depends(get_db)):
+    from app.models import WikiCategory
+    data = await request_data(request)
+    new_name = (data.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    cat = db.get(WikiCategory, category_id)
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    cat.name = new_name
+    db.commit()
+    return {"id": cat.id, "name": cat.name}
+
+
+# ─── Push scheduler API ─────────────────────────────────────────────────────
+
+
+@router.get("/api/push/preferences")
+def push_preferences_api(db: Session = Depends(get_db)):
+    from app.models import UserPreference, WikiCategory
+    cats = db.query(WikiCategory).order_by(WikiCategory.display_order).all()
+    prefs = {p.domain: p.score for p in db.query(UserPreference).all()}
+    return [{"category": c.name, "score": prefs.get(c.name, 50)} for c in cats]
+
+
+@router.post("/api/push/preferences")
+async def save_push_preferences(request: Request, db: Session = Depends(get_db)):
+    from app.services.push_scheduler_service import PushSchedulerService
+    data = await request_data(request)
+    preferences = data.get("preferences", {})
+    PushSchedulerService(db).save_preferences(preferences)
+    return {"ok": True}
+
+
+@router.post("/api/push/schedule")
+async def save_push_schedule(request: Request, db: Session = Depends(get_db)):
+    from app.services.push_scheduler_service import PushSchedulerService
+    data = await request_data(request)
+    days = data.get("days", [1, 2, 3, 4, 5])
+    times = data.get("times")
+    time = data.get("time")
+    PushSchedulerService(db).save_schedule(days, times=times, time=time)
+    return {"ok": True}
+
+
+@router.get("/api/push/items")
+async def push_items_api(db: Session = Depends(get_db)):
+    """Return push items only if current time matches a scheduled push time."""
+    from datetime import datetime
+    from app.models import PushSettings
+    settings = db.query(PushSettings).first()
+    if not settings or settings.is_paused or not settings.push_time:
+        return []
+    now = datetime.now()
+    current_day = now.isoweekday()
+    current_time = now.strftime("%H:%M")
+    push_days = [int(d) for d in (settings.push_days or "").split(",") if d.isdigit()]
+    push_times = [t.strip() for t in (settings.push_time or "").split(",") if t.strip()]
+    if current_day not in push_days or current_time not in push_times:
+        return []
+    # Check if we already pushed this minute (prevent double push)
+    from app.models import PushHistory
+    last_push = db.query(PushHistory).order_by(PushHistory.pushed_at.desc()).first()
+    if last_push and last_push.pushed_at:
+        last_min = last_push.pushed_at.strftime("%Y-%m-%d %H:%M")
+        now_min = now.strftime("%Y-%m-%d %H:%M")
+        if last_min == now_min:
+            return []
+    from app.services.push_scheduler_service import PushSchedulerService
+    items = await PushSchedulerService(db).generate_push_items()
+    return items
+
+
+@router.post("/api/push/test")
+async def push_test_api(db: Session = Depends(get_db)):
+    """Manually trigger a push right now (for testing)."""
+    from app.services.push_scheduler_service import PushSchedulerService
+    items = await PushSchedulerService(db).generate_push_items()
+    return items
+
+
+@router.get("/api/push/pending-feedback")
+def pending_feedback_api(db: Session = Depends(get_db)):
+    """Return push items awaiting Like/Unlike feedback (every 5th push without feedback yet)."""
+    from app.models import PushHistory
+    # Find pushes where total_push_count was a multiple of 5 and no feedback given
+    pending = (
+        db.query(PushHistory)
+        .filter(PushHistory.feedback == None)  # noqa: E711
+        .order_by(PushHistory.pushed_at.desc())
+        .limit(20)
+        .all()
+    )
+    # Only show ones at 5th intervals: check if their sequence position % 5 == 0
+    # Simpler: just show the most recent one without feedback if total_push_count % 5 == 0
+    from app.models import PushSettings
+    settings = db.query(PushSettings).first()
+    if not settings or settings.total_push_count % 5 != 0:
+        return []
+    # Get the latest push without feedback
+    latest = db.query(PushHistory).filter(PushHistory.feedback == None).order_by(PushHistory.pushed_at.desc()).first()  # noqa: E711
+    if not latest:
+        return []
+    from app.models import WikiPage
+    page = db.get(WikiPage, latest.wiki_page_id) if latest.wiki_page_id else None
+    return [{
+        "push_id": latest.id,
+        "title": page.title if page else "",
+        "category": latest.category_name or "",
+    }]
+
+
+@router.post("/api/push/preference-feedback")
+async def push_feedback_new(request: Request, db: Session = Depends(get_db)):
+    from app.services.push_scheduler_service import PushSchedulerService
+    data = await request_data(request)
+    push_id = int(data.get("push_history_id") or 0)
+    feedback = data.get("feedback", "")
+    if feedback not in ("like", "unlike"):
+        raise HTTPException(status_code=400, detail="feedback must be 'like' or 'unlike'")
+    result = PushSchedulerService(db).handle_feedback(push_id, feedback)
+    return result
+
+
+# ─── Connector sync schedule API ────────────────────────────────────────────
+
+
+@router.get("/api/sync/schedule/{connector_id}")
+def get_sync_schedule(connector_id: int, db: Session = Depends(get_db)):
+    connector = db.get(Connector, connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    cron = connector.auto_sync_cron or "0 0 * * *"
+    parts = cron.split()
+    # Parse cron to days + time
+    minute = parts[0] if len(parts) > 0 else "0"
+    hour = parts[1] if len(parts) > 1 else "0"
+    dow = parts[4] if len(parts) > 4 else "*"
+    days = [int(d) for d in dow.split(",") if d.isdigit()] if dow != "*" else list(range(7))
+    return {
+        "connector_id": connector_id,
+        "enabled": connector.auto_sync_enabled,
+        "days": days,
+        "time": f"{int(hour):02d}:{int(minute):02d}",
+        "cron": cron,
+    }
+
+
+@router.post("/api/sync/schedule")
+async def save_sync_schedule(request: Request, db: Session = Depends(get_db)):
+    from app.scheduler import register_connector_job
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    connector_id = int(data.get("connector_id") or 0)
+    days = data.get("days", [0, 1, 2, 3, 4, 5, 6])
+    time = data.get("time", "00:00")
+
+    # Find connector by platform if connector_id not provided
+    connector = None
+    if connector_id:
+        connector = db.get(Connector, connector_id)
+    if not connector and platform:
+        connector = db.query(Connector).filter(Connector.platform == platform).first()
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    hour, minute = time.split(":")
+    dow = ",".join(str(d) for d in sorted(days))
+    cron_expr = f"{minute} {hour} * * {dow}"
+    connector.auto_sync_cron = cron_expr
+    connector.auto_sync_enabled = True
+    db.commit()
+
+    register_connector_job(connector.id, cron_expr)
+    return {"ok": True, "cron": cron_expr}
+
+
+@router.post("/api/sync/schedule/apply-all")
+async def apply_schedule_to_all(request: Request, db: Session = Depends(get_db)):
+    from app.scheduler import register_connector_job
+    data = await request_data(request)
+    source_id = int(data.get("connector_id") or 0)
+    source = db.get(Connector, source_id)
+    if not source or not source.auto_sync_cron:
+        raise HTTPException(status_code=404, detail="Source connector not found or no schedule set")
+
+    connectors = db.query(Connector).filter(Connector.id != source_id).all()
+    for conn in connectors:
+        conn.auto_sync_cron = source.auto_sync_cron
+        conn.auto_sync_enabled = True
+        register_connector_job(conn.id, source.auto_sync_cron)
+    db.commit()
+    return {"ok": True, "applied_to": len(connectors)}
+
+
+# ─── Push settings UI page ──────────────────────────────────────────────────
+
+
+@router.get("/ui/push-settings")
+def push_settings_page(request: Request, db: Session = Depends(get_db)):
+    from app.models import UserPreference, WikiCategory
+    cats = db.query(WikiCategory).order_by(WikiCategory.display_order).all()
+    prefs = {p.domain: p.score for p in db.query(UserPreference).all()}
+    categories = [{"name": c.name, "score": prefs.get(c.name, 50)} for c in cats]
+    settings = db.query(PushSettings).first()
+    push_days = [int(d) for d in (settings.push_days or "1,2,3,4,5").split(",") if d.isdigit()] if settings else [1, 2, 3, 4, 5]
+    push_times = (settings.push_time).split(",") if settings and settings.push_time else []
+    return templates.TemplateResponse(request, "push_settings.html", {
+        "request": request,
+        "categories": categories,
+        "push_days": push_days,
+        "push_times": push_times,
+    })

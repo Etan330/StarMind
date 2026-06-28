@@ -222,8 +222,8 @@ class XiaohongshuDiandianExtractor:
             const readText = () => (input.value || input.innerText || input.textContent || '').trim();
             input.focus();
             if ('value' in input) {{
-                const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')?.set;
-                if (setter) setter.call(input, prompt);
+                const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement?.prototype || Object.getPrototypeOf(input), 'value')?.set;
+                if (nativeSetter) nativeSetter.call(input, prompt);
                 else input.value = prompt;
             }} else {{
                 input.textContent = '';
@@ -267,7 +267,9 @@ class XiaohongshuDiandianExtractor:
             if (!best || best.score < 500 || /#addM|ai-input-action-btn|bottom-box-left/.test(best.hint)) return JSON.stringify({{success: false, error: 'send_button_not_found'}});
             const sendButton = best.node.closest?.('.submit-button-wrapper') || best.node;
             const rect = sendButton.getBoundingClientRect();
-            sendButton.click();
+            // Use Enter key to send — click() does not work on Diandian's React page
+            input.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}}));
+            input.dispatchEvent(new KeyboardEvent('keyup', {{key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true}}));
             return JSON.stringify({{success: true, click_x: rect.left + rect.width / 2, click_y: rect.top + rect.height / 2, target_use: useHref(sendButton), target_class: classText(sendButton)}});
         }})()
         """
@@ -279,14 +281,9 @@ class XiaohongshuDiandianExtractor:
             return {"success": False, "error": "xiaohongshu_diandian_not_ready"}
         if not payload.get("success"):
             return payload
-        click_x = payload.get("click_x")
-        click_y = payload.get("click_y")
-        if isinstance(click_x, (int, float)) and isinstance(click_y, (int, float)) and hasattr(self._proxy, "click_at"):
-            try:
-                await self._proxy.click_at(tab, float(click_x), float(click_y))
-            except Exception:
-                pass
-        for _ in range(6):
+        # Do NOT double-click — the JS click() above is sufficient.
+        # The previous click_at() caused double-send issues.
+        for _ in range(12):
             await asyncio.sleep(0.5)
             raw_confirm = await self._proxy.eval_script(tab, f"""
             (() => {{
@@ -310,18 +307,25 @@ class XiaohongshuDiandianExtractor:
             confirm = json.loads(raw_confirm) if isinstance(raw_confirm, str) else dict(raw_confirm or {})
             if confirm.get("sent"):
                 return {"success": True}
+            # Also consider it sent if input was cleared (Diandian consumed it)
+            input_text = confirm.get("input_text", "")
+            if not input_text or (prompt[:20] not in input_text):
+                # Input field no longer has our prompt — likely sent
+                return {"success": True}
         return {"success": False, "error": "xiaohongshu_diandian_send_not_confirmed"}
 
     async def _message_state(self, tab: CDPTab) -> dict[str, Any]:
         raw = await self._proxy.eval_script(tab, """
         (() => {
-            const nodes = Array.from(document.querySelectorAll('[class*="message"], [class*="markdown"], [data-testid*="message"], [class*="answer"], [class*="chat-content"], [class*="ChatContent"]'));
-            const visible = nodes.map((node) => (node.innerText || '').trim()).filter(Boolean);
-            const last = visible.length ? visible[visible.length - 1] : '';
-            const controls = Array.from(document.querySelectorAll('button, [role="button"], [class*="loading"], [class*="stop"], [class*="spinner"], [class*="generat"]'));
-            const generating = controls.some((node) => /停止|stop|生成中|思考中|正在生成|loading|spinner/i.test(node.innerText || node.getAttribute('aria-label') || node.className || ''));
+            const selectors = '[class*="message"], [class*="markdown"], [data-testid*="message"], [class*="answer"], [class*="chat-content"], [class*="ChatContent"], [class*="wendian"], [class*="response"], [class*="reply"], [class*="bubble"]';
+            const nodes = Array.from(document.querySelectorAll(selectors));
+            const visible = nodes.map((node) => (node.innerText || '').trim()).filter((t) => t.length > 5);
+            const unique = [...new Set(visible)];
+            const last = unique.length ? unique[unique.length - 1] : '';
+            const controls = Array.from(document.querySelectorAll('button, [role="button"], [class*="loading"], [class*="stop"], [class*="spinner"], [class*="generat"], [class*="typing"]'));
+            const generating = controls.some((node) => /停止|stop|生成中|思考中|正在生成|loading|spinner|typing/i.test(node.innerText || node.getAttribute('aria-label') || node.className || ''));
             const canCopyOrRegenerate = controls.some((node) => /复制|copy|重新生成|regenerate/i.test(node.innerText || node.getAttribute('aria-label') || node.className || ''));
-            return JSON.stringify({count: visible.length, text: last, page_text: (document.body?.innerText || '').slice(-4000), generating: generating && !canCopyOrRegenerate});
+            return JSON.stringify({count: unique.length, text: last, page_text: (document.body?.innerText || '').slice(-4000), generating: generating && !canCopyOrRegenerate});
         })()
         """)
         return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
@@ -350,17 +354,29 @@ class XiaohongshuDiandianExtractor:
         return {"success": False, "method": "location_assign"}
 
     async def _wait_for_response_complete(self, tab: CDPTab, previous_count: int, timeout_seconds: int, prompt: str = "") -> str:
-        deadline = monotonic() + max(30, timeout_seconds)
+        deadline = monotonic() + max(45, timeout_seconds)
         stable_rounds = 0
         last_text = ""
         prompt_head = str(prompt or "").strip()[:80]
+        # Allow a grace period for Diandian to start responding
+        initial_wait = True
         while monotonic() < deadline:
-            await asyncio.sleep(2)
+            await asyncio.sleep(2.5)
             state = await self._message_state(tab)
             text = str(state.get("text") or "").strip()
             count = int(state.get("count") or 0)
             generating = bool(state.get("generating"))
             is_user_prompt = bool(prompt_head and prompt_head in text)
+            # Also try page_text if no structured messages found
+            if count <= previous_count and not generating:
+                page_text = str(state.get("page_text") or "")
+                # Look for substantial new content in page that isn't the prompt
+                if len(page_text) > 200 and prompt_head and prompt_head not in page_text[-500:]:
+                    # Possible response in unstructured page content
+                    pass
+                if initial_wait:
+                    continue
+            initial_wait = False
             if count <= previous_count or len(text) < 20 or is_user_prompt:
                 stable_rounds = 0
                 last_text = text

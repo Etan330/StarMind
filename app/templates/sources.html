@@ -3,11 +3,14 @@
 {% set title = "来源证据" %}
 
 {% block content %}
-{{ ui.page_header("来源证据", "这里保存原始链接、文本和逐字稿状态。勾选后可批量删除。", "知识库管理") }}
+{{ ui.page_header("原始资料", "从收藏夹抓取的原始内容。可沉淀到知识库。", "知识管理") }}
 
 {% if request.query_params.get("deleted") %}
   <div class="notice ok centered-notice">已删除 {{ request.query_params.get("deleted") }} 条原始资料。</div>
 {% endif %}
+
+<!-- Pipeline status bar -->
+<div class="pipeline-status" id="pipeline-status" style="display:none;"></div>
 
 <!-- Batch delete toolbar -->
 <div id="batch-toolbar" style="display:none;position:sticky;top:0;z-index:100;background:#fff;border-bottom:1px solid #eee;padding:12px 24px;margin-bottom:16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
@@ -21,8 +24,9 @@
   </form>
 </div>
 
-<div style="margin-bottom:12px;">
+<div style="margin-bottom:12px;display:flex;gap:8px;">
   <button type="button" class="btn secondary small" id="enter-batch-btn" onclick="enterBatchMode()">☑ 批量管理</button>
+  <button type="button" class="btn primary small" id="distill-btn" onclick="triggerDistill()">⚗️ 沉淀到知识库</button>
 </div>
 
 <section class="raw-source-layout">
@@ -78,6 +82,23 @@
           {% endfor %}
         </div>
         {% if idea_items | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+      </details>
+    </article>
+
+    <article class="source-group glass-card" data-source-group="distill">
+      <details>
+        <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_requests | length }}</b></summary>
+        <div class="source-group-list" data-expand-list>
+          {% for req in distill_requests %}
+            <a class="source-line" href="/ui/distill" data-expand-item>
+              <strong>{{ req.target_name or req.profile_url }}</strong>
+              <span>{{ req.platform or "社交媒体" }} · {{ req.status or "pending" }}</span>
+            </a>
+          {% else %}
+            {{ ui.empty_state("还没有博主蒸馏请求", "在首页用「输入博主」功能添加。") }}
+          {% endfor %}
+        </div>
+        {% if distill_requests | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
       </details>
     </article>
   </div>
@@ -173,5 +194,157 @@
     if (button) button.addEventListener("click", () => { visible += 5; render(); });
     render();
   });
+
+  // Pipeline status
+  fetch('/api/distill/status').then(r=>r.json()).then(data=>{
+    const el=document.getElementById('pipeline-status');
+    if(data.pending>0){
+      el.style.display='block';
+      el.innerHTML=`<span>📋 ${data.pending} 条待沉淀</span><span>✅ ${data.distilled} 条已沉淀</span>`;
+    }
+  });
+
+  // Distill with progress
+  async function triggerDistill() {
+    const btn = document.getElementById('distill-btn');
+    btn.disabled = true; btn.textContent = '⏳ 准备中...';
+    try {
+      // Get pending count
+      const initRes = await fetch('/api/distill/trigger', {method: 'POST'});
+      const initData = await initRes.json();
+      const total = initData.pending;
+      if (!total) { alert('没有待沉淀的内容'); return; }
+      // Show progress modal
+      const overlay = showProgressModal(total);
+      const results = [];
+      const newCats = new Set();
+      let processed = 0;
+      // Process one by one
+      while (true) {
+        updateProgress(overlay, processed, total, '🤖 AI 正在分析并沉淀...');
+        const res = await fetch('/api/distill/step', {method: 'POST'});
+        const data = await res.json();
+        if (data.done || !data.page) break;
+        processed++;
+        results.push(data.page);
+        if (data.new_category) newCats.add(data.new_category);
+        addLogLine(overlay, `✓ ${data.page.title} → 📁 ${data.page.category}`);
+        updateProgress(overlay, processed, total, `已沉淀 ${processed}/${total}`);
+        if (data.remaining === 0) break;
+      }
+      // Done
+      updateProgress(overlay, total, total, '✅ 沉淀完成');
+      await new Promise(r => setTimeout(r, 800));
+      overlay.remove();
+      // Show result with preference setup for new categories
+      if (results.length) showDistillResult(results, [...newCats]);
+      else alert('没有新内容被沉淀');
+    } catch (e) { alert('沉淀失败: ' + e.message); }
+    finally { btn.disabled = false; btn.textContent = '⚗️ 沉淀到知识库'; }
+  }
+
+  function showProgressModal(total) {
+    const overlay = document.createElement('div');
+    overlay.className = 'distill-overlay';
+    overlay.innerHTML = `
+      <div class="distill-modal progress-modal">
+        <h2>⚗️ 正在沉淀到知识库</h2>
+        <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:0%"></div></div>
+        <p class="progress-status">准备中...</p>
+        <div class="progress-log"></div>
+      </div>`;
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  function updateProgress(overlay, current, total, text) {
+    const pct = Math.round((current / total) * 100);
+    overlay.querySelector('.progress-bar-fill').style.width = pct + '%';
+    overlay.querySelector('.progress-status').textContent = text;
+  }
+
+  function addLogLine(overlay, text) {
+    const log = overlay.querySelector('.progress-log');
+    const line = document.createElement('div');
+    line.className = 'progress-log-line';
+    line.textContent = text;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function showDistillResult(results, newCats) {
+    const overlay = document.createElement('div');
+    overlay.className = 'distill-overlay';
+    // Group by category
+    const groups = {};
+    results.forEach(p => { groups[p.category] = groups[p.category] || []; groups[p.category].push(p); });
+    let catHtml = '';
+    for (const [cat, pages] of Object.entries(groups)) {
+      catHtml += `<div class="distill-cat"><strong>📁 ${cat}</strong><span>${pages.length} 条</span></div>`;
+      pages.forEach(p => { catHtml += `<div class="distill-item">${p.title}</div>`; });
+    }
+    let prefHtml = '';
+    if (newCats.length) {
+      prefHtml = '<div class="distill-pref-section"><h3>新分类偏好设置</h3><p class="distill-hint">首次出现的分类，请设置推送偏好（0-100%）</p>';
+      newCats.forEach(cat => {
+        prefHtml += `<div class="distill-pref-row"><span>${cat}</span><input type="range" min="0" max="100" value="50" class="pref-slider" data-cat="${cat}"><span class="pref-val">50</span></div>`;
+      });
+      prefHtml += '</div>';
+    }
+    overlay.innerHTML = `
+      <div class="distill-modal">
+        <h2>✅ 沉淀完成</h2>
+        <p>已将 ${results.length} 条内容沉淀到知识库</p>
+        <div class="distill-cats">${catHtml}</div>
+        ${prefHtml}
+        <div class="distill-actions">
+          ${newCats.length ? '<button class="btn primary" onclick="saveNewPrefs(this)">保存偏好</button>' : ''}
+          <button class="btn secondary" onclick="this.closest(\'.distill-overlay\').remove()">关闭</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelectorAll('.pref-slider').forEach(s => {
+      function updateSliderFill(el) { el.style.background = `linear-gradient(to right, #215f52 0%, #215f52 ${el.value}%, #eee ${el.value}%, #eee 100%)`; }
+      updateSliderFill(s);
+      s.addEventListener('input', () => { s.nextElementSibling.textContent = s.value; updateSliderFill(s); });
+    });
+    overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+  }
+
+  async function saveNewPrefs(btn) {
+    const overlay = btn.closest('.distill-overlay');
+    const prefs = {};
+    overlay.querySelectorAll('.pref-slider').forEach(s => { prefs[s.dataset.cat] = parseInt(s.value); });
+    await fetch('/api/push/preferences', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:prefs})});
+    overlay.remove();
+    alert('偏好已保存，将用于后续知识推送');
+  }
 </script>
+
+<style>
+.distill-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;z-index:9999;}
+.distill-modal{background:#fff;border-radius:16px;padding:2rem;max-width:480px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.12);}
+.distill-modal h2{margin:0 0 4px;font-size:1.2rem;}
+.distill-modal>p{color:#666;font-size:0.9rem;margin:0 0 16px;}
+.distill-cats{display:flex;flex-direction:column;gap:4px;margin-bottom:16px;}
+.distill-cat{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f0f0;font-size:0.9rem;}
+.distill-item{padding:2px 0 2px 16px;font-size:0.82rem;color:#666;}
+.distill-pref-section{margin:16px 0;padding-top:12px;border-top:1px solid #eee;}
+.distill-pref-section h3{font-size:1rem;margin:0 0 4px;}
+.distill-hint{font-size:0.8rem;color:#999;margin:0 0 12px;}
+.distill-pref-row{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:0.9rem;}
+.distill-pref-row span:first-child{min-width:60px;}
+.distill-pref-row .pref-slider{flex:1;-webkit-appearance:none;appearance:none;height:8px;border-radius:4px;background:#eee;outline:none;cursor:pointer;}
+.distill-pref-row .pref-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#215f52;cursor:pointer;}
+.distill-pref-row .pref-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#215f52;cursor:pointer;border:none;}
+.pipeline-status{display:flex;gap:16px;padding:10px 16px;background:#f0f7f5;border-radius:8px;margin-bottom:12px;font-size:.85rem;color:#215f52;}
+.distill-pref-row .pref-val{min-width:28px;text-align:right;font-size:0.82rem;color:#666;}
+.distill-actions{display:flex;gap:8px;margin-top:16px;}
+.progress-modal{text-align:center;}
+.progress-bar-wrap{width:100%;height:8px;background:#eee;border-radius:4px;margin:16px 0 8px;overflow:hidden;}
+.progress-bar-fill{height:100%;background:linear-gradient(90deg,#215f52,#3a9e85);border-radius:4px;transition:width 0.3s ease;}
+.progress-status{font-size:0.9rem;color:#555;margin:0 0 12px;}
+.progress-log{max-height:180px;overflow-y:auto;text-align:left;margin-top:12px;padding:8px;background:#fafafa;border-radius:8px;}
+.progress-log-line{font-size:0.8rem;color:#555;padding:3px 0;border-bottom:1px solid #f5f5f5;}
+</style>
 {% endblock %}

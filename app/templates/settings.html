@@ -3,67 +3,64 @@
 {% set title = "设置" %}
 
 {% block content %}
-{{ ui.page_header("设置", "连接模型、保存常用方案，并确认本地数据隔离。") }}
-
-{% if status %}<div class="notice ok">已保存：{{ status }}</div>{% endif %}
-{% if test %}
-  <div class="notice {{ 'ok' if test == 'success' else 'bad' }}">
-    连接测试：{{ "成功" if test == "success" else "失败" }}
-    {% if test == 'failed' and test_error == 'uuap_redirect' %}
-      <br>百度内部请求被 UUAP 登录页拦截。请检查内部 API 鉴权 Header、Base URL 或内网访问方式。
-    {% elif test == 'failed' and test_error %}
-      <br>错误类型：{{ test_error }}
-    {% endif %}
+<div class="settings-page">
+  <div class="settings-header">
+    <h1>设置</h1>
+    <p>模型连接与数据管理</p>
   </div>
-{% endif %}
 
-{% include "_model_settings_panel.html" %}
+  {% if status %}<div class="notice ok">已保存：{{ status }}</div>{% endif %}
+  {% if test %}
+    <div class="notice {{ 'ok' if test == 'success' else 'bad' }}">
+      连接测试：{{ "成功 ✓" if test == "success" else "失败 ✗" }}
+      {% if test == 'failed' and test_error == 'uuap_redirect' %}
+        — 百度内部请求被 UUAP 登录页拦截，请检查鉴权方式。
+      {% elif test == 'failed' and test_error %}
+        — {{ test_error }}
+      {% endif %}
+    </div>
+  {% endif %}
 
-<section class="settings-support-grid">
-  <div class="glass-card support-card">
-    <h2>数据隔离</h2>
-    <dl class="meta-list">
-      <dt>原始资料</dt><dd>local_data/raw_sources/</dd>
-      <dt>知识库</dt><dd>local_data/wiki/</dd>
-      <dt>SOP</dt><dd>local_data/sop/</dd>
-      <dt>配置</dt><dd>local_data/config/</dd>
-    </dl>
-    <div class="v1-callout v1-warning">API Key 保存在本地配置目录中，界面不会明文回显。不要提交 `local_data/`。</div>
-  </div>
-  <div class="glass-card support-card">
-    <h2>当前边界</h2>
-    <p>当前版本聚焦首页输入、四种入口、结果审核、历史复用和本地事件日志。稳定多平台同步、云端协作和严格页面级追问属于后续版本。</p>
-    <a class="btn secondary full" href="/ui/guide">查看主路径</a>
-  </div>
-  <div class="glass-card support-card">
+  {% include "_model_settings_panel.html" %}
+
+  <section class="settings-section">
     <h2>自定义模型接口</h2>
-    <form class="settings-form custom-provider-form" method="post" action="/settings/providers/custom">
-      <label class="form-field">显示名称<input name="display_name" placeholder="本地模型网关"></label>
-      <label class="form-field">Base URL<input name="base_url" placeholder="http://localhost:11434/v1"></label>
-      <label class="form-field">首个模型<input name="model" placeholder="local-model"></label>
-      <label class="form-field">Key 名称<input name="api_key_label" value="API Key"></label>
-      <button class="btn secondary" type="submit">添加接口</button>
+    <p class="hint">接入本地模型或其他 OpenAI 兼容 API</p>
+    <form class="custom-provider-form" method="post" action="/settings/providers/custom">
+      <div class="form-grid">
+        <label class="form-field">名称<input name="display_name" placeholder="如：本地 Ollama"></label>
+        <label class="form-field">Base URL<input name="base_url" placeholder="http://localhost:11434/v1"></label>
+        <label class="form-field">模型<input name="model" placeholder="qwen2.5"></label>
+        <label class="form-field">Key 标签<input name="api_key_label" value="API Key"></label>
+      </div>
+      <button class="btn secondary" type="submit">添加</button>
     </form>
-  </div>
-  <div class="glass-card support-card">
-    <h2>本地事件日志</h2>
-    <div class="event-count-grid">
-      {% for name, count in event_counts.items() %}
-        <div><strong>{{ count }}</strong><span>{{ name }}</span></div>
-      {% else %}
-        <p>暂无事件记录。</p>
-      {% endfor %}
+  </section>
+
+  <section class="settings-section">
+    <h2>数据存储</h2>
+    <div class="data-info">
+      <span>📁 原始资料 <code>local_data/raw_sources/</code></span>
+      <span>📁 知识库 <code>local_data/wiki/</code></span>
+      <span>📁 配置 <code>local_data/config/</code></span>
     </div>
-    <div class="compact-list">
-      {% for event in recent_events %}
-        <div class="source-ref-link">
-          <strong>{{ event.event_name }}</strong>
-          <span>{{ event.created_at.strftime("%Y/%m/%d %H:%M:%S") }}</span>
-        </div>
-      {% endfor %}
-    </div>
-    <a class="btn secondary full" href="/settings/events/export">导出 JSON</a>
-    <div class="v1-callout">这是临时 tracking adapter，当前只写本地 SQLite，后续可替换为真实分析系统。</div>
-  </div>
-</section>
+    <p class="hint">所有数据存储在本地，API Key 不会明文回显。</p>
+  </section>
+</div>
+
+<style>
+.settings-page { max-width: 640px; margin: 0 auto; padding: 2rem 1rem; }
+.settings-header { margin-bottom: 2rem; }
+.settings-header h1 { font-size: 1.4rem; margin: 0 0 4px; }
+.settings-header p { color: #888; font-size: 0.9rem; margin: 0; }
+.settings-section { margin-top: 2.5rem; }
+.settings-section h2 { font-size: 1rem; margin: 0 0 8px; }
+.hint { font-size: 0.82rem; color: #999; margin: 0 0 12px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.form-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; }
+.form-field input { padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 0.9rem; }
+.custom-provider-form { background: #fafafa; padding: 16px; border-radius: 10px; }
+.data-info { display: flex; flex-direction: column; gap: 6px; font-size: 0.85rem; }
+.data-info code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-size: 0.8rem; }
+</style>
 {% endblock %}

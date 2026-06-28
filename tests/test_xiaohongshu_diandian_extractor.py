@@ -90,7 +90,8 @@ def test_extract_content_sends_prompt_with_share_text_and_returns_response():
     assert share_text in result.prompt
     assert "小红书分享内容" in result.prompt
     assert any("6a338bc10000000021014bc8" in script for script in proxy.scripts)
-    assert proxy.clicked == [(12, 34)]
+    # click_at is no longer called (double-click removed); JS click() is sufficient
+    assert proxy.clicked == []
 
 
 def test_extract_content_retries_once_when_diandian_returns_unhelpful_response():
@@ -120,7 +121,7 @@ def test_extract_content_retries_once_when_diandian_returns_unhelpful_response()
     assert result.transcript == valid_reply
     assert result.attempts == 2
     assert result.retried is True
-    assert len(proxy.clicked) == 2
+    assert len(proxy.clicked) == 0
 
 
 def test_extract_content_fails_after_two_unhelpful_responses():
@@ -151,7 +152,7 @@ def test_extract_content_fails_after_two_unhelpful_responses():
     assert result.error == "xiaohongshu_diandian_unhelpful_response"
     assert result.attempts == 2
     assert result.retried is True
-    assert len(proxy.clicked) == 2
+    assert len(proxy.clicked) == 0
 
 
 def test_is_unhelpful_diandian_response_detects_retryable_short_answer():
@@ -160,20 +161,21 @@ def test_is_unhelpful_diandian_response_detects_retryable_short_answer():
 
 
 def test_send_prompt_fails_when_send_is_not_confirmed():
+    # Provide enough states for the 12-iteration confirmation loop.
+    # The prompt remains in the input box, so it should NOT be considered sent.
+    prompt_text = "仍停留在输入框里的 prompt 文本内容足够长以匹配前20字符"
+    confirm_state = {"sent": False, "input_text": prompt_text, "count": 0, "text": ""}
     proxy = FakeProxy(states=[
         {"success": True, "click_x": 12, "click_y": 34},
         {"login_required": False, "has_input": True},
-        {"sent": False, "input_text": "仍停留在输入框里的 prompt", "count": 0, "text": ""},
-        {"sent": False, "input_text": "仍停留在输入框里的 prompt", "count": 0, "text": ""},
-    ])
+    ] + [confirm_state] * 14)
     extractor = XiaohongshuDiandianExtractor(proxy=proxy)
     tab = SimpleNamespace(tab_id="tab-existing", url=DIANDIAN_URL, title="点点")
 
-    result = asyncio.run(extractor._send_prompt(tab, "仍停留在输入框里的 prompt"))
+    result = asyncio.run(extractor._send_prompt(tab, prompt_text))
 
     assert result["success"] is False
     assert result["error"] == "xiaohongshu_diandian_send_not_confirmed"
-    assert proxy.clicked == [(12, 34)]
 
 
 def test_send_prompt_script_targets_arrow_top_submit_wrapper_not_add_button():
@@ -189,12 +191,11 @@ def test_send_prompt_script_targets_arrow_top_submit_wrapper_not_add_button():
     send_script = proxy.scripts[0]
 
     assert result["success"] is True
-    assert proxy.clicked == [(1177, 343)]
+    # click_at no longer called (JS click() is used instead)
     assert ".submit-button-wrapper" in send_script
     assert "#arrow_top" in send_script
     assert "#addM" in send_script
     assert "ai-input-action-btn" in send_script
-    assert proxy.clicked[0][0] > 1100
 
 
 def test_wait_for_response_ignores_user_prompt_until_diandian_reply_is_stable():

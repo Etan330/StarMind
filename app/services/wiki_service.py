@@ -66,42 +66,69 @@ class WikiMaintenanceService:
     async def _summarize(self, raw_source: RawSource, transcript: str, page_type: str) -> str:
         prompt_map = {
             "knowledge": (
-                "请把下面原始资料沉淀成知识库页面。不要照搬原文，要提炼成可复用知识。"
-                "结构必须包括：核心定义、关键观点、适用边界、可复用结论、引用来源。"
+                "你是一个知识提炼专家。请对下面的原始资料进行深度沉淀，输出精炼的知识卡片。\n\n"
+                "【要求】\n"
+                "1. 绝对不要照搬原文，必须用你自己的话重新组织\n"
+                "2. 提炼出核心洞见和可复用结论，去除所有冗余和口语化表达\n"
+                "3. 如果原文很长，只保留最有价值的 20% 精华内容\n"
+                "4. 用结构化方式呈现，便于快速回顾\n\n"
+                "【输出格式（Markdown）】\n"
+                "## 一句话总结\n（用一句话概括这篇内容的核心价值）\n\n"
+                "## 核心观点\n（列出 3-5 个最关键的观点/知识点，每个 1-2 句话）\n\n"
+                "## 可复用结论\n（提炼出可以直接应用到实际场景的结论或方法）\n\n"
+                "## 适用场景\n（这些知识在什么情况下有用）\n\n"
+                "## 局限与注意\n（这些知识的边界、不适用的情况）\n"
             ),
             "methodology": (
-                "请把下面原始资料提炼成方法论。重点是判断框架和思考原则，不要写成操作清单。"
-                "结构必须包括：适用场景、核心原则、判断流程、反例/风险边界、如何复用、引用来源。"
+                "你是一个方法论提炼专家。请把下面的原始资料提炼成简洁的方法论框架。\n\n"
+                "【要求】\n"
+                "1. 提炼判断框架和思考原则，不要写成操作清单\n"
+                "2. 去除冗余，用精炼的语言描述\n"
+                "3. 重点是「何时用」「怎么判断」「核心原则是什么」\n\n"
+                "【输出格式（Markdown）】\n"
+                "## 方法论名称\n\n"
+                "## 适用场景\n\n"
+                "## 核心原则（3-5 条）\n\n"
+                "## 判断流程\n\n"
+                "## 常见误区\n"
             ),
             "sop": (
-                "请把下面原始资料整理成 SOP。重点是可执行步骤，不要写成泛泛总结。"
-                "结构必须包括：目标、前置条件、执行步骤、检查清单、异常处理、完成标准、引用来源。"
+                "你是一个 SOP 提炼专家。请把下面的原始资料整理成可执行的标准操作流程。\n\n"
+                "【要求】\n"
+                "1. 精简到最少必要步骤\n"
+                "2. 每步必须是具体可执行的动作\n"
+                "3. 去除所有废话和过渡语句\n\n"
+                "【输出格式（Markdown）】\n"
+                "## 目标\n\n"
+                "## 前置条件\n\n"
+                "## 步骤\n\n"
+                "## 完成标准\n"
             ),
             "skill": (
-                "请把下面原始资料沉淀成给 iDA Agent 调用的 Skill 说明。重点是让 Agent 知道何时调用、"
-                "需要什么输入、怎么执行、如何判断是否成功。结构必须包括：Skill 名称、调用场景、"
-                "输入要求、执行步骤、工具/依赖、输出格式、失败处理、可调用性评估（0-100 分，并说明是否建议启用）、引用来源。"
+                "请把下面原始资料沉淀成给 Agent 调用的 Skill 说明。"
+                "结构：Skill 名称、调用场景、输入、步骤、输出格式、失败处理。"
             ),
         }
         prompt = (
             prompt_map.get(page_type, prompt_map["knowledge"])
-            + "如果逐字稿不足，请明确标注待补全。\n\n"
-            + f"标题：{raw_source.title}\n链接：{raw_source.canonical_url}\n\n逐字稿：\n{transcript[:8000]}"
+            + f"\n\n---\n\n【原始资料】\n标题：{raw_source.title}\n来源：{raw_source.platform}\n链接：{raw_source.canonical_url}\n\n正文内容：\n{transcript[:8000]}"
         )
         try:
             provider, model, _config = get_provider_runtime()
             body = await provider.chat(
                 [
-                    {"role": "system", "content": "你是 StarMind 的知识库维护 Agent。"},
+                    {"role": "system", "content": "你是 StarMind 知识提炼专家。你的职责是把原始资料精炼成结构化知识卡片。绝对不要照搬原文，必须用精炼的语言重新组织，只保留最有价值的精华。"},
                     {"role": "user", "content": prompt},
                 ],
                 model=model,
-                temperature=0.2,
+                temperature=0.3,
             )
             if not body.strip():
                 raise ValueError("empty model response")
             status_line = "> 生成状态：已调用模型完成沉淀。"
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger("starmind.wiki").warning(f"LLM summarize failed: {e}")
             body = self._fallback_body(raw_source, transcript, page_type)
             status_line = "> 生成状态：模型未成功返回，当前使用本地兜底模板；配置可用模型后可重新生成。"
         return f"# {self._page_title(raw_source.title, page_type)}\n\n{status_line}\n\n{body}\n\n---\n引用来源：{raw_source.canonical_url}\n"
