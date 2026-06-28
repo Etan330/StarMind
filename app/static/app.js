@@ -296,23 +296,102 @@
     })
   })
 
-  document.querySelectorAll("[data-source-filter]").forEach((root) => {
+  function initSourceShell(shell) {
+    if (!shell || shell.dataset.bound === "1") return
+    shell.dataset.bound = "1"
+    const tabs = Array.from(shell.querySelectorAll("[data-collection-tab]"))
+    const panels = Array.from(shell.querySelectorAll("[data-source-filter]"))
+    const hints = Array.from(shell.querySelectorAll("[data-collection-hint]"))
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const kind = tab.dataset.collectionTab
+        tabs.forEach((other) => {
+          const active = other === tab
+          other.classList.toggle("is-active", active)
+          other.setAttribute("aria-selected", active ? "true" : "false")
+        })
+        panels.forEach((panel) => {
+          const match = panel.dataset.collectionKind === kind
+          panel.hidden = !match
+          panel.classList.toggle("is-hidden", !match)
+        })
+        hints.forEach((hint) => {
+          hint.hidden = hint.dataset.collectionHint !== kind
+        })
+      })
+    })
+  }
+  document.querySelectorAll("[data-source-shell]").forEach(initSourceShell)
+
+  function initSourceFilter(root) {
+    if (!root || root.dataset.bound === "1") return
+    root.dataset.bound = "1"
     const platform = root.dataset.platform
-    const homepageInput = document.querySelector("[data-source-homepage-input]")
+    const collectionKind = root.dataset.collectionKind || "history"
+    // homepage 输入框在「平台设置」折叠区里，与本面板同属一个 data-source-setup-panel 容器。
+    // 用容器作用域查找，避免 /ui/sync 标签栏内联多平台时跨面板串到别的平台输入框（独立页只有一个面板，行为不变）。
+    const panelScope = root.closest("[data-source-setup-panel]") || document
+    const homepageInput = panelScope.querySelector("[data-source-homepage-input]")
     const limitSelect = root.querySelector("[data-filter-limit]")
     const scanButton = root.querySelector("[data-filter-scan]")
     const classifyButton = root.querySelector("[data-filter-classify]")
     const extractButton = root.querySelector("[data-filter-extract]")
+    const resumeButton = root.querySelector("[data-filter-resume]")
     const status = root.querySelector("[data-filter-status]")
     const summary = root.querySelector("[data-filter-summary]")
     const results = root.querySelector("[data-filter-results]")
+    const filterToolbar = root.querySelector("[data-filter-toolbar]")
+    const usefulnessFilter = root.querySelector("[data-filter-usefulness]")
+    const categoryFilter = root.querySelector("[data-filter-category]")
+    const timeFilter = root.querySelector("[data-filter-time]")
+    const ingestedFilter = root.querySelector("[data-filter-ingested]")
+    const saveHistoryButton = root.querySelector("[data-filter-save-history]")
+    const rescanHistoryButton = root.querySelector("[data-filter-rescan-history]")
+    const isHistory = collectionKind === "history"
     let scannedItems = []
     let classifiedItems = []
     let selectedCandidateIds = []
+    let currentJobId = null
     let lastGroups = []
     const resumablePlatforms = new Set(["douyin", "xiaohongshu", "bilibili"])
-    const canResume = resumablePlatforms.has(platform)
-    const stateKey = `starmind.batchTitleFilter.${platform}`
+    // 只有历史 Tab 走 localStorage 续跑：历史是低频「采集一次保存」流程，断点续跑有意义。
+    // 新增 Tab 是高频「即采即清」流程——绝不读/写本地缓存，否则陈旧缓存会把历史/旧条目漏渲染出来；
+    // 它每次进页面都以 DB（filter_incremental 已去重）为唯一权威源，空就显示空态。
+    const canResume = resumablePlatforms.has(platform) && collectionKind === "history"
+    const stateKey = `starmind.batchTitleFilter.${platform}.${collectionKind}`
+
+    // 新增 Tab 进页面先把可能残留的旧缓存键清掉（历史代码曾给它写过缓存），杜绝陈旧来源。
+    if (collectionKind !== "history") {
+      try { window.localStorage?.removeItem(stateKey) } catch (_ignored) {}
+    }
+
+    const show = (el, visible) => { if (el) el.hidden = !visible }
+
+    // 历史 Tab 三态布局（gate 在 isHistory）：
+    // - 扫描模式：采集数量/扫描/分类/提取可用，藏 保存/重新扫描。
+    // - 只读模式（已保存历史）：藏 采集数量/扫描/分类/保存，留 提取(仅勾选)/重新扫描/筛选栏。
+    const enterScanMode = () => {
+      if (!isHistory) return
+      const limitLabel = limitSelect?.closest("label")
+      show(limitLabel, true)
+      show(scanButton, true)
+      show(classifyButton, true)
+      show(saveHistoryButton, false)
+      show(rescanHistoryButton, false)
+    }
+    const revealSaveButton = () => {
+      if (!isHistory) return
+      show(saveHistoryButton, true)
+    }
+    const enterReadOnlyMode = () => {
+      if (!isHistory) return
+      const limitLabel = limitSelect?.closest("label")
+      show(limitLabel, false)
+      show(scanButton, false)
+      show(classifyButton, false)
+      show(saveHistoryButton, false)
+      show(rescanHistoryButton, true)
+    }
 
     const setStatus = (message, tone = "") => {
       if (!status) return
@@ -399,24 +478,105 @@
     const renderScannedPreview = (items) => {
       if (!results) return
       results.hidden = false
-      results.innerHTML = items.map((item) => `
-        <div class="filter-item preview-only">
-          <span><strong>${escapeHtml(item.title || item.url)}</strong><small>${escapeHtml(item.author || item.platform || "")}</small><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a></span>
+      if (filterToolbar) filterToolbar.hidden = true
+      results.innerHTML = items.map((item) => {
+        const extracted = item.extracted === true
+        const publishBits = item.published_at ? ` · ${escapeHtml(item.published_at)}` : ""
+        const chip = extracted ? '<span class="status-chip success filter-extracted-chip">已入库</span>' : ""
+        return `
+        <div class="filter-item preview-only${extracted ? " extracted" : ""}">
+          <span><strong>${escapeHtml(item.title || item.url)}</strong>${chip}<small>${escapeHtml(item.author || item.platform || "")}${publishBits}</small><a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a></span>
         </div>
-      `).join("")
+      `}).join("")
+    }
+
+    // 把发布时间原文尽力解析为 Date；解析不出返回 null（仅「有发布时间/不限」能命中，避免误判）。
+    const parsePublishDate = (raw) => {
+      if (!raw) return null
+      const text = String(raw).trim()
+      const ymd = text.match(/(\d{4})[-/年.](\d{1,2})[-/月.](\d{1,2})/)
+      if (ymd) {
+        const d = new Date(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3]))
+        return Number.isNaN(d.getTime()) ? null : d
+      }
+      const rel = text.match(/(\d+)\s*(天|日|周|个?月|小时|分钟|秒)前/)
+      if (rel) {
+        const n = Number(rel[1])
+        const unit = rel[2]
+        const now = new Date()
+        if (unit.includes("月")) now.setMonth(now.getMonth() - n)
+        else if (unit === "周") now.setDate(now.getDate() - n * 7)
+        else if (unit === "天" || unit === "日") now.setDate(now.getDate() - n)
+        else if (unit === "小时") now.setHours(now.getHours() - n)
+        else if (unit === "分钟") now.setMinutes(now.getMinutes() - n)
+        else now.setSeconds(now.getSeconds() - n)
+        return now
+      }
+      if (/^(今天|刚刚|昨天|前天)/.test(text)) {
+        const now = new Date()
+        if (text.startsWith("昨天")) now.setDate(now.getDate() - 1)
+        else if (text.startsWith("前天")) now.setDate(now.getDate() - 2)
+        return now
+      }
+      return null
+    }
+
+    const itemPassesFilters = (item) => {
+      const wantUsefulness = usefulnessFilter?.value || ""
+      if (wantUsefulness && item.usefulness !== wantUsefulness) return false
+      const wantCategory = categoryFilter?.value || ""
+      if (wantCategory && (item.subcategory || "") !== wantCategory) return false
+      const wantIngested = ingestedFilter?.value || ""
+      if (wantIngested === "ingested" && item.extracted !== true) return false
+      if (wantIngested === "not" && item.extracted === true) return false
+      const wantTime = timeFilter?.value || ""
+      if (wantTime) {
+        const date = parsePublishDate(item.published_at)
+        if (wantTime === "has") {
+          if (!item.published_at) return false
+        } else {
+          if (!date) return false
+          const days = (Date.now() - date.getTime()) / 86400000
+          if (days > Number(wantTime)) return false
+        }
+      }
+      return true
+    }
+
+    const populateCategoryFilter = () => {
+      if (!categoryFilter) return
+      const cats = []
+      for (const group of lastGroups) {
+        const sub = group.subcategory
+        if (sub && !cats.includes(sub)) cats.push(sub)
+      }
+      const current = categoryFilter.value
+      categoryFilter.innerHTML = '<option value="">全部类别</option>' + cats.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("")
+      if (cats.includes(current)) categoryFilter.value = current
     }
 
     const renderGroups = (groups) => {
       lastGroups = groups || []
       if (!results) return
       results.hidden = false
+      if (filterToolbar) filterToolbar.hidden = lastGroups.length === 0
+      populateCategoryFilter()
+      applyFilters()
+    }
+
+    const applyFilters = () => {
+      if (!results) return
+      const groups = lastGroups || []
       if (!groups.length) {
         results.innerHTML = '<div class="empty-state">没有可展示的分类结果。</div>'
         return
       }
+      let visibleCount = 0
       results.innerHTML = groups.map((group, groupIndex) => {
         const groupKey = `${group.usefulness}-${group.subcategory}-${groupIndex}`
-        const items = group.items || []
+        const items = (group.items || []).filter(itemPassesFilters)
+        if (!items.length) return ""
+        visibleCount += items.length
         return `
           <section class="filter-group" data-filter-group="${escapeHtml(groupKey)}">
             <div class="filter-group-head">
@@ -424,34 +584,51 @@
                 <input type="checkbox" data-group-toggle checked>
                 <span>${group.usefulness === "useful" ? "有用" : "没用"} · ${escapeHtml(group.subcategory)}</span>
               </label>
-              <span class="status-chip ${group.usefulness === "useful" ? "success" : "warning"}">${group.count} 条</span>
+              <span class="status-chip ${group.usefulness === "useful" ? "success" : "warning"}">${items.length} 条</span>
             </div>
             <div class="filter-item-list">
-              ${items.map((item, itemIndex) => `
-                <label class="filter-item">
-                  <input type="checkbox" data-item-check data-item-index="${classifiedItems.indexOf(item)}" ${group.usefulness === "useful" ? "checked" : ""}>
+              ${items.map((item) => {
+                const extracted = item.extracted === true
+                const idx = classifiedItems.indexOf(item)
+                const publishBits = item.published_at ? ` · ${escapeHtml(item.published_at)}` : ""
+                const chip = extracted ? '<span class="status-chip success filter-extracted-chip">已入库</span>' : ""
+                const checked = extracted ? "" : (group.usefulness === "useful" ? "checked" : "")
+                const disabled = extracted ? "disabled" : ""
+                return `
+                <label class="filter-item${extracted ? " extracted" : ""}">
+                  <input type="checkbox" data-item-check data-item-index="${idx}" ${checked} ${disabled}>
                   <span>
-                    <strong>${escapeHtml(item.title || item.url)}</strong>
-                    <small>${escapeHtml(item.author || item.platform || "未知作者")} · ${escapeHtml(item.reason || "")}</small>
+                    <strong>${escapeHtml(item.title || item.url)}</strong>${chip}
+                    <small>${escapeHtml(item.author || item.platform || "未知作者")} · ${escapeHtml(item.reason || "")}${publishBits}</small>
                     <a href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer">打开源网页</a>
                   </span>
                 </label>
-              `).join("")}
+              `}).join("")}
             </div>
           </section>
         `
       }).join("")
+      if (!visibleCount) {
+        results.innerHTML = '<div class="empty-state">当前筛选条件下没有匹配的条目。</div>'
+        return
+      }
       results.querySelectorAll("[data-group-toggle]").forEach((checkbox) => {
         checkbox.addEventListener("change", () => {
           const group = checkbox.closest("[data-filter-group]")
-          group?.querySelectorAll("[data-item-check]").forEach((itemCheck) => {
+          group?.querySelectorAll("[data-item-check]:not([disabled])").forEach((itemCheck) => {
             itemCheck.checked = checkbox.checked
           })
         })
       })
     }
 
+    ;[usefulnessFilter, categoryFilter, timeFilter, ingestedFilter].forEach((select) => {
+      select?.addEventListener("change", applyFilters)
+    })
+
     const restoreState = () => {
+      // 新增 Tab 不做 localStorage 续跑（canResume 已为 false），双保险：直接不恢复，避免陈旧缓存漏渲染。
+      if (!isHistory) return
       const saved = readSavedState()
       if (!saved) return
       if (!Array.isArray(saved.scannedItems) || !Array.isArray(saved.classifiedItems) || !Array.isArray(saved.groups) || !Array.isArray(saved.selectedCandidateIds)) {
@@ -471,28 +648,152 @@
         renderScannedPreview(scannedItems)
         classifyButton.disabled = scannedItems.length === 0
         extractButton.disabled = true
+        if (isHistory) enterScanMode()
       } else if (saved.stage === "classified" || saved.stage === "prepared") {
         renderGroups(lastGroups)
         classifyButton.disabled = scannedItems.length === 0
         extractButton.disabled = classifiedItems.length === 0 && selectedCandidateIds.length === 0
+        if (isHistory) { enterScanMode(); if (classifiedItems.length) revealSaveButton() }
       } else if (saved.stage === "completed") {
         if (lastGroups.length) renderGroups(lastGroups)
         else if (scannedItems.length) renderScannedPreview(scannedItems)
         classifyButton.disabled = scannedItems.length === 0
         extractButton.disabled = true
+        if (isHistory) { enterScanMode(); if (classifiedItems.length) revealSaveButton() }
       } else {
         clearSavedState()
       }
     }
 
-    restoreState()
+    // DB 权威源优先：进入页面先 GET scan-entries 渲染已落库条目（含已提取灰显），
+    // 失败再回退 localStorage 离线缓存。已分类的（有 usefulness）按分组渲染，否则按扫描预览。
+    const groupEntriesByClassification = (entries) => {
+      const map = new Map()
+      const order = []
+      for (const entry of entries) {
+        if (!entry.usefulness) continue
+        const key = `${entry.usefulness}||${entry.subcategory || "未分类"}`
+        if (!map.has(key)) {
+          map.set(key, { usefulness: entry.usefulness, subcategory: entry.subcategory || "未分类", items: [] })
+          order.push(key)
+        }
+        map.get(key).items.push(entry)
+      }
+      return order.map((key) => {
+        const group = map.get(key)
+        group.count = group.items.length
+        return group
+      })
+    }
+
+    const loadFromServer = async () => {
+      if (collectionKind !== "history" && !resumablePlatforms.has(platform)) return false
+      try {
+        const params = new URLSearchParams({ platform, kind: collectionKind })
+        const response = await fetch(`/api/sync/scan-entries?${params.toString()}`)
+        if (!response.ok) return false
+        const body = await response.json()
+        const historySaved = body.history_saved === true
+        const entries = body.items || []
+        if (!entries.length) {
+          if (isHistory) {
+            // 历史 Tab 无条目：进扫描模式（保存态没意义，没东西可读）。回退 localStorage 由调用方决定。
+            enterScanMode()
+            return false
+          }
+          // 新增 Tab：DB 是唯一权威源，空就明确渲染空态，绝不回退 localStorage 旧缓存。
+          scannedItems = []
+          classifiedItems = []
+          lastGroups = []
+          if (results) { results.hidden = true; results.innerHTML = "" }
+          if (filterToolbar) filterToolbar.hidden = true
+          if (summary) {
+            summary.hidden = false
+            summary.textContent = "暂无新增收藏。点击「采集新增收藏」抓取历史之后新收的内容。"
+          }
+          setStatus("暂无新增收藏。已见过的条目会自动去重，不再重复展示。", "")
+          classifyButton.disabled = true
+          extractButton.disabled = true
+          return true
+        }
+        scannedItems = entries
+        const groups = groupEntriesByClassification(entries)
+        if (groups.length) {
+          classifiedItems = groups.flatMap((group) => group.items || [])
+          renderGroups(groups)
+          extractButton.disabled = classifiedItems.length === 0
+          const usefulCount = entries.filter((e) => e.usefulness === "useful").length
+          const extractedCount = entries.filter((e) => e.extracted === true).length
+          if (summary) {
+            summary.hidden = false
+            summary.textContent = `已从本地数据库恢复 ${entries.length} 条（有用 ${usefulCount} 条，已入库 ${extractedCount} 条）。已入库的默认不勾选。`
+          }
+          setStatus("已从本地数据库恢复分类结果。", "ok")
+          // 历史已保存 → 只读模式；否则有分组但未保存 → 扫描模式 + 露出「保存历史收藏」让用户补存。
+          if (isHistory) {
+            if (historySaved) enterReadOnlyMode()
+            else { enterScanMode(); revealSaveButton() }
+          }
+        } else {
+          renderScannedPreview(entries)
+          if (summary) {
+            summary.hidden = false
+            summary.textContent = `已从本地数据库恢复 ${entries.length} 条扫描记录。下一步点击 AI 分类。`
+          }
+          setStatus("已从本地数据库恢复扫描结果。", "ok")
+          if (isHistory) { if (historySaved) enterReadOnlyMode(); else enterScanMode() }
+        }
+        classifyButton.disabled = scannedItems.length === 0
+        return true
+      } catch (_error) {
+        return false
+      }
+    }
+
+    loadFromServer().then((loaded) => {
+      if (!loaded) restoreState()
+    })
+
+    // 「保存历史收藏」：翻 history_saved flag（保存全部已分类条目，忽略勾选），转只读模式。
+    saveHistoryButton?.addEventListener("click", async () => {
+      setBusy(saveHistoryButton, true, "保存中...")
+      try {
+        const body = await apiPost("/api/sync/save-history", { platform })
+        if (summary) {
+          summary.hidden = false
+          summary.textContent = `已保存 ${body.history_count != null ? body.history_count : scannedItems.length} 条历史收藏。下次进入历史收藏将直接展示，不再需要重新扫描分类。`
+        }
+        setStatus("历史收藏已保存。", "ok")
+        enterReadOnlyMode()
+      } catch (error) {
+        setStatus(error.message || "保存失败", "bad")
+      } finally {
+        setBusy(saveHistoryButton, false)
+      }
+    })
+
+    // 「重新扫描历史」：清 history_saved + first_scan_done，回到扫描模式重新走 history 全量。
+    rescanHistoryButton?.addEventListener("click", async () => {
+      setBusy(rescanHistoryButton, true, "重置中...")
+      try {
+        await apiPost("/api/sync/reset-history", { platform })
+        setStatus("已重置历史收藏，可重新扫描。", "ok")
+        enterScanMode()
+      } catch (error) {
+        setStatus(error.message || "重置失败", "bad")
+      } finally {
+        setBusy(rescanHistoryButton, false)
+      }
+    })
 
     scanButton?.addEventListener("click", async () => {
-      setBusy(scanButton, true, "扫描中...")
+      setBusy(scanButton, true, isHistory ? "扫描中..." : "采集中...")
       setStatus("正在通过浏览器读取收藏标题，请不要关闭浏览器。")
       try {
         const currentHomepageUrl = homepageInput?.value?.trim() || root.dataset.homepageUrl || ""
-        const body = await apiPost("/api/sync/scan-titles", { platform, limit: limitSelect?.value || 10, homepage_url: currentHomepageUrl })
+        // 历史用下拉的采集数量；新增没有下拉、固定扫全量（limit:"all"），后端 filter_incremental 在全量上去重。
+        const scanLimit = isHistory ? (limitSelect?.value || 10) : "all"
+        const body = await apiPost("/api/sync/scan-titles", { platform, limit: scanLimit, homepage_url: currentHomepageUrl, collection_kind: collectionKind })
         scannedItems = body.items || []
         classifiedItems = []
         selectedCandidateIds = []
@@ -531,6 +832,8 @@
         extractButton.disabled = classifiedItems.length === 0
         setStatus("AI 分类完成，请确认要保留的分类或条目。", "ok")
         saveState("classified")
+        // 历史 Tab：分类后露出「保存历史收藏」，让用户把全部已分类条目保存为只读。
+        if (classifiedItems.length) revealSaveButton()
       } catch (error) {
         setStatus(error.message || "分类失败", "bad")
       } finally {
@@ -589,31 +892,135 @@
           setStatus("没有可提取的候选。可能这些内容已经准备过或已入库，请重新扫描/分类后再试。", "bad")
           return
         }
-        addExtractLog('✓ 候选已创建，开始逐条提取...')
-        updateExtractProgress(0, selectedCandidateIds.length, `提取中 0/${selectedCandidateIds.length}`)
-        const extractEndpoint = isXiaohongshu ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
-        const extracted = await apiPost(extractEndpoint, { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 })
-        // Update to 100%
-        updateExtractProgress(selectedCandidateIds.length, selectedCandidateIds.length, '✅ 提取完成')
-        addExtractLog(`✅ 成功 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条`)
-        addExtractLog(`<a href="/ui/sources" style="color:#215f52;">→ 查看原始资料</a> | <a href="/ui/sources" onclick="setTimeout(()=>document.getElementById('distill-btn')?.click(),500)" style="color:#215f52;">→ 沉淀到知识库</a>`)
-        setTimeout(() => progressOverlay.remove(), 3000)
-        setStatus(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。<a href="/ui/sources">查看原始资料 →</a>`, "ok")
-        if (summary) summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
-        saveState("completed")
+        currentJobId = null
+        await runExtraction(isXiaohongshu)
       } catch (error) {
-        progressOverlay.remove()
-        if (error.code === "xiaohongshu_diandian_not_ready") {
-          setStatus("小红书点点页面未就绪。请确认浏览器仍登录小红书，并打开 https://www.xiaohongshu.com/ai_chat 后重试。", "bad")
-        } else if (error.code === "doubao_login_required") {
-          setStatus("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com", "bad")
-        } else {
-          setStatus(error.message || (isXiaohongshu ? "小红书点点提取失败" : "豆包提取失败"), "bad")
-        }
+        handleExtractError(error, isXiaohongshu)
       } finally {
         setBusy(extractButton, false)
       }
     })
+
+    // 续跑：用户在豆包/点点页面手动完成人机验证后点此按钮。
+    // 带上原 candidate_ids + currentJobId 重 POST 同一端点，后端靠 *_extracted 标记
+    // 跳过已完成、从断点续跑。循环直到 status === "completed"。
+    resumeButton?.addEventListener("click", async () => {
+      if (!selectedCandidateIds.length) {
+        setStatus("没有可续跑的候选。", "bad")
+        return
+      }
+      const isXiaohongshu = platform === "xiaohongshu"
+      resumeButton.hidden = true
+      setBusy(extractButton, true, isXiaohongshu ? "点点续跑中..." : "豆包续跑中...")
+      setStatus("正在从断点继续提取剩余条目...")
+      try {
+        await runExtraction(isXiaohongshu)
+      } catch (error) {
+        handleExtractError(error, isXiaohongshu)
+      } finally {
+        setBusy(extractButton, false)
+      }
+    })
+
+    // 单次 POST extract-selected，根据返回的 status 处理 paused / completed。
+    // paused 是 200（不是错误），据此显示续跑按钮 + reason 提示。
+    async function runExtraction(isXiaohongshu) {
+      const extractEndpoint = isXiaohongshu ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      if (currentJobId) payload.job_id = currentJobId
+      const extracted = await apiPost(extractEndpoint, payload)
+      currentJobId = extracted.job_id || currentJobId
+      if (extracted.status === "paused") {
+        const remaining = extracted.pending_remaining != null ? extracted.pending_remaining : "若干"
+        const baseMsg = extracted.message || "检测到人机验证，已暂停。请在浏览器页面完成验证后继续。"
+        setStatus(`${baseMsg}（本轮已入库 ${extracted.success_count || 0} 条，剩余 ${remaining} 条待续跑）`, "bad")
+        if (resumeButton) resumeButton.hidden = false
+        saveState("paused")
+        return
+      }
+      // completed
+      if (resumeButton) resumeButton.hidden = true
+      setStatus(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。`, "ok")
+      if (summary) summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
+      saveState("completed")
+    }
+
+    function handleExtractError(error, isXiaohongshu) {
+      if (error.code === "xiaohongshu_diandian_not_ready") {
+        setStatus("小红书点点页面未就绪。请确认浏览器仍登录小红书，并打开 https://www.xiaohongshu.com/ai_chat 后重试。", "bad")
+      } else if (error.code === "doubao_login_required") {
+        setStatus("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com", "bad")
+      } else {
+        setStatus(error.message || (isXiaohongshu ? "小红书点点提取失败" : "豆包提取失败"), "bad")
+      }
+    }
+  }
+  document.querySelectorAll("[data-source-filter]").forEach(initSourceFilter)
+
+  // 同步收藏页：顶部平台标签栏，点标签按需 AJAX 注入该平台提取面板，URL 同步 ?platform=。
+  // 独立页 /ui/source-setup/{platform} 仍在（片段来源 + 旧书签兼容）。
+  document.querySelectorAll("[data-platform-tabs]").forEach((tabbar) => {
+    const section = tabbar.closest("[data-platform-section]") || tabbar.parentElement
+    const host = section?.querySelector("[data-platform-panel-host]")
+    if (!host) return
+    const tabs = Array.from(tabbar.querySelectorAll("[data-platform-tab]"))
+    const validPlatforms = new Set(tabs.map((tab) => tab.dataset.platformTab))
+
+    const highlight = (platform) => {
+      tabs.forEach((tab) => {
+        const active = tab.dataset.platformTab === platform
+        tab.classList.toggle("is-active", active)
+        tab.setAttribute("aria-selected", active ? "true" : "false")
+      })
+    }
+
+    let loadToken = 0
+    const loadPanel = async (platform) => {
+      if (!validPlatforms.has(platform)) return
+      const token = ++loadToken
+      highlight(platform)
+      host.innerHTML = '<p class="platform-panel-loading">正在加载提取面板…</p>'
+      try {
+        const response = await fetch(`/ui/source-setup/${encodeURIComponent(platform)}/panel`, {
+          headers: { "X-Requested-With": "fetch" },
+        })
+        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        const html = await response.text()
+        if (token !== loadToken) return // 期间又点了别的标签，丢弃过期响应
+        host.innerHTML = html
+        host.querySelectorAll("[data-source-shell]").forEach(initSourceShell)
+        host.querySelectorAll("[data-source-filter]").forEach(initSourceFilter)
+      } catch (_error) {
+        if (token !== loadToken) return
+        host.innerHTML =
+          `<div class="notice bad">提取面板加载失败。` +
+          `<a href="/ui/source-setup/${encodeURIComponent(platform)}">打开独立页</a>重试。</div>`
+      }
+    }
+
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const platform = tab.dataset.platformTab
+        loadPanel(platform)
+        try {
+          window.history.pushState({ platform }, "", `/ui/sync?platform=${encodeURIComponent(platform)}`)
+        } catch (_ignored) {}
+      })
+    })
+
+    window.addEventListener("popstate", () => {
+      const params = new URLSearchParams(window.location.search)
+      const platform = params.get("platform")
+      if (platform && validPlatforms.has(platform)) loadPanel(platform)
+    })
+
+    // 首屏：URL ?platform= 优先，否则 host 的默认平台。
+    const initialParams = new URLSearchParams(window.location.search)
+    const requested = initialParams.get("platform")
+    const initial = (requested && validPlatforms.has(requested))
+      ? requested
+      : host.dataset.defaultPlatform
+    if (initial && validPlatforms.has(initial)) loadPanel(initial)
   })
 
   document.querySelectorAll("form").forEach((form) => {

@@ -7,6 +7,7 @@ from time import monotonic
 from typing import Any
 
 from app.connectors.cdp_proxy import CDPProxy, CDPTab, cdp_proxy
+from app.connectors.extract_pacing import CHALLENGE_DETECT_JS
 
 
 DIANDIAN_URL = "https://www.xiaohongshu.com/ai_chat"
@@ -134,13 +135,17 @@ class XiaohongshuDiandianExtractor:
                 before = await self._message_state(tab)
                 send_result = await self._send_prompt(tab, prompt)
                 if not send_result.get("success"):
+                    error = send_result.get("error", "xiaohongshu_diandian_send_failed")
+                    challenge = await self._challenge_state(tab)
+                    if challenge.get("challenge_required"):
+                        error = "xiaohongshu_diandian_human_verification_required"
                     return DiandianExtractResult(
                         url=url,
                         transcript="",
                         text_content="",
                         title="",
                         success=False,
-                        error=send_result.get("error", "xiaohongshu_diandian_send_failed"),
+                        error=error,
                         prompt=prompt,
                         elapsed_seconds=monotonic() - started_at,
                         attempts=attempt,
@@ -324,6 +329,29 @@ class XiaohongshuDiandianExtractor:
         })()
         """)
         return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+
+    async def _challenge_state(self, tab: CDPTab) -> dict[str, Any]:
+        """检测人机验证（滑块/拼图/captcha）。与豆包 extractor 共用 CHALLENGE_DETECT_JS。"""
+        try:
+            raw = await self._proxy.eval_script(tab, CHALLENGE_DETECT_JS)
+        except Exception:
+            return {"challenge_required": False, "kind": "none", "message": ""}
+        return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+
+    async def start_new_conversation(self) -> dict[str, Any]:
+        """开新对话窗口（反爬节流）。点点直接 location.assign(DIANDIAN_URL) 重开会话。"""
+        tab = await self._ensure_tab()
+        try:
+            await self._proxy.eval_script(tab, f"location.assign({json.dumps(DIANDIAN_URL)})")
+            await self._proxy.wait_for_load(tab)
+        except Exception:
+            pass
+        for _ in range(8):
+            await asyncio.sleep(1)
+            ready = await self._ready_state(tab)
+            if ready.get("has_input"):
+                return {"success": True, "method": "location_assign"}
+        return {"success": False, "method": "location_assign"}
 
     async def _wait_for_response_complete(self, tab: CDPTab, previous_count: int, timeout_seconds: int, prompt: str = "") -> str:
         deadline = monotonic() + max(45, timeout_seconds)

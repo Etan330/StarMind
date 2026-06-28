@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.connectors.doubao_extractor import PROMPTS, DoubaoExtractor, normalize_content_type
-from app.models import CandidateItem, RawSource, SyncLedgerItem
+from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem
 
 
 def make_session():
@@ -28,7 +28,9 @@ class FakeExtractResult:
         self.url = "https://www.douyin.com/video/7380000112233"
         self.transcript = "这是豆包返回的完整逐字稿，应该写入 RawSource。" if success else ""
         self.text_content = self.transcript
-        self.title = "AI Agent 教程" if success else ""
+        # 真实 extractor 成功路径返回空 title（标题由扫描收藏页阶段提供），Fake 对齐该行为，
+        # 这样测试能覆盖「result.title 为空 → 保留扫描时的 candidate.title」的回退逻辑。
+        self.title = ""
         self.success = success
         self.error = error
         self.elapsed_seconds = 12.5
@@ -149,6 +151,18 @@ def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monk
             candidate_id=candidate.id,
         )
     )
+    # 预置一条已 link 到该 candidate 的 ScanEntry，提取成功后应被置 extracted=True + raw_source_id。
+    db.add(
+        ScanEntry(
+            platform="douyin",
+            external_item_id="7380000112233",
+            canonical_url=candidate.canonical_url,
+            raw_url=candidate.raw_url,
+            title="AI Agent 教程",
+            collection_kind="history",
+            candidate_id=candidate.id,
+        )
+    )
     db.commit()
     db.refresh(candidate)
 
@@ -176,11 +190,20 @@ def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monk
         ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
 
         assert "这是豆包返回的完整逐字稿" in transcript
+        # 豆包成功提取后不得用视频ID覆盖扫描阶段拿到的真实标题。
+        assert db.get(CandidateItem, candidate.id).title == "AI Agent 教程"
+        assert raw_source.title == "AI Agent 教程"
+        assert transcript.startswith("# AI Agent 教程\n")
         assert metadata["doubao_extracted"] is True
         assert metadata["doubao_error"] is None
         assert metadata["doubao_response_length"] == len("这是豆包返回的完整逐字稿，应该写入 RawSource。")
         assert metadata["filter_subcategory"] == "AI/大模型"
         assert ledger.classification_label == "knowledge"
+
+        # ScanEntry 被回填：extracted=True + raw_source_id 指向新建的 RawSource。
+        scan_entry = db.query(ScanEntry).filter(ScanEntry.external_item_id == "7380000112233").one()
+        assert scan_entry.extracted is True
+        assert scan_entry.raw_source_id == raw_source.id
     finally:
         app.dependency_overrides.clear()
 
@@ -800,5 +823,258 @@ def test_extract_selected_closes_doubao_tab_after_success(tmp_path, monkeypatch)
 
         assert response.status_code == 200
         assert CloseTrackingDoubaoExtractor.closed_with[-1] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- 发送按钮稳定锚点回归断言（plan A / E1） ---
+
+
+def test_doubao_send_script_uses_stable_anchor_and_react_clickable():
+    """send_script 必须含稳定锚点优先逻辑 + reactClickable + 诊断字段。
+
+    实测豆包发送区是 <div.send-btn-wrapper>(onClick) > <button#flow-end-msg-send>(onClick)
+    > <svg.size-18>；旧逻辑会选中内部 svg（无 onClick），点击打空导致 doubao_send_not_confirmed。
+    """
+    captured_scripts = []
+
+    class FakeProxy:
+        async def eval_script(self, tab, script):
+            captured_scripts.append(script)
+            if "login_required" in script:
+                return json.dumps({"login_required": False, "has_input": True})
+            if "const prompt =" in script:
+                return json.dumps({"success": False, "error": "stop_after_script_capture"})
+            return json.dumps({"count": 0, "text": "", "page_text": "", "generating": False})
+
+    extractor = DoubaoExtractor(proxy=FakeProxy())
+    asyncio.run(extractor._send_prompt(SimpleNamespace(tab_id="tab"), "测试 prompt https://example.com"))
+
+    send_script = next(script for script in captured_scripts if "const prompt =" in script)
+    assert "flow-end-msg-send" in send_script
+    assert "send-btn-wrapper" in send_script
+    assert "reactClickable" in send_script
+    assert "hasReactOnClick" in send_script
+    assert "picked_id" in send_script
+    assert "picked_has_onclick" in send_script
+    # 兜底打分逻辑必须保留（既有测试 + 反爬场景双保险）。
+    assert "buttonScore" in send_script
+
+
+# --- 节流 + 人机验证 + 断点续跑（plan B / C / E1） ---
+
+
+class PacingTrackingDoubaoExtractor:
+    """记录 start_new_conversation 调用次数 + extract 调用，用于断言换窗节流。"""
+
+    calls = []
+    new_conversation_calls = 0
+    closed_with = []
+
+    async def check_login(self):
+        return True
+
+    async def extract_content(self, url, content_type="auto", timeout_seconds=240):
+        type(self).calls.append(url)
+        return FakeExtractResult()
+
+    async def start_new_conversation(self):
+        type(self).new_conversation_calls += 1
+        return {"success": True, "method": "new_chat_button"}
+
+    async def close(self, close_tab=True):
+        type(self).closed_with.append(close_tab)
+
+
+class HumanVerificationDoubaoExtractor:
+    """前 N 条成功，第 N+1 条返回人机验证 → 端点应 paused（200），不再继续。"""
+
+    succeed_before_challenge = 1
+    calls = []
+    new_conversation_calls = 0
+    closed_with = []
+
+    async def check_login(self):
+        return True
+
+    async def extract_content(self, url, content_type="auto", timeout_seconds=240):
+        type(self).calls.append(url)
+        if len(type(self).calls) <= type(self).succeed_before_challenge:
+            return FakeExtractResult(success=True)
+        return FakeExtractResult(success=False, error="doubao_human_verification_required")
+
+    async def start_new_conversation(self):
+        type(self).new_conversation_calls += 1
+        return {"success": True, "method": "new_chat_button"}
+
+    async def close(self, close_tab=True):
+        type(self).closed_with.append(close_tab)
+
+
+def test_extract_selected_switches_conversation_every_n_items(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", PacingTrackingDoubaoExtractor)
+    PacingTrackingDoubaoExtractor.calls = []
+    PacingTrackingDoubaoExtractor.new_conversation_calls = 0
+    PacingTrackingDoubaoExtractor.closed_with = []
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("app.api.routes.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("app.api.routes.random.uniform", lambda lo, hi: (lo + hi) / 2)
+
+    db = make_session()
+    candidates = [
+        create_doubao_candidate(db, f"BV{idx}", f"https://www.bilibili.com/video/BV{idx}", f"视频 {idx}")
+        for idx in range(4)
+    ]
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/doubao/extract-selected",
+            json={
+                "candidate_ids": [c.id for c in candidates],
+                "switch_every": 2,
+                "item_delay_min": 1,
+                "item_delay_max": 3,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["success_count"] == 4
+        # 4 条、每 2 条换窗：i=2 触发一次（i=0 不换，i%2==0 且 i>0）。
+        assert PacingTrackingDoubaoExtractor.new_conversation_calls == 1
+        # 条间随机延时：4 条之间 3 次（最后一条不等）。
+        assert len(slept) == 3
+        assert all(value == 2.0 for value in slept)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_selected_pauses_on_human_verification_and_preserves_progress(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", HumanVerificationDoubaoExtractor)
+    HumanVerificationDoubaoExtractor.calls = []
+    HumanVerificationDoubaoExtractor.new_conversation_calls = 0
+    HumanVerificationDoubaoExtractor.closed_with = []
+    HumanVerificationDoubaoExtractor.succeed_before_challenge = 1
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("app.api.routes.asyncio.sleep", fake_sleep)
+
+    db = make_session()
+    first = create_doubao_candidate(db, "BVok1", "https://www.bilibili.com/video/BVok1", "成功1")
+    second = create_doubao_candidate(db, "BVchallenge", "https://www.bilibili.com/video/BVchallenge", "触发验证")
+    third = create_doubao_candidate(db, "BVlater", "https://www.bilibili.com/video/BVlater", "尚未处理")
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/doubao/extract-selected",
+            json={"candidate_ids": [first.id, second.id, third.id], "switch_every": 99},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "paused"
+        assert body["reason"] == "human_verification"
+        assert body["job_id"]
+        assert body["success_count"] == 1
+        assert body["pending_remaining"] == 2
+
+        # 已完成的写了 RawSource、标记 doubao_extracted；未完成的不写、无标记。
+        assert db.query(RawSource).count() == 1
+        first_meta = json.loads(db.get(CandidateItem, first.id).metadata_json)
+        third_meta = json.loads(db.get(CandidateItem, third.id).metadata_json)
+        assert first_meta["doubao_extracted"] is True
+        assert third_meta.get("doubao_extracted") is not True
+        # 暂停时不能关掉豆包标签页（用户要在该页面手动验证）。
+        assert HumanVerificationDoubaoExtractor.closed_with[-1] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_extract_selected_resumes_from_breakpoint_skipping_done(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("app.api.routes.asyncio.sleep", fake_sleep)
+
+    db = make_session()
+    first = create_doubao_candidate(db, "BVdone", "https://www.bilibili.com/video/BVdone", "已完成")
+    second = create_doubao_candidate(db, "BVfail", "https://www.bilibili.com/video/BVfail", "首轮验证")
+    third = create_doubao_candidate(db, "BVrest", "https://www.bilibili.com/video/BVrest", "首轮未到")
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+
+        # 第一轮：第一条成功后第二条触发人机验证 → paused。
+        monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", HumanVerificationDoubaoExtractor)
+        HumanVerificationDoubaoExtractor.calls = []
+        HumanVerificationDoubaoExtractor.new_conversation_calls = 0
+        HumanVerificationDoubaoExtractor.closed_with = []
+        HumanVerificationDoubaoExtractor.succeed_before_challenge = 1
+
+        first_response = client.post(
+            "/api/doubao/extract-selected",
+            json={"candidate_ids": [first.id, second.id, third.id], "switch_every": 99},
+        )
+        first_body = first_response.json()
+        assert first_body["status"] == "paused"
+        job_id = first_body["job_id"]
+        assert db.query(RawSource).count() == 1
+
+        # 用户完成验证后续跑：换成全成功 extractor，带 job_id 重 POST 原 candidate_ids。
+        monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", PacingTrackingDoubaoExtractor)
+        PacingTrackingDoubaoExtractor.calls = []
+        PacingTrackingDoubaoExtractor.new_conversation_calls = 0
+        PacingTrackingDoubaoExtractor.closed_with = []
+
+        resume_response = client.post(
+            "/api/doubao/extract-selected",
+            json={
+                "candidate_ids": [first.id, second.id, third.id],
+                "job_id": job_id,
+                "switch_every": 99,
+            },
+        )
+
+        assert resume_response.status_code == 200
+        resume_body = resume_response.json()
+        assert resume_body["status"] == "completed"
+        assert resume_body["job_id"] == job_id
+        # 续跑只处理剩余 2 条（已完成的 first 被 already_extracted 跳过）。
+        assert resume_body["success_count"] == 2
+        assert PacingTrackingDoubaoExtractor.calls == [
+            "https://www.bilibili.com/video/BVfail",
+            "https://www.bilibili.com/video/BVrest",
+        ]
+        # 全部入库：第一轮 1 条 + 续跑 2 条 = 3 条，first 不重复写。
+        assert db.query(RawSource).count() == 3
+        for candidate in (first, second, third):
+            meta = json.loads(db.get(CandidateItem, candidate.id).metadata_json)
+            assert meta["doubao_extracted"] is True
     finally:
         app.dependency_overrides.clear()

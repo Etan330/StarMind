@@ -13,6 +13,7 @@ from app.services.quality_service import (
 )
 from app.services.raw_source_service import RawSourceService
 from app.services.recycle_service import RecycleService
+from app.services.scan_entry_service import ScanEntryService
 from app.services.sync_service import SyncService
 from app.services.tracking_service import TrackingService
 from app.services.url_normalizer import NormalizedURL, normalize_url
@@ -25,6 +26,7 @@ __all__ = [
     "NormalizedURL",
     "RawSourceService",
     "RecycleService",
+    "ScanEntryService",
     "SyncService",
     "WikiMaintenanceService",
     "V3_ENTRY_MODES",

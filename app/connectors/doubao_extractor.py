@@ -8,6 +8,7 @@ from time import monotonic
 from typing import Any
 
 from app.connectors.cdp_proxy import CDPConnectionError, CDPProxy, CDPTab, cdp_proxy
+from app.connectors.extract_pacing import CHALLENGE_DETECT_JS
 
 
 DOUBAO_URL = "https://www.doubao.com"
@@ -139,6 +140,96 @@ class DoubaoExtractor:
         """)
         return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
 
+    async def _challenge_state(self, tab: CDPTab) -> dict[str, Any]:
+        """检测人机验证（滑块/拼图/captcha）。返回 {challenge_required, kind, message}。
+
+        与点点 extractor 共用 CHALLENGE_DETECT_JS，保证两平台检测口径一致。
+        kind=login 表示只是登录弹窗（交给 _login_state 走 doubao_login_required），
+        kind=human_verification 才是需要用户手动过的人机验证。
+        """
+        try:
+            raw = await self._proxy.eval_script(tab, CHALLENGE_DETECT_JS)
+        except Exception:
+            return {"challenge_required": False, "kind": "none", "message": ""}
+        return json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+
+    async def start_new_conversation(self) -> dict[str, Any]:
+        """开新对话窗口（反爬节流：清空上下文、推迟人机验证出现）。
+
+        两段式回退：① 点页面「新对话」入口（reactClickable + click），用消息计数归零确认；
+        ② 回退到 location.assign(DOUBAO_URL)（实测对 doubao 重开会话比 navigate 可靠）。
+        换窗后下一条 extract 会重取 _message_state 作 before，计数天然对齐。
+        """
+        tab = await self._ensure_tab()
+        before = await self._message_state(tab)
+        before_count = int(before.get("count") or 0)
+
+        # ① 点「新对话」入口
+        click_script = r"""
+        (() => {
+            const isVisible = (node) => {
+                if (!node) return false;
+                const rect = node.getBoundingClientRect?.();
+                const style = window.getComputedStyle ? window.getComputedStyle(node) : null;
+                return (!rect || (rect.width > 0 && rect.height > 0)) && (!style || (style.display !== 'none' && style.visibility !== 'hidden'));
+            };
+            const hasReactOnClick = (node) => {
+                if (!node || !node.tagName) return false;
+                const key = Object.keys(node).find((k) => k.startsWith('__reactProps'));
+                return Boolean(key && typeof node[key]?.onClick === 'function');
+            };
+            const reactClickable = (node) => {
+                if (!node) return null;
+                if (hasReactOnClick(node)) return node;
+                const btn = node.closest?.('button, [role="button"], a');
+                if (btn && hasReactOnClick(btn)) return btn;
+                return btn || node;
+            };
+            const candidates = Array.from(document.querySelectorAll('button, [role="button"], a, [class*="new" i]'));
+            const target = candidates.find((node) => {
+                if (!isVisible(node)) return false;
+                const label = (node.innerText || '') + ' ' + (node.getAttribute('aria-label') || '') + ' ' + (node.getAttribute('title') || '');
+                return /新对话|新建对话|开启新对话|new chat|new conversation/i.test(label);
+            });
+            if (!target) return JSON.stringify({clicked: false});
+            const clickable = reactClickable(target);
+            let react_click_attempted = false;
+            try {
+                const key = Object.keys(clickable).find((k) => k.startsWith('__reactProps'));
+                const props = key ? clickable[key] : null;
+                if (props && typeof props.onClick === 'function') { react_click_attempted = true; props.onClick(); }
+            } catch (_e) {}
+            clickable.click?.();
+            return JSON.stringify({clicked: true, react_click_attempted});
+        })()
+        """
+        try:
+            raw = await self._proxy.eval_script(tab, click_script)
+            payload = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        except Exception:
+            payload = {"clicked": False}
+
+        if payload.get("clicked"):
+            # 等消息区清零确认换窗成功
+            for _ in range(5):
+                await asyncio.sleep(1)
+                state = await self._message_state(tab)
+                if int(state.get("count") or 0) < before_count or int(state.get("count") or 0) == 0:
+                    return {"success": True, "method": "new_chat_button"}
+
+        # ② 回退：location.assign 重开会话
+        try:
+            await self._proxy.eval_script(tab, f"location.assign({json.dumps(DOUBAO_URL)})")
+            await self._proxy.wait_for_load(tab)
+        except Exception:
+            pass
+        for _ in range(8):
+            await asyncio.sleep(1)
+            login_state = await self._login_state(tab)
+            if login_state.get("has_input"):
+                return {"success": True, "method": "location_assign"}
+        return {"success": False, "method": "location_assign"}
+
     async def extract_content(self, url: str, content_type: str = "auto", timeout_seconds: int = 240) -> ExtractResult:
         prompt = UNIVERSAL_PROMPT.format(url=url)
         started_at = monotonic()
@@ -150,26 +241,37 @@ class DoubaoExtractor:
             before = await self._message_state(tab)
             send_result = await self._send_prompt(tab, prompt)
             if not send_result.get("success"):
+                error = send_result.get("error", "发送失败")
+                # 发送未确认时，区分是不是人机验证拦住了（区别于普通发送失败）。
+                if error != "doubao_login_required":
+                    challenge = await self._challenge_state(tab)
+                    if challenge.get("challenge_required"):
+                        error = "doubao_human_verification_required"
                 return ExtractResult(
                     url=url,
                     transcript="",
                     text_content="",
                     title="",
                     success=False,
-                    error=send_result.get("error", "发送失败"),
+                    error=error,
                     prompt=prompt,
                     elapsed_seconds=monotonic() - started_at,
                 )
 
             content = await self._wait_for_response_complete(tab, int(before.get("assistant_count", 0)), timeout_seconds, prompt)
             if not content:
+                # 超时无回复：可能是中途弹了人机验证，把检测结果反映到 error 上。
+                error = "豆包未返回完整内容（超时）"
+                challenge = await self._challenge_state(tab)
+                if challenge.get("challenge_required"):
+                    error = "doubao_human_verification_required"
                 return ExtractResult(
                     url=url,
                     transcript="",
                     text_content="",
                     title="",
                     success=False,
-                    error="豆包未返回完整内容（超时）",
+                    error=error,
                     prompt=prompt,
                     elapsed_seconds=monotonic() - started_at,
                 )
@@ -178,7 +280,9 @@ class DoubaoExtractor:
                 url=url,
                 transcript=content,
                 text_content=content,
-                title=url.split("/")[-1][:60],
+                # 标题由扫描收藏页阶段提供（已写入 candidate.title），豆包只负责抽正文。
+                # 不要用 url.split('/')[-1] 编造视频ID当标题，否则会覆盖掉扫描拿到的真实标题。
+                title="",
                 success=True,
                 prompt=prompt,
                 elapsed_seconds=monotonic() - started_at,
@@ -314,14 +418,25 @@ class DoubaoExtractor:
                 return JSON.stringify({{success: false, error: 'prompt_input_not_applied', input_text: written, url}});
             }}
             const inputRect = input.getBoundingClientRect();
-            const buttonScope = input.closest('form, [class*="chat"], [class*="input"], [class*="composer"], [class*="Editor"], [class*="editor"]') || document;
-            const candidateSelector = 'button, [role="button"], [class*="send"], [class*="submit"], [class*="Send"], [class*="Submit"], svg, svg use';
-            const buttonCandidates = Array.from(buttonScope.querySelectorAll(candidateSelector)).concat(Array.from(document.querySelectorAll(candidateSelector)));
-            const buttons = Array.from(new Set(buttonCandidates)).map((node) => {{
-                if (node.tagName === 'BUTTON' || node.getAttribute?.('role') === 'button') return node;
-                return node.closest?.('button, [role="button"], [class*="send"], [class*="submit"], [class*="Send"], [class*="Submit"]') || node.querySelector?.('button, [role="button"]') || node;
-            }}).filter(isVisible);
-            const enabledButtons = Array.from(new Set(buttons)).filter((button) => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+            // hasReactOnClick: 元素自身是否挂了 React onClick handler。
+            const hasReactOnClick = (node) => {{
+                if (!node || !node.tagName) return false;
+                const key = Object.keys(node).find((k) => k.startsWith('__reactProps'));
+                return Boolean(key && typeof node[key]?.onClick === 'function');
+            }};
+            // reactClickable: 把任意入口（svg / wrapper / button）归一到「带 React onClick 的真实可点元素」。
+            // 豆包发送区是 <div.send-btn-wrapper>(onClick) > <button#flow-end-msg-send>(onClick) > <svg.size-18>。
+            // 旧逻辑会选中内部 svg（无 onClick）或被 closest('[class*=send]') 命中 wrapper 后又按映射元素调用，
+            // 导致 sendButton.click() / reactProps.onClick 都打空。这里确保最终拿到的是真正可点的 button/wrapper。
+            const reactClickable = (node) => {{
+                if (!node) return null;
+                if (node.tagName === 'BUTTON' && hasReactOnClick(node)) return node;
+                const btn = node.closest?.('button#flow-end-msg-send, button');
+                if (btn && hasReactOnClick(btn)) return btn;
+                const wrap = node.closest?.('[class*="send-btn-wrapper"], [class*="send"]');
+                if (wrap && hasReactOnClick(wrap)) return wrap;
+                return btn || node;
+            }};
             const useHref = (button) => Array.from(button.querySelectorAll?.('use') || []).map((use) => use.getAttribute('xlink:href') || use.getAttribute('href') || '').join(' ');
             const signal = (button) => [button.innerText, button.getAttribute('aria-label'), button.getAttribute('title'), button.className?.baseVal || button.className, button.querySelector?.('svg')?.getAttribute('aria-label'), button.querySelector?.('svg')?.className?.baseVal, useHref(button)].join(' ');
             const isNearInputRight = (button) => {{
@@ -343,13 +458,36 @@ class DoubaoExtractor:
                 score += Math.max(0, rect.left - inputRect.left) / 10;
                 return score;
             }};
-            const rightmostNearButtons = enabledButtons
-                .filter(isNearInputRight)
-                .sort((a, b) => buttonScore(b) - buttonScore(a));
-            const explicitSendButtons = enabledButtons
-                .filter((button) => /send-msg-btn|g-send-msg-btn|bg-g-send-msg-btn-bg|发送|send|submit|arrow|paper-plane|plane/i.test(signal(button)))
-                .sort((a, b) => buttonScore(b) - buttonScore(a));
-            const sendButton = rightmostNearButtons[0] || explicitSendButtons[0];
+            let sendButton = null;
+            // ① 第一优先级：稳定 id 锚点 #flow-end-msg-send（实测可靠）。
+            const anchorBtn = document.getElementById('flow-end-msg-send');
+            if (anchorBtn && isVisible(anchorBtn) && !anchorBtn.disabled && anchorBtn.getAttribute('aria-disabled') !== 'true') {{
+                sendButton = reactClickable(anchorBtn);
+            }}
+            // ② 次优先：send-btn-wrapper（取其内部 button，否则 wrapper 自身）。
+            if (!sendButton) {{
+                const wrapper = Array.from(document.querySelectorAll('[class*="send-btn-wrapper"]')).find(isVisible);
+                if (wrapper) sendButton = reactClickable(wrapper.querySelector('button') || wrapper);
+            }}
+            // ③ 兜底：保留原 buttonScore 打分逻辑，最终 pick 包一层 reactClickable，杜绝选中内部 svg。
+            let buttons = [];
+            if (!sendButton) {{
+                const buttonScope = input.closest('form, [class*="chat"], [class*="input"], [class*="composer"], [class*="Editor"], [class*="editor"]') || document;
+                const candidateSelector = 'button, [role="button"], [class*="send"], [class*="submit"], [class*="Send"], [class*="Submit"], svg, svg use';
+                const buttonCandidates = Array.from(buttonScope.querySelectorAll(candidateSelector)).concat(Array.from(document.querySelectorAll(candidateSelector)));
+                buttons = Array.from(new Set(buttonCandidates)).map((node) => {{
+                    if (node.tagName === 'BUTTON' || node.getAttribute?.('role') === 'button') return node;
+                    return node.closest?.('button, [role="button"], [class*="send"], [class*="submit"], [class*="Send"], [class*="Submit"]') || node.querySelector?.('button, [role="button"]') || node;
+                }}).filter(isVisible);
+                const enabledButtons = Array.from(new Set(buttons)).filter((button) => !button.disabled && button.getAttribute('aria-disabled') !== 'true');
+                const rightmostNearButtons = enabledButtons
+                    .filter(isNearInputRight)
+                    .sort((a, b) => buttonScore(b) - buttonScore(a));
+                const explicitSendButtons = enabledButtons
+                    .filter((button) => /send-msg-btn|g-send-msg-btn|bg-g-send-msg-btn-bg|发送|send|submit|arrow|paper-plane|plane/i.test(signal(button)))
+                    .sort((a, b) => buttonScore(b) - buttonScore(a));
+                sendButton = reactClickable(rightmostNearButtons[0] || explicitSendButtons[0]);
+            }}
             if (!sendButton) {{
                 const disabled = buttons.find((button) => /send-msg-btn|g-send-msg-btn|bg-g-send-msg-btn-bg|发送|send|submit|arrow|paper-plane|plane/i.test(signal(button)));
                 return JSON.stringify({{success: false, error: disabled ? 'send_button_disabled' : 'send_button_not_found'}});
@@ -382,6 +520,8 @@ class DoubaoExtractor:
                 before_count: 0,
                 react_click_attempted,
                 send_button_class: String(sendButton.className?.baseVal || sendButton.className || ''),
+                picked_id: String(sendButton.id || ''),
+                picked_has_onclick: hasReactOnClick(sendButton),
                 click_x: rect.left + rect.width / 2,
                 click_y: rect.top + rect.height / 2
             }});
@@ -393,7 +533,17 @@ class DoubaoExtractor:
         login_state = await self._login_state(tab)
         if login_state.get("login_required"):
             return {"success": False, "error": "doubao_login_required", "message": "检测到豆包登录弹窗"}
-        if not payload.get("success"):
+        # 脚本内的 confirmSent() 是同步执行的，紧跟在 onClick 之后——此时 React 还没把
+        # 新消息渲染进 DOM，所以它几乎必然返回 success:false。绝不能据此提前 return，
+        # 否则会跳过下面基于「消息数增加」的 Python 端确认重试（_message_state 轮询）。
+        # 只有「点击根本没发生」的硬失败才提前返回：脚本既没找到/可点按钮，也没尝试任何点击。
+        attempted_click = bool(
+            payload.get("react_click_attempted")
+            or payload.get("picked_has_onclick")
+            or isinstance(payload.get("click_x"), (int, float))
+            and isinstance(payload.get("click_y"), (int, float))
+        )
+        if not payload.get("success") and not attempted_click:
             return payload
         click_x = payload.get("click_x")
         click_y = payload.get("click_y")
@@ -463,10 +613,20 @@ class DoubaoExtractor:
     async def _message_state(self, tab: CDPTab) -> dict[str, Any]:
         raw = await self._proxy.eval_script(tab, """
         (() => {
-            // 豆包真实消息节点是 [data-message-id]。用户消息内含 send-msg-bubble-bg 气泡，
-            // 助手消息内含 markdown / md-box-root 容器。旧的 [class*=message] selector 会
-            // 命中虚拟列表 wrapper、action-bar、suggest-message 提示，导致 count/text 不可靠。
-            const isUserMessage = (node) => Boolean(node.querySelector('[class*="send-msg-bubble-bg"]'));
+            // 豆包真实消息节点是 [data-message-id]。角色判定不能看内部是否含
+            // send-msg-bubble-bg——实测助手回复容器里也会嵌套命中该类的子节点，
+            // 会把助手消息误判成用户消息，assistant_count 永远为 0，导致
+            // _wait_for_response_complete 永远等不到新回复而超时。
+            // 稳定锚点：用户消息外层容器类含 justify-end（右对齐气泡），
+            // 助手消息外层容器类含 grid-cols（左侧 markdown 网格布局）。
+            const containerClass = (node) => String(node.className?.baseVal || node.className || '');
+            const isUserMessage = (node) => {
+                const cls = containerClass(node);
+                if (/justify-end/.test(cls)) return true;
+                if (/grid-cols/.test(cls)) return false;
+                // 兜底：没有命中布局锚点时，回退到「直接子级气泡」判定（顶层而非深层后代）。
+                return Boolean(node.querySelector(':scope > * [class*="send-msg-bubble-bg"]'));
+            };
             const messageNodes = Array.from(document.querySelectorAll('[data-message-id]'));
             const records = messageNodes.map((node) => ({
                 id: node.getAttribute('data-message-id') || '',
@@ -474,7 +634,15 @@ class DoubaoExtractor:
                 text: (node.innerText || '').trim(),
             }));
             const assistantRecords = records.filter((record) => !record.is_user && record.text);
-            const lastAssistant = assistantRecords.length ? assistantRecords[assistantRecords.length - 1] : null;
+            // 实测助手回复会被拆成多个 [data-message-id]：真正的解析正文 + 一条很短的
+            // 「搜索 N 个关键词，参考 M 篇资料」状态行；且正文节点开头也会粘上这条状态行。
+            // 取「最长」的助手记录作为正文（短状态行天然被排除），再剥掉开头的检索状态行。
+            const stripSearchPrefix = (text) =>
+                text.replace(/^\\s*(?:正在)?搜索\\s*\\d+\\s*个关键词[，,]?\\s*参考\\s*\\d+\\s*篇资料\\s*\\n?/, '').trim();
+            const lastAssistant = assistantRecords.length
+                ? assistantRecords.reduce((best, cur) => (cur.text.length > best.text.length ? cur : best))
+                : null;
+            const lastAssistantText = lastAssistant ? stripSearchPrefix(lastAssistant.text) : '';
 
             const pageText = document.body?.innerText || '';
             const inputs = Array.from(document.querySelectorAll('textarea:not([readonly]), input[type="text"]:not([readonly]), [contenteditable="true"], [role="textbox"], .ProseMirror'));
@@ -507,7 +675,7 @@ class DoubaoExtractor:
             return JSON.stringify({
                 count: records.length,
                 assistant_count: assistantRecords.length,
-                text: lastAssistant ? lastAssistant.text : '',
+                text: lastAssistantText,
                 last_assistant_id: lastAssistant ? lastAssistant.id : '',
                 page_text: pageText.slice(-4000),
                 input_text: inputText,

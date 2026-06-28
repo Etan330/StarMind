@@ -85,7 +85,7 @@ def test_source_setup_pages_show_only_supported_extract_controls():
 
         assert douyin.status_code == 200
         assert "/api/collect-and-extract/douyin" in douyin.text
-        assert "历史收藏预筛选" in douyin.text
+        assert "收藏预筛选" in douyin.text
         assert "扫描标题" in douyin.text
         assert "AI 分类" in douyin.text
         assert "仅提取我勾选的内容" in douyin.text
@@ -93,11 +93,11 @@ def test_source_setup_pages_show_only_supported_extract_controls():
 
         assert xiaohongshu.status_code == 200
         assert "/api/collect-and-extract/xiaohongshu" in xiaohongshu.text
-        assert "历史收藏预筛选" in xiaohongshu.text
+        assert "收藏预筛选" in xiaohongshu.text
 
         assert bilibili.status_code == 200
         assert "/api/collect-and-extract/bilibili" in bilibili.text
-        assert "历史收藏预筛选" in bilibili.text
+        assert "收藏预筛选" in bilibili.text
 
         # Unsupported platform should show "待接入"
         reddit = client.get("/ui/source-setup/reddit")
@@ -208,3 +208,59 @@ def test_v3_favorites_entry_redirects_to_sync_page():
         assert db.query(ProductEvent).filter(ProductEvent.event_name == "v3_primary_input_submitted").count() == 1
     finally:
         app.dependency_overrides.clear()
+
+
+def test_sync_favorites_page_renders_live_platform_tabbar():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get("/ui/sync")
+
+        assert response.status_code == 200
+        text = response.text
+        # 顶部平台标签栏 + 内联面板宿主
+        assert "data-platform-tabs" in text
+        assert "data-platform-panel-host" in text
+        # 三个可执行平台各有标签
+        assert 'data-platform-tab="douyin"' in text
+        assert 'data-platform-tab="xiaohongshu"' in text
+        assert 'data-platform-tab="bilibili"' in text
+        # 未接入平台不上标签（TikTok 只在下方降级列表）
+        assert 'data-platform-tab="tiktok"' not in text
+        # 默认平台 = 抖音（排序后首位）
+        assert 'data-default-platform="douyin"' in text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_setup_panel_endpoint_returns_fragment_only():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        panel = client.get("/ui/source-setup/douyin/panel")
+
+        assert panel.status_code == 200
+        text = panel.text
+        # 是提取工作台片段
+        assert "data-source-shell" in text
+        assert "收藏预筛选" in text
+        assert "data-source-setup-panel" in text
+        # 不是整页：无 base.html 外壳
+        assert "<!doctype" not in text.lower()
+        assert "<nav" not in text
+
+        # 未知平台 → 404（前端只对 live 平台请求）
+        assert client.get("/ui/source-setup/definitely-not-a-platform/panel").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+

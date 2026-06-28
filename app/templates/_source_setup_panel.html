@@ -1,0 +1,215 @@
+{# 提取工作台片段：独立页 source_setup.html 与 /ui/sync 标签内联（AJAX）共用。
+   仅依赖 preset / connection / connector / has_saved_favorites_url / open_label / saved，
+   均由 _source_setup_context 注入。根节点 data-source-setup-panel 供 app.js 容器作用域查找。 #}
+{% import "_components.html" as ui %}
+<div data-source-setup-panel data-platform="{{ preset.platform }}">
+
+{% if saved == "1" %}<div class="notice ok centered-notice">本地接入配置已保存。</div>{% endif %}
+{% if saved == "browser-opened" %}
+  <div class="notice ok centered-notice">浏览器已打开目标页面。</div>
+{% elif saved and saved.startswith("extracted-") %}
+  <div class="notice ok centered-notice">已提取 {{ saved.replace("extracted-", "") }} 条链接。</div>
+{% elif saved and saved.startswith("collected-") %}
+  {% set parts = saved.replace("collected-", "").split("-") %}
+  <div class="notice ok centered-notice">✅ 完成！采集 {{ parts[0] }} 条 → 已写入知识库 {{ parts[1] }} 条。<br><small>{% if preset.platform == "xiaohongshu" %}点点提取需要开启 CDP 远程调试并保持小红书登录。未提取到正文的条目已保留链接信息入库。{% else %}豆包逐字稿提取需要开启 CDP 远程调试并登录豆包。未提取到逐字稿的条目已保留链接信息入库。{% endif %}</small></div>
+{% elif saved == "collect-failed" %}
+  <div class="notice bad centered-notice">采集失败。请确认 CDP Proxy 已运行且浏览器已开启远程调试。</div>
+{% elif saved == "doubao-login-required" %}
+  <div class="notice bad centered-notice">豆包未登录。请在浏览器中打开 doubao.com 完成登录后重试。</div>
+{% elif saved == "page-not-ready" %}
+  <div class="notice bad centered-notice">未识别到收藏内容。请确认浏览器已登录并停留在收藏页面。</div>
+{% elif saved == "current-page-saved" %}
+  <div class="notice ok centered-notice">已保存当前浏览器中的真实收藏页链接，后续扫描会自动复用。</div>
+{% elif saved == "favorites-page-not-found" %}
+  <div class="notice bad centered-notice">没有在当前浏览器标签页中找到真实收藏页。请先打开该平台收藏页，再点击“保存当前收藏页”。</div>
+{% elif saved == "multiple-favorites-pages" %}
+  <div class="notice bad centered-notice">找到多个收藏页。请只保留一个目标收藏页标签页后重试保存。</div>
+{% elif saved == "browser-missing" %}
+  <div class="notice bad centered-notice">CDP Proxy 未运行。请运行: node ~/.claude/skills/web-access/scripts/check-deps.mjs</div>
+{% endif %}
+
+<article class="glass-card source-filter-workbench" data-source-shell data-platform="{{ preset.platform }}" data-homepage-url="{{ connection.homepage_url or '' }}">
+  <div class="panel-title-row">
+    <div>
+      <span class="section-kicker">收藏预筛选</span>
+      <h2>{% if preset.platform == "xiaohongshu" %}先筛掉噪声，再让点点深读{% else %}先筛掉噪声，再让豆包深读{% endif %}</h2>
+    </div>
+    {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
+      {{ ui.status_chip("可执行", "success") }}
+    {% else %}
+      {{ ui.status_chip("待接入", "neutral") }}
+    {% endif %}
+  </div>
+
+  <div class="notice warning source-risk-note">
+    温馨提示：部分站点对浏览器自动化操作检测严格，存在账号封禁风险。已内置防护措施但无法完全避免，继续操作即视为接受。
+  </div>
+
+  <ol class="process-steps source-filter-steps">
+    <li><strong>扫描标题</strong><span>只读取收藏标题、作者和源链接，不先做全文抓取。</span></li>
+    <li><strong>AI 分类</strong><span>按“有用 / 没用”与二级分类分组，展示可点击样例。</span></li>
+    <li><strong>人工勾选</strong><span>你可以保留整个分类，也可以只保留单条链接。</span></li>
+    {% if preset.platform == "xiaohongshu" %}
+      <li><strong>点点提取入库</strong><span>逐条发送到小红书点点，等待完整返回后写入 RawSource。</span></li>
+    {% else %}
+      <li><strong>豆包提取入库</strong><span>逐条发送到豆包，等待完整返回后写入 RawSource。</span></li>
+    {% endif %}
+  </ol>
+
+  {% if preset.platform in ("douyin", "bilibili", "xiaohongshu") %}
+    <form class="mode-form" method="post" action="/{{ preset.platform }}/browser/open" style="margin-bottom:12px;">
+      <input type="hidden" name="homepage_url" value="{{ connection.homepage_url or '' }}">
+      <button class="btn secondary full" type="submit" data-busy-text="{{ '正在打开已保存收藏页...' if has_saved_favorites_url else '正在打开官网登录页...' }}">{{ open_label }}</button>
+    </form>
+    {% if preset.platform in ("bilibili", "xiaohongshu") %}
+      {% if has_saved_favorites_url %}
+        <div class="notice ok" style="margin-bottom:12px;">已记住你的收藏页。保存后可直接扫描，不需要再次从官网登录流程开始；如需更换收藏页，再打开目标页面后点击下方按钮覆盖保存。</div>
+      {% endif %}
+      <form class="mode-form" method="post" action="/source-connections/{{ preset.platform }}/save-current-page" style="margin-bottom:12px;">
+        <button class="btn secondary full" type="submit" data-busy-text="正在读取当前浏览器标签页...">{{ '重新保存当前收藏页' if has_saved_favorites_url else '保存当前收藏页' }}</button>
+      </form>
+    {% endif %}
+
+    <div class="source-collection-tabs" role="tablist">
+      <button class="source-collection-tab is-active" type="button" role="tab" data-collection-tab="history" aria-selected="true">历史收藏</button>
+      <button class="source-collection-tab" type="button" role="tab" data-collection-tab="incremental" aria-selected="false">新增收藏</button>
+    </div>
+    <p class="source-collection-hint" data-collection-hint="history">第一次使用前积累的收藏。首次扫描会全部归为历史并记录分界点，之后新收的归入“新增收藏”。</p>
+    <p class="source-collection-hint" data-collection-hint="incremental" hidden>首次扫描之后新收藏的内容。已见过的条目会自动去重，不再重复展示。</p>
+
+    {% for kind in ["history", "incremental"] %}
+    <div class="source-collection-panel{{ '' if kind == 'history' else ' is-hidden' }}" data-source-filter data-platform="{{ preset.platform }}" data-collection-kind="{{ kind }}" data-homepage-url="{{ connection.homepage_url or '' }}"{{ ' hidden' if kind != 'history' else '' }}>
+      <div class="source-filter-controls">
+        {% if kind == "history" %}
+        <label>采集数量
+          <select data-filter-limit>
+            <option value="5">5 条</option>
+            <option value="10" selected>10 条</option>
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+            <option value="100">100 条</option>
+            <option value="all">所有</option>
+          </select>
+        </label>
+        <button class="btn primary" type="button" data-filter-scan>扫描标题</button>
+        {% else %}
+        <button class="btn primary" type="button" data-filter-scan>采集新增收藏</button>
+        {% endif %}
+        <button class="btn secondary" type="button" data-filter-classify disabled>AI 分类</button>
+        {% if kind == "history" %}
+        <button class="btn secondary" type="button" data-filter-save-history hidden>保存历史收藏</button>
+        <button class="btn secondary" type="button" data-filter-rescan-history hidden>重新扫描历史</button>
+        {% endif %}
+        <button class="btn primary" type="button" data-filter-extract disabled>仅提取我勾选的内容</button>
+        <button class="btn primary" type="button" data-filter-resume hidden>我已完成验证，继续</button>
+      </div>
+
+      <div class="source-filter-toolbar" data-filter-toolbar hidden>
+        <label>有用性
+          <select data-filter-usefulness>
+            <option value="">全部</option>
+            <option value="useful">有用</option>
+            <option value="useless">没用</option>
+          </select>
+        </label>
+        <label>类别
+          <select data-filter-category>
+            <option value="">全部类别</option>
+          </select>
+        </label>
+        {% if kind == "history" %}
+        <label>入库状态
+          <select data-filter-ingested>
+            <option value="">全部</option>
+            <option value="ingested">已入库</option>
+            <option value="not">未入库</option>
+          </select>
+        </label>
+        {% endif %}
+        <!-- 发布时间筛选：网格页抓不到日期（详情页才有，成本高），先隐藏避免误导；JS 代码保留以后放出。
+        <label>发布时间
+          <select data-filter-time>
+            <option value="">不限</option>
+            <option value="7">近 7 天</option>
+            <option value="30">近 30 天</option>
+            <option value="has">有发布时间</option>
+          </select>
+        </label>
+        -->
+      </div>
+
+      <div class="source-filter-status" data-filter-status>{% if has_saved_favorites_url %}等待开始。已保存真实收藏页，可直接点击“扫描标题”；如果登录失效，再点击“{{ open_label }}”打开已保存收藏页重新登录。{% else %}等待开始。点击“{{ open_label }}”后，登录并进入真实收藏页，再保存当前收藏页；保存后下次可直接扫描。{% endif %}</div>
+      <div class="source-filter-summary" data-filter-summary hidden></div>
+      <div class="source-filter-results" data-filter-results hidden></div>
+    </div>
+    {% endfor %}
+
+    <details class="source-advanced-flow">
+      <summary>高级：跳过筛选直接提取</summary>
+      <form class="mode-form" method="post" action="/api/collect-and-extract/{{ preset.platform }}">
+        <label>采集数量
+          <select name="limit">
+            <option value="5">5 条</option>
+            <option value="10" selected>10 条</option>
+            <option value="20">20 条</option>
+            <option value="50">50 条</option>
+            <option value="100">100 条</option>
+            <option value="all">全部</option>
+          </select>
+        </label>
+        <input type="hidden" name="homepage_url" value="{{ connection.homepage_url or '' }}">
+        <input type="hidden" name="next" value="/ui/source-setup/{{ preset.platform }}">
+        <button class="btn secondary full" type="submit" data-busy-text="正在执行采集+提取流程...">
+          直接采集 → {% if preset.platform == "xiaohongshu" %}点点提取{% else %}豆包提取{% endif %} → 写入知识库
+        </button>
+      </form>
+    </details>
+
+    <div class="v1-callout" style="margin-top:16px;">
+      <strong>前置条件：</strong>
+      <ol style="margin:8px 0 0 20px;padding:0;">
+        <li>CDP Proxy 已运行（<code>node ~/.claude/skills/web-access/scripts/check-deps.mjs</code>）</li>
+        <li>{% if has_saved_favorites_url %}已保存{{ preset.name }}真实收藏页；可直接扫描，必要时可打开已保存收藏页重新登录{% else %}浏览器已登录{{ preset.name }}并进入真实收藏页；保存后后续可直接扫描{% endif %}</li>
+        {% if preset.platform == "xiaohongshu" %}
+          <li>浏览器已登录小红书，点点入口（xiaohongshu.com/ai_chat）可用</li>
+        {% else %}
+          <li>浏览器已登录豆包（doubao.com）</li>
+        {% endif %}
+      </ol>
+    </div>
+  {% else %}
+    <div class="v1-callout v1-warning">{{ preset.name }} 的收藏页解析器尚未接入。你可以先保存配置，后续解析器上线后自动复用。</div>
+  {% endif %}
+</article>
+
+<details class="platform-settings-fold glass-card">
+  <summary>平台设置（状态 / 收藏页链接 / 同步范围）</summary>
+  <div class="platform-settings-body">
+    <dl class="meta-list">
+      <dt>平台</dt><dd>{{ preset.name }}</dd>
+      <dt>状态</dt><dd>{{ connector.status if connector else "未配置" }}</dd>
+      <dt>接入方式</dt><dd>{{ preset.auth_hint }}</dd>
+      <dt>CDP Proxy</dt><dd>localhost:3456</dd>
+    </dl>
+    <div class="button-row" style="margin:12px 0 16px;">
+      <a class="btn secondary" href="/ui/create?mode=link">单链接导入</a>
+    </div>
+    <form class="mode-form" method="post" action="/source-connections/{{ preset.platform }}">
+      <label>收藏页链接（B站/小红书需保存登录后的真实收藏页）
+        <input name="homepage_url" value="{{ connection.homepage_url or '' }}" placeholder="例如 space.bilibili.com/.../favlist 或 xiaohongshu.com/user/profile/...?...tab=fav" data-source-homepage-input>
+      </label>
+      <label>同步范围
+        <select name="sync_scope">
+          <option value="favorites" {{ "selected" if connection.sync_scope == "favorites" else "" }}>收藏夹</option>
+          <option value="likes" {{ "selected" if connection.sync_scope == "likes" else "" }}>点赞</option>
+          <option value="profile" {{ "selected" if connection.sync_scope == "profile" else "" }}>作者主页</option>
+        </select>
+      </label>
+      <input type="hidden" name="auth_method" value="{{ preset.auth_hint }}">
+      <button class="btn secondary full" type="submit">保存配置</button>
+    </form>
+  </div>
+</details>
+
+</div>
+

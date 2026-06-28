@@ -79,6 +79,25 @@
     return `${prefix}${shareUrl}`;
   };
 
+  // 尽力从卡片容器抓发布时间：先 <time> 的 datetime/innerText，再正则匹配常见文案；抓不到留空。
+  const DATE_PATTERN = /(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{1,2}[-/月.]\d{1,2}日?|\d+\s*(天|小时|分钟|周|个月|月|年)前|昨天|前天|今天)/;
+  const findPublishTime = (container) => {
+    if (!container) return '';
+    const timeEl = container.querySelector && container.querySelector('time');
+    if (timeEl) {
+      const dt = cleanText(timeEl.getAttribute('datetime') || timeEl.innerText);
+      if (dt) return dt.slice(0, 40);
+    }
+    const dateNode = container.querySelector && container.querySelector('[class*="date"], [class*="Date"], [class*="time"], [class*="Time"]');
+    if (dateNode) {
+      const matched = cleanText(dateNode.innerText).match(DATE_PATTERN);
+      if (matched) return matched[0].slice(0, 40);
+    }
+    const text = container.innerText ? String(container.innerText) : '';
+    const matched = text.match(DATE_PATTERN);
+    return matched ? matched[0].slice(0, 40) : '';
+  };
+
   const candidateSelectors = [
     '[title]',
     '[class*="title"]',
@@ -145,6 +164,7 @@
       xsec_token: urlInfo.xsecToken,
       share_url: urlInfo.shareUrl,
       share_text: buildShareText(bestTitle, urlInfo.shareUrl),
+      publish_time: findPublishTime(container),
       score: bestScore,
     };
     byKey.set(urlInfo.noteId, chooseBetter(byKey.get(urlInfo.noteId), item));

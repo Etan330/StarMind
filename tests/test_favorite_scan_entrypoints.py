@@ -10,6 +10,7 @@ from app.connectors.base import ConnectorItem
 from app.connectors.douyin import DouyinBrowserCollector
 from app.database import Base, get_db
 from app.main import app
+from app.models import Connector, ScanEntry
 
 
 def make_session():
@@ -480,6 +481,84 @@ def test_source_setup_marks_homepage_input_for_scan_payload():
         app.dependency_overrides.clear()
 
 
+def test_source_setup_renders_dual_collection_tabs_and_filter_toolbar():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get("/ui/source-setup/douyin")
+
+        assert response.status_code == 200
+        text = response.text
+        # 历史 / 新增双 Tab
+        assert 'data-collection-tab="history"' in text
+        assert 'data-collection-tab="incremental"' in text
+        # 两个面板，分别带 collection_kind
+        assert 'data-collection-kind="history"' in text
+        assert 'data-collection-kind="incremental"' in text
+        # 筛选器（发布时间筛选已隐藏，但有用性/类别保留）
+        assert "data-filter-usefulness" in text
+        assert "data-filter-category" in text
+        # 历史保存状态机按钮
+        assert "data-filter-save-history" in text
+        assert "data-filter-rescan-history" in text
+        # 已入库筛选（仅历史 Tab）
+        assert "data-filter-ingested" in text
+        # 历史下拉的「所有」选项
+        assert '<option value="all">所有</option>' in text
+        # 发布时间筛选下拉已隐藏：整块包在 HTML 注释里（模板保留代码以后放出），
+        # 但注释开始一定在 data-filter-time 之前，确认它不是活动控件。
+        assert "<select data-filter-time>" in text
+        assert "<!-- 发布时间筛选" in text
+        assert text.index("<!-- 发布时间筛选") < text.index("data-filter-time")
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_setup_incremental_panel_has_no_limit_dropdown_and_renamed_scan_button():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get("/ui/source-setup/douyin")
+
+        assert response.status_code == 200
+        import re
+
+        text = response.text
+        # 新增面板：去掉采集数量下拉、扫描按钮改名「采集新增收藏」
+        incremental_panel = re.search(
+            r'data-collection-kind="incremental".*?(?=data-collection-kind="|</section>)',
+            text,
+            flags=re.S,
+        )
+        assert incremental_panel is not None
+        panel_html = incremental_panel.group(0)
+        assert "data-filter-limit" not in panel_html
+        assert "采集新增收藏" in panel_html
+        # 已入库筛选只在历史，新增面板不应有
+        assert "data-filter-ingested" not in panel_html
+
+        # 历史面板：保留采集数量下拉
+        history_panel = re.search(
+            r'data-collection-kind="history".*?(?=data-collection-kind="incremental")',
+            text,
+            flags=re.S,
+        )
+        assert history_panel is not None
+        assert "data-filter-limit" in history_panel.group(0)
+    finally:
+        app.dependency_overrides.clear()
+
+
 
 def test_save_current_bilibili_favorites_page_detects_and_saves_unique_tab(monkeypatch):
     db = make_session()
@@ -835,3 +914,260 @@ def test_douyin_open_uses_login_page_before_collection_navigation(monkeypatch):
     assert state.opened is True
     assert opened == ["https://www.douyin.com/user/self"]
     assert navigated == ["https://www.douyin.com/user/self?showTab=favorite_collection"]
+
+
+def test_scan_titles_persists_scan_entries_and_returns_collection_kind(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    async def fake_extract(url=None, limit=None):
+        return [
+            ConnectorItem(
+                raw_url="https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12",
+                title="小红书收藏笔记",
+                platform="xiaohongshu",
+                content_type="note",
+                metadata={"source": "test", "publish_time": "2024-05-01"},
+            )
+        ]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+        response = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        # 首次扫描 → 全部算历史
+        assert body["collection_kind"] == "history"
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["scan_entry_id"]
+        assert item["collection_kind"] == "history"
+        assert item["published_at"] == "2024-05-01"
+        assert item["extracted"] is False
+
+        # 落库 + connector 置 first_scan_done
+        entries = db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").all()
+        assert len(entries) == 1
+        connector = db.query(Connector).filter(Connector.platform == "xiaohongshu").first()
+        assert connector is not None and connector.first_scan_done is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_scan_titles_second_scan_is_incremental_and_dedups(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    item_a = ConnectorItem(
+        raw_url="https://www.xiaohongshu.com/explore/aaaaaaaaaaaaaaaaaaaaaaaa",
+        title="历史笔记A",
+        platform="xiaohongshu",
+        content_type="note",
+        metadata={"source": "test"},
+    )
+    item_b = ConnectorItem(
+        raw_url="https://www.xiaohongshu.com/explore/bbbbbbbbbbbbbbbbbbbbbbbb",
+        title="新增笔记B",
+        platform="xiaohongshu",
+        content_type="note",
+        metadata={"source": "test"},
+    )
+
+    state = {"items": [item_a]}
+
+    async def fake_extract(url=None, limit=None):
+        return state["items"]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        # 首次：历史，A 落库
+        first = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+        assert first.json()["collection_kind"] == "history"
+
+        # 第二次：返回 A+B，但 A 已见 → 只剩 B，kind=incremental
+        state["items"] = [item_a, item_b]
+        second = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+        body = second.json()
+        assert body["collection_kind"] == "incremental"
+        assert body["total"] == 1
+        assert body["items"][0]["title"] == "新增笔记B"
+        assert body["items"][0]["collection_kind"] == "incremental"
+
+        # DB 现在两条
+        entries = {e.external_item_id for e in db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").all()}
+        assert len(entries) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_list_scan_entries_endpoint_returns_persisted_entries(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    async def fake_extract(url=None, limit=None):
+        return [
+            ConnectorItem(
+                raw_url="https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12",
+                title="小红书收藏笔记",
+                platform="xiaohongshu",
+                content_type="note",
+                metadata={"source": "test"},
+            )
+        ]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+        # GET 恢复
+        resp = client.get("/api/sync/scan-entries", params={"platform": "xiaohongshu"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["items"][0]["title"] == "小红书收藏笔记"
+        assert body["items"][0]["collection_kind"] == "history"
+        # 历史保存 flag：保存前为 False
+        assert body["history_saved"] is False
+
+        # kind 过滤
+        resp_inc = client.get("/api/sync/scan-entries", params={"platform": "xiaohongshu", "kind": "incremental"})
+        assert resp_inc.json()["total"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_save_history_endpoint_sets_flag_and_returns_count(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    async def fake_extract(url=None, limit=None):
+        return [
+            ConnectorItem(
+                raw_url="https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12",
+                title="小红书收藏笔记",
+                platform="xiaohongshu",
+                content_type="note",
+                metadata={"source": "test"},
+            )
+        ]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        # 先扫描，落一条历史
+        client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+
+        resp = client.post("/api/sync/save-history", json={"platform": "xiaohongshu"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "saved"
+        assert body["history_saved"] is True
+        assert body["history_count"] == 1
+
+        # connector flag 落库
+        connector = db.query(Connector).filter(Connector.platform == "xiaohongshu").first()
+        assert connector is not None and connector.history_saved is True
+
+        # list 端点现在回 history_saved=True
+        listed = client.get("/api/sync/scan-entries", params={"platform": "xiaohongshu"})
+        assert listed.json()["history_saved"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reset_history_endpoint_clears_flag_and_first_scan_done_and_keeps_rows(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    async def fake_extract(url=None, limit=None):
+        return [
+            ConnectorItem(
+                raw_url="https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12",
+                title="小红书收藏笔记",
+                platform="xiaohongshu",
+                content_type="note",
+                metadata={"source": "test"},
+            )
+        ]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+        client.post("/api/sync/save-history", json={"platform": "xiaohongshu"})
+
+        before_rows = db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").count()
+        assert before_rows == 1
+
+        resp = client.post("/api/sync/reset-history", json={"platform": "xiaohongshu"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "reset"
+        assert body["history_saved"] is False
+
+        # flag + first_scan_done 都被清；ScanEntry 行保留
+        db.expire_all()
+        connector = db.query(Connector).filter(Connector.platform == "xiaohongshu").first()
+        assert connector is not None
+        assert connector.history_saved is False
+        assert connector.first_scan_done is False
+        after_rows = db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").count()
+        assert after_rows == before_rows
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_save_history_endpoint_rejects_unknown_platform():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        resp = client.post("/api/sync/save-history", json={"platform": "not_a_platform"})
+        assert resp.status_code == 400
+    finally:
+        app.dependency_overrides.clear()
