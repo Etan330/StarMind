@@ -1082,6 +1082,9 @@
     let currentPlatform = "douyin"
     let scannedItems = []
     let selectedItemIds = []
+    let currentCreator = null
+    let selectedCandidateIds = []
+    let currentJobId = null
 
     const setStatusText = (message, tone) => {
       if (!status) return
@@ -1130,7 +1133,10 @@
           creator_url: creatorUrl,
         })
         scannedItems = response.items || []
+        currentCreator = response.creator || null
         selectedItemIds = []
+        selectedCandidateIds = []
+        currentJobId = null
 
         if (scannedItems.length === 0) {
           setStatusText("未找到作品，请检查链接是否正确。", "bad")
@@ -1186,11 +1192,26 @@
       setStatusText(`正在提取 ${selectedItemIds.length} 个作品...`)
 
       try {
-        // TODO: 替换为实际的 API 端点
-        const response = await apiPost("/api/creator/extract", {
+        const selectedItems = scannedItems.filter((item) => selectedItemIds.includes(String(item.id)))
+        const prepared = await apiPost("/api/creator/prepare-selected", {
           platform: currentPlatform,
-          item_ids: selectedItemIds,
+          creator: currentCreator || {},
+          selected_items: selectedItems,
         })
+        selectedCandidateIds = prepared.candidate_ids || []
+        if (!selectedCandidateIds.length) {
+          setStatusText("没有可提取的作品，请重新扫描后再试。", "bad")
+          return
+        }
+        const extractEndpoint = currentPlatform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
+        const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+        if (currentJobId) payload.job_id = currentJobId
+        const response = await apiPost(extractEndpoint, payload)
+        currentJobId = response.job_id || currentJobId
+        if (response.status === "paused") {
+          setStatusText(response.reason || "提取暂停，请处理登录或验证后重试。", "bad")
+          return
+        }
         setStatusText(`提取完成：成功 ${response.success_count || 0} 条，失败 ${response.failed_count || 0} 条。`, "ok")
         // 清空选择
         selectedItemIds = []

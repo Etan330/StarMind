@@ -39,6 +39,79 @@ def test_v3_homepage_is_input_first():
         app.dependency_overrides.clear()
 
 
+def test_home_entries_link_to_sync_modes():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/")
+
+        assert response.status_code == 200
+        assert 'href="/ui/sync?mode=sync"' in response.text
+        assert 'href="/ui/sync?mode=link"' in response.text
+        assert 'href="/ui/sync?mode=creator"' in response.text
+        assert 'href="/ui/sync?mode=idea"' in response.text
+        assert "modal-link" not in response.text
+        assert "modal-creator" not in response.text
+        assert "modal-idea" not in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_js_helpers_are_available_before_panels_bind():
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert app_js.index("const setBusy") < app_js.index("function initSourceFilter")
+    assert app_js.index("const apiPost") < app_js.index("function initSourceFilter")
+    assert app_js.index("function initLinkExtractPanel") > app_js.index("const apiPost")
+
+
+def test_link_extract_page_has_preview_panel():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/ui/sync?mode=link")
+
+        assert response.status_code == 200
+        assert 'data-link-extract-preview' in response.text
+        assert 'data-link-extract-preview-content' in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sync_page_has_sidebar_modes_and_keeps_bilibili_out_of_live_tabs():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/ui/sync?mode=link")
+        sync_response = TestClient(app).get("/ui/sync?mode=sync")
+
+        assert response.status_code == 200
+        assert sync_response.status_code == 200
+        assert 'data-sync-mode="link"' in response.text
+        assert 'href="/ui/sync?mode=sync"' in response.text
+        assert 'href="/ui/sync?mode=link"' in response.text
+        assert 'href="/ui/sync?mode=creator"' in response.text
+        assert 'href="/ui/sync?mode=idea"' in response.text
+        assert 'data-platform-tab="douyin"' in sync_response.text
+        assert 'data-platform-tab="xiaohongshu"' in sync_response.text
+        assert 'data-platform-tab="bilibili"' not in sync_response.text
+        assert "Bilibili" in sync_response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_v3_empty_home_input_redirects_to_recoverable_error():
     db = make_session()
 
@@ -109,4 +182,3 @@ def test_v3_ui_event_adapter_records_safe_event():
         assert "idea" in event.properties_json
     finally:
         app.dependency_overrides.clear()
-

@@ -82,17 +82,23 @@ def test_html_link_to_review_to_confirm_main_path(tmp_path, monkeypatch):
       review = client.get(create_page.headers["location"])
       assert review.status_code == 200
       assert "结果确认" in review.text
-
+      assert "原文内容（可编辑）" in review.text
+      assert "Main path article" in review.text
+      assert "result-preview-grid compact" in review.text
+      assert review.text.index("完整结果（可编辑）") < review.text.index("原文内容（可编辑）")
       markdown = open(page.markdown_path, encoding="utf-8").read()
+      assert review.text.index("完整结果（可编辑）") < review.text.rindex("原文内容（可编辑）") < review.text.rindex("这是一条可审核的知识页草稿")
+
       done = client.post(
           f"/wiki/pages/{page.page_id}/confirm",
-          data={"markdown": markdown},
+          data={"markdown": markdown, "original_text": "用户修订后的原文"},
           headers={"accept": "text/html"},
           follow_redirects=False,
       )
       assert done.status_code == 303
       assert f"/ui/review/{page.page_id}" in done.headers["location"]
       assert db.query(WikiPage).one().status == "active"
+      assert "用户修订后的原文" in open(raw_source.transcript_path, encoding="utf-8").read()
       assert db.query(ProductEvent).filter(ProductEvent.event_name == "result_confirmed").count() == 1
     finally:
       app.dependency_overrides.clear()
@@ -427,6 +433,7 @@ def test_douyin_import_items_skips_failed_transcripts_and_processes_rest(tmp_pat
 def test_douyin_creator_profile_imports_visible_videos_to_wiki(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
     monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.api.routes.DISTILL_REQUESTS_PATH", tmp_path / "distill_requests.json")
     monkeypatch.setattr("app.services.wiki_service.get_provider_runtime", lambda: (FakeWikiProvider(), "fake-model", {}))
     db = make_session()
 
@@ -523,5 +530,37 @@ def test_manual_idea_can_process_directly_as_skill_page(tmp_path, monkeypatch):
       page = db.query(WikiPage).one()
       assert page.page_type == "skill"
       assert page.title.startswith("Skill：")
+    finally:
+      app.dependency_overrides.clear()
+
+
+def test_manual_idea_from_sync_mode_defaults_to_temporary_idea(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.services.wiki_service.get_provider_runtime", lambda: (FakeWikiProvider(), "fake-model", {}))
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+      client = TestClient(app)
+      response = client.post(
+          "/manual/idea",
+          data={
+              "content": "这是一条从同步页写下的想法。",
+              "process_now": "1",
+          },
+          headers={"accept": "application/json"},
+      )
+
+      assert response.status_code == 200
+      candidate = db.query(CandidateItem).one()
+      assert candidate.source_type == "manual_idea"
+      assert candidate.title == "未命名想法"
+      raw_source = db.query(RawSource).one()
+      assert raw_source.source_type == "manual_idea"
+      assert raw_source.platform == "手动录入"
     finally:
       app.dependency_overrides.clear()

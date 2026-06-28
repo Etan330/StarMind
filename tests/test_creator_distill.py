@@ -456,3 +456,135 @@ def test_resolve_profile_endpoint_returns_correct_types():
         assert resp2.json()["input_type"] == "lookup_required"
     finally:
         app.dependency_overrides.clear()
+
+
+# Task 3: Creator Scan
+
+
+def test_creator_scan_endpoint_returns_mocked_profile_items(monkeypatch):
+    """POST /api/creator/scan 应调用博主扫描服务并返回作品列表，而不是 404 Not Found"""
+    from app.services.creator_profile_service import CreatorProfileService
+
+    async def fake_scan_profile(self, platform, profile_url):
+        return {
+            "status": "ok",
+            "creator": {
+                "creator_key": "douyin:abc123",
+                "creator_name": "大牙大",
+                "platform": platform,
+                "profile_url": profile_url,
+            },
+            "snapshot": {
+                "captured_count": 1,
+                "overlap_count": 0,
+                "top_liked_extension_count": 0,
+            },
+            "items": [
+                {
+                    "id": "work-1",
+                    "title": "测试作品标题",
+                    "url": "https://www.douyin.com/video/1",
+                    "bucket": "latest",
+                    "like_count": 10,
+                    "comment_count": 2,
+                    "collect_count": 1,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(CreatorProfileService, "scan_profile", fake_scan_profile)
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/creator/scan",
+            json={"platform": "douyin", "creator_url": "https://v.douyin.com/abc123/"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["items"][0]["title"] == "测试作品标题"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_creator_prepare_selected_creates_distill_profile_candidates():
+    """勾选博主作品后应创建 distill_profile 候选，并保留完整博主/作品 metadata"""
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/creator/prepare-selected",
+            json={
+                "platform": "douyin",
+                "creator": {
+                    "creator_key": "douyin:abc123",
+                    "creator_name": "大牙大",
+                    "creator_profile_id": "abc123",
+                    "creator_profile_url": "https://v.douyin.com/abc123/",
+                },
+                "selected_items": [
+                    {
+                        "id": "work-1",
+                        "title": "测试作品标题",
+                        "url": "https://www.douyin.com/video/1",
+                        "bucket": "latest",
+                        "published_at": "2026-06-28",
+                        "like_count": 10,
+                        "comment_count": 2,
+                        "collect_count": 1,
+                        "cover_url": "https://example.com/cover.jpg",
+                    }
+                ],
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["candidate_ids"]
+        from app.models import CandidateItem
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "distill_profile"
+        assert candidate.title == "测试作品标题"
+        assert "creator_key" in candidate.metadata_json
+        assert "like_count" in candidate.metadata_json
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_select_creator_works_extends_top_liked_when_overlapping():
+    """最新作品和高赞作品重合时，高赞列表应顺延补足不重复作品"""
+    from app.services.creator_profile_service import CreatorProfileService
+
+    works = []
+    for index in range(1, 14):
+        works.append(
+            {
+                "id": f"work-{index}",
+                "title": f"作品 {index}",
+                "url": f"https://example.com/work/{index}",
+                "published_at": f"2026-06-{30 - index:02d}",
+                "like_count": 1000 - index,
+                "comment_count": index,
+                "collect_count": index * 2,
+            }
+        )
+
+    selected, snapshot = CreatorProfileService.select_creator_works(works, latest_limit=10, top_liked_limit=10)
+
+    latest = [item for item in selected if item["bucket"] in ("latest", "both")]
+    top_liked = [item for item in selected if item["bucket"] in ("top_liked", "both")]
+    assert len(latest) == 10
+    assert len(top_liked) == 3
+    assert snapshot["overlap_count"] == 10
+    assert snapshot["top_liked_extension_count"] == 3

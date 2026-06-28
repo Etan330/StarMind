@@ -3260,6 +3260,111 @@ async def agent_query(request: Request, db: Session = Depends(get_db)):
 # --- Creator Profile Resolution ---
 
 
+@router.post("/api/creator/scan")
+async def scan_creator_profile(request: Request, db: Session = Depends(get_db)):
+    from app.services.creator_profile_service import CreatorProfileService
+
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    profile_url = str(data.get("creator_url") or data.get("profile_url") or data.get("value") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform is required")
+    if not profile_url:
+        raise HTTPException(status_code=400, detail="creator_url is required")
+    try:
+        return await CreatorProfileService().scan_profile(platform, profile_url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={"code": "creator_scan_failed", "message": str(exc)}) from exc
+
+
+@router.post("/api/creator/prepare-selected")
+async def prepare_selected_creator_items(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    platform = str(data.get("platform") or "unknown").strip()
+    creator = data.get("creator") or {}
+    selected_items = data.get("selected_items") or data.get("selected") or data.get("items") or []
+    if not isinstance(creator, dict):
+        raise HTTPException(status_code=400, detail="creator must be an object")
+    if not isinstance(selected_items, list):
+        raise HTTPException(status_code=400, detail="selected_items must be an array")
+
+    candidate_ids: list[int] = []
+    connector = ensure_connector(db, platform, f"{platform} 博主蒸馏", f"creator_{platform}")
+    creator_key = str(creator.get("creator_key") or "").strip()
+    creator_name = str(creator.get("creator_name") or "").strip()
+    creator_profile_id = str(creator.get("creator_profile_id") or "").strip()
+    creator_profile_url = str(creator.get("creator_profile_url") or creator.get("profile_url") or "").strip()
+
+    for item in selected_items:
+        if not isinstance(item, dict):
+            continue
+        raw_url = str(item.get("url") or item.get("raw_url") or item.get("work_url") or "").strip()
+        if not raw_url:
+            continue
+        normalized = normalize_url(raw_url, platform)
+        metadata = {
+            "source": "distill_profile",
+            "creator_key": creator_key,
+            "creator_name": creator_name,
+            "creator_profile_id": creator_profile_id,
+            "creator_profile_url": creator_profile_url,
+            "creator_platform": platform,
+            "creator_bucket": str(item.get("bucket") or "").strip(),
+            "creator_task_id": str(data.get("creator_task_id") or "").strip(),
+            "creator_scan_snapshot_id": str(data.get("creator_scan_snapshot_id") or "").strip(),
+            "work_id": str(item.get("work_id") or item.get("id") or normalized.external_item_id),
+            "work_url": raw_url,
+            "work_title": str(item.get("title") or raw_url).strip(),
+            "published_at": str(item.get("published_at") or "").strip(),
+            "like_count": item.get("like_count") or 0,
+            "comment_count": item.get("comment_count") or 0,
+            "collect_count": item.get("collect_count") or 0,
+            "cover_url": str(item.get("cover_url") or "").strip(),
+            "extract_prompt_version": "sync_extract_v1",
+        }
+        existing = (
+            db.query(CandidateItem)
+            .filter(
+                CandidateItem.source_type == "distill_profile",
+                CandidateItem.platform == normalized.platform,
+                CandidateItem.external_item_id == normalized.external_item_id,
+            )
+            .first()
+        )
+        if existing:
+            candidate_ids.append(existing.id)
+            continue
+        candidate = CandidateItem(
+            source_type="distill_profile",
+            platform=normalized.platform,
+            connector_id=connector.id,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=raw_url,
+            title=str(item.get("title") or raw_url).strip(),
+            author=creator_name or None,
+            content_type=str(item.get("content_type") or "video"),
+            metadata_json=json.dumps(metadata, ensure_ascii=False),
+            status="pending_extraction",
+        )
+        db.add(candidate)
+        db.flush()
+        candidate_ids.append(candidate.id)
+        ledger = SyncLedgerItem(
+            connector_id=connector.id,
+            platform=normalized.platform,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=raw_url,
+            scan_run_id=f"creator_selected_{uuid4().hex[:8]}",
+            classification_label="knowledge_selected",
+            candidate_id=candidate.id,
+        )
+        db.add(ledger)
+    db.commit()
+    return {"status": "prepared", "selected_count": len(candidate_ids), "candidate_ids": candidate_ids}
+
+
 @router.post("/api/creator/resolve-profile")
 async def resolve_creator_profile(request: Request, db: Session = Depends(get_db)):
     from app.services.creator_profile_service import normalize_creator_input
