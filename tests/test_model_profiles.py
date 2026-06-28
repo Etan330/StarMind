@@ -2,11 +2,27 @@ import asyncio
 import json
 
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.agent.runner import AgentRunner
+from app.agent.tools import KnowledgeSearchTool
+from app.database import Base
 from app.llm.providers import OpenAICompatibleProvider
 from app.llm.registry import test_model_connection as run_model_connection_test
 from app.main import app
+from app.models import RawSource, WikiPage
+
+
+def make_session():
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    return sessionmaker(bind=engine)()
 
 
 def test_model_profile_save_persists_profile_settings_and_key(tmp_path, monkeypatch):
@@ -125,6 +141,57 @@ def test_settings_page_shows_uuap_redirect_diagnostic():
     assert response.status_code == 200
     assert "连接测试：失败" in response.text
     assert "百度内部请求被 UUAP 登录页拦截" in response.text
+
+
+def test_knowledge_search_uses_wiki_pages_when_question_has_no_literal_overlap(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.agent.tools.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    wiki_path = tmp_path / "wiki" / "page-agent.md"
+    wiki_path.parent.mkdir(parents=True)
+    wiki_path.write_text("# Agent 方法论\n\n这里记录运营策略、实习复盘和知识沉淀方法。", encoding="utf-8")
+    db.add(
+        WikiPage(
+            page_id="page-agent",
+            page_type="knowledge",
+            title="Agent 方法论",
+            markdown_path=str(wiki_path),
+            status="needs_review",
+        )
+    )
+    db.commit()
+
+    result = KnowledgeSearchTool(db).run("知识库里有什么内容")
+
+    assert result.metadata["count"] == 1
+    assert result.metadata["items"][0]["type"] == "wiki"
+    assert "Agent 方法论" in result.content
+
+
+def test_knowledge_search_does_not_fall_back_to_raw_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.agent.tools.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    raw_path = tmp_path / "raw_sources" / "raw.md"
+    raw_path.parent.mkdir(parents=True)
+    raw_path.write_text("# 原始资料\n\n只有原始资料里有的敏感内容。", encoding="utf-8")
+    db.add(
+        RawSource(
+            platform="manual",
+            source_url="https://example.com/raw",
+            canonical_url="https://example.com/raw",
+            external_item_id="raw-only",
+            source_type="passive_link",
+            title="原始资料唯一内容",
+            raw_content_path=str(raw_path),
+            clean_text_path=str(raw_path),
+            transcript_path=str(raw_path),
+        )
+    )
+    db.commit()
+
+    result = KnowledgeSearchTool(db).run("敏感内容")
+
+    assert result.metadata["count"] == 0
+    assert "原始资料唯一内容" not in result.content
 
 
 def test_agent_model_failure_message_uses_current_provider_not_deepseek(monkeypatch):

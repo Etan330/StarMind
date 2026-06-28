@@ -2911,15 +2911,31 @@ async def agent_query(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/api/conversations")
 def list_conversations(db: Session = Depends(get_db)):
-    from app.models.records import ChatConversation
+    from app.models.records import ChatConversation, ChatMessage
 
-    convos = db.query(ChatConversation).order_by(ChatConversation.updated_at.desc()).all()
+    convos = (
+        db.query(ChatConversation)
+        .join(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .group_by(ChatConversation.id)
+        .order_by(ChatConversation.updated_at.desc())
+        .all()
+    )
     return [{"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()} for c in convos]
 
 
 @router.post("/api/conversations")
 def create_conversation(db: Session = Depends(get_db)):
-    from app.models.records import ChatConversation
+    from app.models.records import ChatConversation, ChatMessage
+
+    empty_convo = (
+        db.query(ChatConversation)
+        .outerjoin(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .filter(ChatMessage.id.is_(None))
+        .order_by(ChatConversation.updated_at.desc())
+        .first()
+    )
+    if empty_convo:
+        return {"id": empty_convo.id, "title": empty_convo.title}
 
     convo = ChatConversation(id=uuid4().hex, title="新对话")
     db.add(convo)
