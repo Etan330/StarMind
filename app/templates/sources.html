@@ -87,18 +87,28 @@
 
     <article class="source-group glass-card" data-source-group="distill">
       <details>
-        <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_requests | length }}</b></summary>
+        <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_creator_groups | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
-          {% for req in distill_requests %}
-            <a class="source-line" href="/ui/distill" data-expand-item>
-              <strong>{{ req.target_name or req.profile_url }}</strong>
-              <span>{{ req.platform or "社交媒体" }} · {{ req.status or "pending" }}</span>
-            </a>
+          {% for group in distill_creator_groups %}
+            <details class="source-line-wrapper creator-source-folder" data-expand-item>
+              <summary class="source-line">
+                <strong>{{ group.platform }} / {{ group.creator_name }}</strong>
+                <span>已提取 {{ group.sources | length }} 条 · 最新 {{ group.latest_count }} · 高赞 {{ group.top_liked_count }}</span>
+              </summary>
+              <div class="source-group-list nested">
+                {% for source in group.sources %}
+                  <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}">
+                    <strong>{{ source.title }}</strong>
+                    <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </details>
           {% else %}
-            {{ ui.empty_state("还没有博主蒸馏请求", "在首页用「输入博主」功能添加。") }}
+            {{ ui.empty_state("还没有博主蒸馏资料", "在输入博主页面提取作品后，这里会按博主名分组。") }}
           {% endfor %}
         </div>
-        {% if distill_requests | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+        {% if distill_creator_groups | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
       </details>
     </article>
   </div>

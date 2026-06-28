@@ -2493,6 +2493,36 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
         candidate = db.get(CandidateItem, source.candidate_id) if source.candidate_id else None
         source.title = raw_service.display_title_for_source(source, candidate)
     favorite_sources = [source for source in sources if source.source_type not in {"passive_link", "manual_idea", "distill_profile"}]
+    distill_sources = [source for source in sources if source.source_type == "distill_profile"]
+    distill_creator_groups: dict[str, dict[str, Any]] = {}
+    for source in distill_sources:
+        metadata = safe_json(source.metadata_json)
+        creator_key = str(metadata.get("creator_key") or f"{source.platform}:{source.author or 'unknown'}")
+        creator_name = str(metadata.get("creator_name") or source.author or "未命名博主")
+        raw_platform = source.platform or str(metadata.get("creator_platform") or "社交媒体")
+        platform_label = {"douyin": "抖音", "xiaohongshu": "小红书"}.get(raw_platform, raw_platform)
+        group = distill_creator_groups.setdefault(
+            creator_key,
+            {
+                "creator_key": creator_key,
+                "creator_name": creator_name,
+                "platform": platform_label,
+                "sources": [],
+                "latest_count": 0,
+                "top_liked_count": 0,
+            },
+        )
+        bucket = str(metadata.get("creator_bucket") or "")
+        if bucket in {"latest", "both"}:
+            group["latest_count"] += 1
+        if bucket in {"top_liked", "both"}:
+            group["top_liked_count"] += 1
+        group["sources"].append(source)
+    distill_creator_groups_list = sorted(
+        distill_creator_groups.values(),
+        key=lambda group: max((source.created_at for source in group["sources"]), default=datetime.min),
+        reverse=True,
+    )
     link_items = db.query(CandidateItem).filter(CandidateItem.source_type == "passive_link").order_by(CandidateItem.created_at.desc()).all()
     idea_items = db.query(CandidateItem).filter(CandidateItem.source_type == "manual_idea").order_by(CandidateItem.created_at.desc()).all()
     source_id = request.query_params.get("source_id")
@@ -2521,6 +2551,7 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
             selected_source_type_label=source_type_label(selected_source.source_type if selected_source else None),
             favorite_sources=favorite_sources,
             distill_requests=get_distill_requests()["requests"],
+            distill_creator_groups=distill_creator_groups_list,
             link_items=link_items,
             idea_items=idea_items,
         ),

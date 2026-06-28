@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -558,6 +561,59 @@ def test_creator_prepare_selected_creates_distill_profile_candidates():
         assert candidate.title == "测试作品标题"
         assert "creator_key" in candidate.metadata_json
         assert "like_count" in candidate.metadata_json
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sources_page_groups_distill_raw_sources_by_creator(tmp_path, monkeypatch):
+    """原始资料页应在博主蒸馏下按平台/博主名分组展示 RawSource"""
+    from app.models import CandidateItem, RawSource
+
+    db = make_session()
+    transcript = tmp_path / "creator.txt"
+    transcript.write_text("博主作品逐字稿", encoding="utf-8")
+    candidate = CandidateItem(
+        source_type="distill_profile",
+        platform="douyin",
+        external_item_id="work-1",
+        canonical_url="https://www.douyin.com/video/1",
+        raw_url="https://www.douyin.com/video/1",
+        title="测试作品标题",
+        author="大牙大",
+        content_type="video",
+        metadata_json=json.dumps({"creator_key": "douyin:abc123", "creator_name": "大牙大", "creator_platform": "douyin"}, ensure_ascii=False),
+    )
+    db.add(candidate)
+    db.flush()
+    db.add(
+        RawSource(
+            candidate_id=candidate.id,
+            platform="douyin",
+            source_url="https://www.douyin.com/video/1",
+            canonical_url="https://www.douyin.com/video/1",
+            external_item_id="work-1",
+            source_type="distill_profile",
+            title="测试作品标题",
+            author="大牙大",
+            transcript_path=str(transcript),
+            metadata_json=candidate.metadata_json,
+        )
+    )
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get("/ui/sources")
+        assert response.status_code == 200
+        assert "博主蒸馏" in response.text
+        assert "抖音" in response.text
+        assert "大牙大" in response.text
+        assert "测试作品标题" in response.text
+        assert "已提取 1 条" in response.text
     finally:
         app.dependency_overrides.clear()
 
