@@ -27,6 +27,7 @@ class Element {
     if (selector === 'a[href]') return this.tag === 'a' && !!this.attrs.href;
     if (selector === 'li') return this.tag === 'li';
     if (selector === 'section') return this.tag === 'section';
+    if (selector === 'time') return this.tag === 'time';
     if (selector.startsWith('.')) return (this.attrs.class || '').split(/\s+/).includes(selector.slice(1));
     const tagClassMatch = selector.match(/^([a-z]+)\[class\*="([^"]+)"\]$/i);
     if (tagClassMatch) return this.tag === tagClassMatch[1] && (this.attrs.class || '').includes(tagClassMatch[2]);
@@ -213,9 +214,93 @@ const document = new Element('document', {}, '', [
     assert items == []
 
 
+def test_xiaohongshu_extractor_scrapes_publish_time_from_time_element():
+    items = run_extractor(
+        "extension/xiaohongshu_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('section', {class: 'note-item'}, '', [
+    new Element('a', {href: 'https://www.xiaohongshu.com/explore/6a338bc10000000021014bc8'}, ''),
+    new Element('div', {class: 'title'}, 'AI 工作流搭建经验'),
+    new Element('time', {datetime: '2024-05-01'}, '2024-05-01')
+  ])
+]);
+''',
+    )
+
+    assert items[0]["publish_time"] == "2024-05-01"
+
+
+def test_xiaohongshu_extractor_scrapes_relative_publish_time_from_text():
+    items = run_extractor(
+        "extension/xiaohongshu_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('section', {class: 'note-item'}, '编辑于 3天前', [
+    new Element('a', {href: 'https://www.xiaohongshu.com/explore/6a338bc10000000021014bc8'}, ''),
+    new Element('div', {class: 'title'}, 'AI 工作流搭建经验')
+  ])
+]);
+''',
+    )
+
+    assert items[0]["publish_time"] == "3天前"
+
+
+def test_xiaohongshu_extractor_leaves_publish_time_empty_when_absent():
+    items = run_extractor(
+        "extension/xiaohongshu_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('section', {class: 'note-item'}, '', [
+    new Element('a', {href: 'https://www.xiaohongshu.com/explore/6a338bc10000000021014bc8'}, ''),
+    new Element('div', {class: 'title'}, 'AI 工作流搭建经验')
+  ])
+]);
+''',
+    )
+
+    assert items[0]["publish_time"] == ""
+
+
+def test_bilibili_extractor_scrapes_publish_time_from_time_element():
+    items = run_extractor(
+        "extension/bilibili_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('li', {class: 'fav-video-list'}, '', [
+    new Element('a', {href: 'https://www.bilibili.com/video/BV1abcDEF123', class: 'fav-video-list__title'}, 'AI Agent 从入门到实战'),
+    new Element('time', {datetime: '2024-05-01'}, '2024-05-01')
+  ])
+]);
+''',
+    )
+
+    assert items[0]["publish_time"] == "2024-05-01"
+
+
+def test_bilibili_extractor_leaves_publish_time_empty_when_absent():
+    items = run_extractor(
+        "extension/bilibili_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('li', {class: 'fav-video-list'}, '', [
+    new Element('a', {href: 'https://www.bilibili.com/video/BV1abcDEF123', class: 'fav-video-list__title'}, 'AI Agent 从入门到实战')
+  ])
+]);
+''',
+    )
+
+    assert items[0]["publish_time"] == ""
+
+
 class FakeProxy:
-    def __init__(self, raw):
+    def __init__(self, raw, payloads=None):
         self.raw = raw
+        # payloads 给定时：每次 eval_script 按顺序 pop 一个快照（模拟滚动逐窗加载新卡片），
+        # 末个快照之后重复返回最后一个（模拟页面已稳定）。老用法 FakeProxy([...]) 不受影响。
+        self._payloads = list(payloads) if payloads is not None else None
+        self._idx = 0
 
     async def connect(self):
         return True
@@ -230,6 +315,10 @@ class FakeProxy:
         return None
 
     async def eval_script(self, tab, script):
+        if self._payloads is not None:
+            snap = self._payloads[min(self._idx, len(self._payloads) - 1)]
+            self._idx += 1
+            return json.dumps(snap)
         return json.dumps(self.raw)
 
     async def close_tab(self, tab):
@@ -270,6 +359,7 @@ def test_xiaohongshu_collector_stores_share_metadata():
             "xsec_token": "",
             "share_url": share_url,
             "share_text": share_text,
+            "publish_time": "2024-05-01",
         }
     ]))
 
@@ -279,6 +369,18 @@ def test_xiaohongshu_collector_stores_share_metadata():
     assert items[0].metadata["xiaohongshu_note_id"] == "6a338bc10000000021014bc8"
     assert items[0].metadata["xiaohongshu_share_url"] == share_url
     assert items[0].metadata["xiaohongshu_share_text"] == share_text
+    assert items[0].metadata["publish_time"] == "2024-05-01"
+
+
+def test_bilibili_collector_stores_publish_time_metadata():
+    url = "https://www.bilibili.com/video/BV1abcDEF123"
+    collector = BilibiliFavoritesCollector(proxy=FakeProxy([
+        {"url": url, "title": "AI Agent 从入门到实战", "bvid": "BV1abcDEF123", "publish_time": "2024-05-01"}
+    ]))
+
+    items = asyncio.run(collector.extract_favorites("https://space.bilibili.com/1/favlist?fid=2", limit=1))
+
+    assert items[0].metadata["publish_time"] == "2024-05-01"
 
 
 def test_xiaohongshu_collector_deduplicates_notes_and_skips_noise():
@@ -297,3 +399,129 @@ def test_xiaohongshu_collector_deduplicates_notes_and_skips_noise():
     assert items[0].raw_url == profile_url
     assert items[0].title == "Anthropic博客的Agent Eval实践心得"
     assert items[0].metadata["xiaohongshu_note_id"] == "6a338bc10000000021014bc8"
+
+
+def _bili_row(n):
+    return {"url": f"https://www.bilibili.com/video/BV{n:08d}", "title": f"视频标题 {n}", "bvid": f"BV{n:08d}"}
+
+
+def test_bilibili_collector_accumulates_across_scroll_windows_and_stops_on_stall(monkeypatch):
+    import app.connectors.bilibili as bili
+
+    monkeypatch.setattr(bili, "MAX_SCROLLS", 60)
+    monkeypatch.setattr(bili, "STALL_ROUNDS", 3)
+    monkeypatch.setattr(bili, "ALL_CAP", 1000)
+
+    # 每次滚动逐窗暴露不同卡片（虚拟化），累积应远超单窗 10 条；窗口耗尽后重复末窗 → stall 终止。
+    windows = [[_bili_row(i) for i in range(w * 10, w * 10 + 10)] for w in range(5)]  # 5 窗 × 10 = 50 唯一
+    collector = BilibiliFavoritesCollector(proxy=FakeProxy([], payloads=windows))
+
+    items = asyncio.run(collector.extract_favorites("https://space.bilibili.com/1/favlist?fid=2", limit=None))
+
+    assert len(items) == 50
+    assert len({it.metadata["bvid"] for it in items}) == 50
+
+
+def test_bilibili_collector_integer_limit_caps_unique_count(monkeypatch):
+    import app.connectors.bilibili as bili
+
+    monkeypatch.setattr(bili, "MAX_SCROLLS", 60)
+    windows = [[_bili_row(i) for i in range(w * 10, w * 10 + 10)] for w in range(5)]
+    collector = BilibiliFavoritesCollector(proxy=FakeProxy([], payloads=windows))
+
+    items = asyncio.run(collector.extract_favorites("https://space.bilibili.com/1/favlist?fid=2", limit=3))
+
+    assert len(items) == 3
+
+
+def test_xiaohongshu_collector_unions_notes_across_scroll_windows_and_filters_noise(monkeypatch):
+    import app.connectors.xiaohongshu as xhs
+
+    monkeypatch.setattr(xhs, "MAX_SCROLLS", 60)
+    monkeypatch.setattr(xhs, "STALL_ROUNDS", 3)
+
+    def note(nid, title="正经标题内容"):
+        return {"url": f"https://www.xiaohongshu.com/explore/{nid}", "title": title, "note_id": nid}
+
+    # 两窗各 2 条唯一 + 一条噪声标题（应被 build 循环的 _is_noise_title 过滤）；跨窗 note_id 并集去重。
+    window_a = [note("a" * 24, "标题A"), note("b" * 24, "标题B"), note("c" * 24, "[我")]
+    window_b = [note("b" * 24, "标题B"), note("d" * 24, "标题D")]
+    collector = XiaohongshuFavoritesCollector(proxy=FakeProxy([], payloads=[window_a, window_b]))
+
+    items = asyncio.run(collector.extract_favorites("https://www.xiaohongshu.com/user/profile/abc?tab=fav", limit=None))
+
+    note_ids = {it.metadata["xiaohongshu_note_id"] for it in items}
+    assert note_ids == {"a" * 24, "b" * 24, "d" * 24}  # 噪声 c 被滤、b 去重
+
+
+class FakeDouyinRequest:
+    """模拟抖音 CDP proxy：每次 /eval 返回逐窗递增的卡片对象（含 guard 字段）。"""
+
+    def __init__(self, windows):
+        self._windows = windows
+        self._idx = 0
+
+    async def __call__(self, method, path, body=None):
+        if path.startswith("/eval"):
+            snap = self._windows[min(self._idx, len(self._windows) - 1)]
+            self._idx += 1
+            payload = {
+                "count": len(snap),
+                "items": snap,
+                "looksLikeCollectionPage": True,
+                "isLoggedIn": True,
+                "url": "https://www.douyin.com/user/self",
+            }
+            return {"value": json.dumps(payload)}
+        return {}
+
+
+def test_douyin_collector_accumulates_across_scroll_windows(monkeypatch):
+    import app.connectors.douyin as douyin
+
+    monkeypatch.setattr(douyin, "MAX_SCROLLS", 60)
+    monkeypatch.setattr(douyin, "STALL_ROUNDS", 3)
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(douyin.asyncio, "sleep", _no_sleep)
+
+    def vid(n):
+        return {"href": f"https://www.douyin.com/video/{n:020d}", "title": f"抖音视频 {n}", "kind": "video", "publishTime": ""}
+
+    windows = [[vid(i) for i in range(w * 8, w * 8 + 8)] for w in range(4)]  # 4 窗 × 8 = 32 唯一
+    collector = douyin.DouyinBrowserCollector()
+    collector._target_id = "tab-x"
+    monkeypatch.setattr(collector, "_request", FakeDouyinRequest(windows))
+
+    items = asyncio.run(collector.extract_visible_video_links(limit=None, require_collection_page=True))
+
+    assert len(items) == 32
+    assert len({it.raw_url for it in items}) == 32
+    assert collector.diagnostics().get("looksLikeCollectionPage") is True
+
+
+def test_douyin_collector_guard_reads_last_snapshot_meta(monkeypatch):
+    import app.connectors.douyin as douyin
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(douyin.asyncio, "sleep", _no_sleep)
+
+    class NotLoggedInRequest:
+        async def __call__(self, method, path, body=None):
+            if path.startswith("/eval"):
+                payload = {"count": 0, "items": [], "looksLikeCollectionPage": False, "isLoggedIn": False, "url": "x"}
+                return {"value": json.dumps(payload)}
+            return {}
+
+    collector = douyin.DouyinBrowserCollector()
+    collector._target_id = "tab-x"
+    monkeypatch.setattr(collector, "_request", NotLoggedInRequest())
+
+    import pytest
+
+    with pytest.raises(douyin.DouyinPageNotReady):
+        asyncio.run(collector.extract_visible_video_links(limit=10, require_collection_page=True))

@@ -1017,12 +1017,145 @@ select:focus {
   font-weight: 650;
 }
 
-.source-advanced-flow {
+/* 历史/新增双 Tab */
+.source-collection-tabs {
+  display: flex;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-soft);
+}
+
+.source-collection-tab {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-secondary);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.source-collection-tab.is-active {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.source-collection-hint {
+  margin: 10px 2px 0;
+  font-size: 13px;
+  color: var(--color-muted);
+}
+
+.source-collection-panel.is-hidden {
+  display: none;
+}
+
+/* 同步收藏：平台标签栏 + 内联面板宿主 */
+.platform-tab-section {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.platform-tabbar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-soft);
+}
+
+.platform-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-secondary);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.platform-tab img {
+  border-radius: 4px;
+  display: block;
+}
+
+.platform-tab.is-active {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-primary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.platform-panel-host {
+  min-height: 120px;
+}
+
+.platform-panel-loading {
+  margin: 0;
+  padding: 32px 4px;
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 14px;
+}
+
+/* 提取面板里折叠的「平台设置」（状态 + 本地配置） */
+.platform-settings-fold {
   margin-top: 16px;
-  padding: 12px 14px;
-  border: 1px dashed var(--color-border-strong);
+  padding: 14px 18px;
+}
+
+.platform-settings-fold > summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--color-secondary);
+}
+
+.platform-settings-fold .platform-settings-body {
+  margin-top: 14px;
+}
+
+/* 筛选器条 */
+.source-filter-toolbar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface-soft);
+}
+
+.source-filter-toolbar label {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--color-secondary);
+}
+
+/* 已入库灰显 + chip */
+.filter-item.extracted {
+  opacity: 0.6;
+  background: var(--color-surface);
+}
+
+.filter-extracted-chip {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: middle;
 }
 
 .source-advanced-flow summary {
@@ -1033,6 +1166,14 @@ select:focus {
 
 .source-advanced-flow form {
   margin-top: 12px;
+}
+
+.source-advanced-flow {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-card);
+  background: var(--color-surface-soft);
 }
 
 .modal-shell {

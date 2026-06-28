@@ -134,3 +134,55 @@ def test_raw_source_title_keeps_valid_video_title(tmp_path, monkeypatch):
 
     assert raw_source.title == "一个关于 Agent 工作流的 B站视频"
     assert db.query(RawSource).count() == 1
+
+
+def test_is_bad_display_title_rejects_bare_douyin_numeric_id():
+    bad = RawSourceService._is_bad_display_title
+    # 抖音视频ID：18-19 位纯数字，裸 ID 与带 query 都应判坏。
+    assert bad("7655353419527507263") is True
+    assert bad("7402216928846023976?source=Baiduspider") is True
+    assert bad("7402216928846023976?source=Baiduspider&x=1") is True
+    # 正常标题与短数字串不应误判。
+    assert bad("一个关于 Agent 工作流的 B站视频") is False
+    assert bad("BV1xx411c7mD") is False
+    assert bad("2026 年终总结") is False
+    assert bad("123") is False
+
+
+def test_raw_source_title_falls_back_to_url_when_candidate_title_is_bare_douyin_id(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    # 极端兜底：扫描偶发没拿到标题，candidate.title 退化成裸视频ID。
+    # _display_title 应跳过坏标题、回退到 canonical_url，绝不把裸ID当标题展示。
+    candidate = CandidateItem(
+        source_type="active_connector",
+        platform="douyin",
+        external_item_id="7402216928846023976",
+        canonical_url="https://www.douyin.com/video/7402216928846023976",
+        raw_url="https://www.douyin.com/video/7402216928846023976?source=Baiduspider",
+        title="7402216928846023976?source=Baiduspider",
+        author="作者",
+        content_type="video",
+        metadata_json=json.dumps({"transcript": "视频正文"}, ensure_ascii=False),
+        status="pending_classification",
+    )
+    db.add(candidate)
+    db.flush()
+    db.add(
+        SyncLedgerItem(
+            platform="douyin",
+            external_item_id=candidate.external_item_id,
+            canonical_url=candidate.canonical_url,
+            raw_url=candidate.raw_url,
+            scan_run_id="selected",
+            classification_label="knowledge_selected",
+            candidate_id=candidate.id,
+        )
+    )
+    db.commit()
+    db.refresh(candidate)
+
+    raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+
+    assert raw_source.title == "https://www.douyin.com/video/7402216928846023976"
+    assert "7402216928846023976?source=Baiduspider" not in raw_source.title

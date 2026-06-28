@@ -129,7 +129,13 @@ class RawSourceService:
         for title in candidates:
             if title and not self._is_bad_display_title(title):
                 return title[:500]
+        # 全部候选都坏（如裸视频ID + URL）时回退。fallback 若自己也是坏标题（裸ID），
+        # 宁可展示 URL 也不展示裸ID——从候选里挑第一个 http(s) URL 顶上。
         fallback_value = str(fallback or "未命名来源").strip() or "未命名来源"
+        if self._is_bad_display_title(fallback_value):
+            for title in candidates:
+                if title and re.match(r"^https?://", title, re.IGNORECASE):
+                    return title[:500]
         return fallback_value[:500]
 
     @staticmethod
@@ -149,6 +155,10 @@ class RawSourceService:
         if re.fullmatch(r"[a-f0-9]{12,}", value, re.IGNORECASE):
             return True
         if re.fullmatch(r"[a-f0-9]{12,}\?.+", value, re.IGNORECASE):
+            return True
+        # 抖音视频ID是 18-19 位纯数字（可带 ?source=… 等 query）。扫描偶发拿不到标题时
+        # candidate.title 会退化成裸ID，这里显式判坏，让 _display_title 回退到 URL 而非展示裸ID。
+        if re.fullmatch(r"\d{12,}(\?.*)?", value):
             return True
         return False
 

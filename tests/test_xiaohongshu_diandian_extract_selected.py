@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models import CandidateItem, RawSource, SyncLedgerItem
+from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem
 
 
 class FakeDiandianResult:
@@ -101,6 +101,19 @@ def test_xiaohongshu_diandian_extract_selected_creates_raw_source(tmp_path, monk
     FakeDiandianExtractor.calls = []
     db = make_session()
     candidate = create_candidate(db, {"xiaohongshu_share_url": share_url, "xiaohongshu_share_text": share_text})
+    # 预置已 link 的 ScanEntry，提取成功后应被置 extracted=True + raw_source_id。
+    db.add(
+        ScanEntry(
+            platform="xiaohongshu",
+            external_item_id=candidate.external_item_id,
+            canonical_url=candidate.canonical_url,
+            raw_url=candidate.raw_url,
+            title=candidate.title,
+            collection_kind="history",
+            candidate_id=candidate.id,
+        )
+    )
+    db.commit()
 
     def override_get_db():
         yield db
@@ -123,6 +136,11 @@ def test_xiaohongshu_diandian_extract_selected_creates_raw_source(tmp_path, monk
         assert metadata["xiaohongshu_diandian_share_text"] == share_text
         assert metadata["xiaohongshu_diandian_share_url"] == share_url
         assert ledger.classification_label == "knowledge"
+
+        # ScanEntry 被回填：extracted=True + raw_source_id。
+        scan_entry = db.query(ScanEntry).filter(ScanEntry.external_item_id == candidate.external_item_id).one()
+        assert scan_entry.extracted is True
+        assert scan_entry.raw_source_id == raw_source.id
     finally:
         app.dependency_overrides.clear()
 
@@ -265,5 +283,162 @@ def test_xiaohongshu_diandian_not_ready_returns_error(monkeypatch):
         response = TestClient(app).post("/api/xiaohongshu/diandian/extract-selected", json={"candidate_ids": [candidate.id]})
         assert response.status_code == 428
         assert response.json()["detail"]["code"] == "xiaohongshu_diandian_not_ready"
+    finally:
+        app.dependency_overrides.clear()
+
+
+# --- 点点对称：换窗节流 + 人机验证暂停续跑（plan C / D / E1） ---
+
+
+class PacingTrackingDiandianExtractor:
+    calls = []
+    new_conversation_calls = 0
+    close_calls = []
+
+    async def check_ready(self):
+        return True
+
+    async def extract_content(self, share_text, url="", content_type="note", timeout_seconds=240):
+        type(self).calls.append(url)
+        return FakeDiandianResult(url=url)
+
+    async def start_new_conversation(self):
+        type(self).new_conversation_calls += 1
+        return {"success": True, "method": "location_assign"}
+
+    async def close(self, close_tab=True):
+        type(self).close_calls.append(close_tab)
+
+
+class HumanVerificationDiandianExtractor:
+    succeed_before_challenge = 1
+    calls = []
+    new_conversation_calls = 0
+    close_calls = []
+
+    async def check_ready(self):
+        return True
+
+    async def extract_content(self, share_text, url="", content_type="note", timeout_seconds=240):
+        type(self).calls.append(url)
+        if len(type(self).calls) <= type(self).succeed_before_challenge:
+            return FakeDiandianResult(url=url, success=True)
+        return FakeDiandianResult(url=url, success=False, error="xiaohongshu_diandian_human_verification_required")
+
+    async def start_new_conversation(self):
+        type(self).new_conversation_calls += 1
+        return {"success": True, "method": "location_assign"}
+
+    async def close(self, close_tab=True):
+        type(self).close_calls.append(close_tab)
+
+
+def test_diandian_extract_selected_switches_conversation_every_n_items(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", PacingTrackingDiandianExtractor)
+    PacingTrackingDiandianExtractor.calls = []
+    PacingTrackingDiandianExtractor.new_conversation_calls = 0
+    PacingTrackingDiandianExtractor.close_calls = []
+
+    slept = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr("app.api.routes.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("app.api.routes.random.uniform", lambda lo, hi: (lo + hi) / 2)
+
+    db = make_session()
+    candidates = [
+        create_candidate(db, title=f"标题 {idx}", external_item_id=f"6a338bc10000000021014be{idx}")
+        for idx in range(4)
+    ]
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/xiaohongshu/diandian/extract-selected",
+            json={
+                "candidate_ids": [c.id for c in candidates],
+                "switch_every": 2,
+                "item_delay_min": 1,
+                "item_delay_max": 3,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["success_count"] == 4
+        assert PacingTrackingDiandianExtractor.new_conversation_calls == 1
+        assert len(slept) == 3
+        assert all(value == 2.0 for value in slept)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_diandian_extract_selected_pauses_and_resumes_on_human_verification(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+
+    async def fake_sleep(seconds):
+        return None
+
+    monkeypatch.setattr("app.api.routes.asyncio.sleep", fake_sleep)
+
+    db = make_session()
+    first = create_candidate(db, title="完成", external_item_id="6a338bc10000000021014bf1")
+    second = create_candidate(db, title="验证", external_item_id="6a338bc10000000021014bf2")
+    third = create_candidate(db, title="未到", external_item_id="6a338bc10000000021014bf3")
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+
+        monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", HumanVerificationDiandianExtractor)
+        HumanVerificationDiandianExtractor.calls = []
+        HumanVerificationDiandianExtractor.new_conversation_calls = 0
+        HumanVerificationDiandianExtractor.close_calls = []
+        HumanVerificationDiandianExtractor.succeed_before_challenge = 1
+
+        first_response = client.post(
+            "/api/xiaohongshu/diandian/extract-selected",
+            json={"candidate_ids": [first.id, second.id, third.id], "switch_every": 99},
+        )
+        first_body = first_response.json()
+        assert first_response.status_code == 200
+        assert first_body["status"] == "paused"
+        assert first_body["reason"] == "human_verification"
+        assert first_body["success_count"] == 1
+        assert first_body["pending_remaining"] == 2
+        assert db.query(RawSource).count() == 1
+        assert HumanVerificationDiandianExtractor.close_calls[-1] is False
+        job_id = first_body["job_id"]
+
+        # 续跑：全成功 extractor 接管，带 job_id 重 POST。
+        monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", PacingTrackingDiandianExtractor)
+        PacingTrackingDiandianExtractor.calls = []
+        PacingTrackingDiandianExtractor.new_conversation_calls = 0
+        PacingTrackingDiandianExtractor.close_calls = []
+
+        resume_response = client.post(
+            "/api/xiaohongshu/diandian/extract-selected",
+            json={"candidate_ids": [first.id, second.id, third.id], "job_id": job_id, "switch_every": 99},
+        )
+        resume_body = resume_response.json()
+        assert resume_response.status_code == 200
+        assert resume_body["status"] == "completed"
+        assert resume_body["job_id"] == job_id
+        assert resume_body["success_count"] == 2
+        assert len(PacingTrackingDiandianExtractor.calls) == 2
+        assert db.query(RawSource).count() == 3
+        for candidate in (first, second, third):
+            meta = json.loads(db.get(CandidateItem, candidate.id).metadata_json)
+            assert meta["xiaohongshu_diandian_extracted"] is True
     finally:
         app.dependency_overrides.clear()

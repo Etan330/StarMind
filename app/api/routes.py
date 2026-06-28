@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 import re
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,9 @@ from app.config import (
     SOURCE_CONNECTIONS_PATH,
     UI_PREFS_PATH,
     WORKBENCH_LAYOUT_PATH,
+    DOUBAO_SWITCH_CONVO_EVERY,
+    DOUBAO_ITEM_DELAY_MIN,
+    DOUBAO_ITEM_DELAY_MAX,
     read_json,
     write_json,
 )
@@ -50,11 +55,12 @@ from app.llm import (
     test_active_connection,
     test_model_connection,
 )
-from app.models import CandidateItem, Connector, KnowledgeClassification, RawSource, RecycleBinItem, ScanLog, SyncLedgerItem, WikiPage
+from app.models import CandidateItem, Connector, KnowledgeClassification, RawSource, RecycleBinItem, ScanEntry, ScanLog, SyncLedgerItem, WikiPage
 from app.services import (
     ClassifierService,
     RawSourceService,
     RecycleService,
+    ScanEntryService,
     SyncService,
     TrackingService,
     V3_ENTRY_MODES,
@@ -90,6 +96,10 @@ from app.services.statuses import (
 router = APIRouter()
 templates = Jinja2Templates(directory=str(PROJECT_ROOT / "app" / "templates"))
 BROWSER_SESSIONS: dict[str, dict[str, Any]] = {}
+# 豆包/点点 批量提取的会话态（内存级，仿 BROWSER_SESSIONS）。
+# key=job_id；记录本次批次进度，用于人机验证暂停后的断点续跑聚合计数。
+# 持久断点靠 candidate.metadata_json 的 *_extracted 标记（重启后仍可续跑，只丢聚合计数）。
+DOUBAO_EXTRACT_JOBS: dict[str, dict[str, Any]] = {}
 
 V3_UI_EVENT_NAMES = {
     "v3_primary_input_focused",
@@ -883,6 +893,45 @@ def truthy(value: Any, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "on", "yes", "y"}
 
 
+def _pacing_params(data: dict[str, Any]) -> tuple[int, float, float]:
+    """读取批量提取的节奏节流参数：每 N 条换窗、条间随机延时 [min, max] 秒。
+
+    优先用请求体覆盖（便于实测调小），否则取 config 默认。
+    """
+    try:
+        switch_every = int(data.get("switch_every") or DOUBAO_SWITCH_CONVO_EVERY)
+    except (TypeError, ValueError):
+        switch_every = DOUBAO_SWITCH_CONVO_EVERY
+    try:
+        delay_min = float(data.get("item_delay_min") if data.get("item_delay_min") is not None else DOUBAO_ITEM_DELAY_MIN)
+    except (TypeError, ValueError):
+        delay_min = DOUBAO_ITEM_DELAY_MIN
+    try:
+        delay_max = float(data.get("item_delay_max") if data.get("item_delay_max") is not None else DOUBAO_ITEM_DELAY_MAX)
+    except (TypeError, ValueError):
+        delay_max = DOUBAO_ITEM_DELAY_MAX
+    switch_every = max(1, switch_every)
+    delay_min = max(0.0, delay_min)
+    delay_max = max(delay_min, delay_max)
+    return switch_every, delay_min, delay_max
+
+
+def _filter_pending_candidates(db: Session, candidate_ids: list[Any], platform: str) -> list[int]:
+    """从 candidate_ids 里筛出该平台尚未提取的（断点续跑用，幂等跳过已完成）。"""
+    from app.connectors.extract_pacing import next_pending
+
+    metas: list[tuple[int, dict[str, Any]]] = []
+    for raw_id in candidate_ids:
+        try:
+            cid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        candidate = db.get(CandidateItem, cid)
+        meta = safe_json(candidate.metadata_json) if candidate is not None else {}
+        metas.append((cid, meta))
+    return next_pending(metas, platform)
+
+
 async def process_candidate_ids(db: Session, candidate_ids: list[int], limit: int = 10) -> list[dict[str, Any]]:
     processed: list[dict[str, Any]] = []
     raw_service = RawSourceService(db)
@@ -1673,32 +1722,50 @@ def connectors_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
-@router.get("/ui/source-setup/{platform}", response_class=HTMLResponse)
-def source_setup_page(platform: str, request: Request, db: Session = Depends(get_db)):
+def _source_setup_context(platform: str, db: Session, saved: str | None = None) -> dict[str, Any] | None:
+    """准备 source_setup 模板/片段的 context。未知平台返回 None。
+
+    独立页 source_setup_page 与片段端点 source_setup_panel 共用，保证两处行为一致。
+    """
     preset = next((item for item in PLATFORM_PRESETS if item["platform"] == platform), None)
     if preset is None:
-        raise HTTPException(status_code=404, detail="source platform not found")
+        return None
     source_connections = get_source_connections()["connections"]
     connection = source_connections.get(platform, {})
     saved_homepage_url = str(connection.get("homepage_url") or "").strip() if isinstance(connection, dict) else ""
     has_saved_favorites_url = platform in {"bilibili", "xiaohongshu"} and bool(saved_homepage_url)
     open_label = "打开已保存收藏页" if has_saved_favorites_url else PLATFORM_OPEN_LABELS.get(platform, f"打开 {preset['name']} 官网登录")
     connector = db.query(Connector).filter(Connector.platform == platform).first()
+    return {
+        "preset": preset,
+        "connector": connector,
+        "connection": connection,
+        "has_saved_favorites_url": has_saved_favorites_url,
+        "open_label": open_label,
+        "saved": saved,
+    }
+
+
+@router.get("/ui/source-setup/{platform}", response_class=HTMLResponse)
+def source_setup_page(platform: str, request: Request, db: Session = Depends(get_db)):
+    ctx = _source_setup_context(platform, db, saved=request.query_params.get("saved"))
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="source platform not found")
     return templates.TemplateResponse(
         request,
         "source_setup.html",
-        template_context(
-            request,
-            "connectors",
-            db,
-            preset=preset,
-            connector=connector,
-            connection=connection,
-            has_saved_favorites_url=has_saved_favorites_url,
-            open_label=open_label,
-            saved=request.query_params.get("saved"),
-        ),
+        template_context(request, "connectors", db, **ctx),
     )
+
+
+@router.get("/ui/source-setup/{platform}/panel", response_class=HTMLResponse)
+def source_setup_panel(platform: str, request: Request, db: Session = Depends(get_db)):
+    """只渲染提取工作台片段（不套 base.html），供 /ui/sync 标签栏按需 AJAX 注入。"""
+    ctx = _source_setup_context(platform, db, saved=request.query_params.get("saved"))
+    if ctx is None:
+        raise HTTPException(status_code=404, detail="source platform not found")
+    return templates.TemplateResponse(request, "_source_setup_panel.html", ctx)
+
 
 
 @router.post("/source-connections/{platform}/save-current-page")
@@ -3173,7 +3240,7 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
 
     data = await request_data(request)
     platform = str(data.get("platform") or "").strip()
-    limit = int(data.get("limit") or 500)
+    limit = parse_collection_limit(data, default=10)
     homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
 
     try:
@@ -3196,21 +3263,71 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     except DouyinPageNotReady as exc:
         raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
 
+    # 落库（DB 权威源）：历史 vs 新增切分 + 跨天去重 + 回传 scan_entry_id/已分类/已提取状态。
+    svc = ScanEntryService(db)
+    kind = svc.determine_kind(platform)
+    if kind == "incremental":
+        items = svc.filter_incremental(platform, items)
+    scan_run_id = f"scan_titles_{uuid4().hex[:8]}"
+    entries = svc.upsert_from_items(platform, items, kind, scan_run_id)
+    if kind == "history":
+        svc.record_boundary(platform, items)
+
     return {
-        "items": [
-            {
-                "url": i.raw_url,
-                "title": i.title,
-                "author": i.author,
-                "platform": i.platform,
-                "content_type": i.content_type,
-                "metadata": i.metadata or {},
-            }
-            for i in items
-        ],
-        "total": len(items),
+        "items": entries,
+        "total": len(entries),
+        "collection_kind": kind,
         "login_required": False,
     }
+
+
+@router.get("/api/sync/scan-entries")
+async def list_scan_entries(request: Request, db: Session = Depends(get_db)):
+    """刷新/换设备恢复：返回该平台（可选 kind）已落库的 ScanEntry（DB 权威源）。"""
+    platform = str(request.query_params.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    kind = str(request.query_params.get("kind") or "").strip() or None
+    svc = ScanEntryService(db)
+    entries = svc.list_entries(platform, kind)
+    return {
+        "items": entries,
+        "total": len(entries),
+        "collection_kind": kind,
+        "history_saved": svc.is_history_saved(platform),
+    }
+
+
+@router.post("/api/sync/save-history")
+async def save_history_favorites(request: Request, db: Session = Depends(get_db)):
+    """历史「采集一次保存」：翻 history_saved=True，重入历史 Tab 走只读模式。
+
+    无需单独 bulk-save——扫描已把每条 collection_kind=history 落库、分类已经 apply_classification 落库，
+    保存只翻 flag + 前端重渲染只读（保存全部已分类条目，忽略勾选）。
+    """
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    if not any(item["platform"] == platform for item in PLATFORM_PRESETS):
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    svc = ScanEntryService(db)
+    svc.set_history_saved(platform, True)
+    history_count = len(svc.list_entries(platform, "history"))
+    return {"status": "saved", "history_saved": True, "history_count": history_count}
+
+
+@router.post("/api/sync/reset-history")
+async def reset_history_favorites(request: Request, db: Session = Depends(get_db)):
+    """「重新扫描历史」：清 history_saved + first_scan_done，使下次扫描重新走 history 全量。"""
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    if not any(item["platform"] == platform for item in PLATFORM_PRESETS):
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    ScanEntryService(db).reset_history(platform)
+    return {"status": "reset", "history_saved": False}
 
 
 @router.post("/api/classify/batch-titles")
@@ -3220,6 +3337,14 @@ async def classify_batch_titles(request: Request, db: Session = Depends(get_db))
     if not items:
         raise HTTPException(status_code=400, detail="items required")
     result = await ClassifierService(db).batch_classify_titles(items)
+    # 回写分类结果到 ScanEntry（前端 items 透传 scan_entry_id，分类器原样保留在各 group.items 里）。
+    # 纯函数分类器不动，回写在路由层。
+    if isinstance(result, dict):
+        flat: list[dict] = []
+        for group in result.get("groups") or []:
+            flat.extend(group.get("items") or [])
+        if flat:
+            ScanEntryService(db).apply_classification(flat)
     return result
 
 
@@ -3255,6 +3380,11 @@ async def prepare_selected_items(request: Request, db: Session = Depends(get_db)
         ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate_id).first()
         if ledger:
             ledger.classification_label = "knowledge_selected"
+
+    # 把 candidate_id 回填到对应 ScanEntry（勾选提取的串联点）。
+    scan_svc = ScanEntryService(db)
+    for candidate_id in result.candidate_ids:
+        scan_svc.link_candidate(platform, candidate_id)
 
     for item in skipped_items:
         raw_url = str(item.get("url") or item.get("raw_url") or "").strip()
@@ -3387,6 +3517,26 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
         raise HTTPException(status_code=400, detail="candidate_ids required")
     per_item_timeout = int(data.get("per_item_timeout_seconds") or 240)
     generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
+    switch_every, delay_min, delay_max = _pacing_params(data)
+
+    job_id = str(data.get("job_id") or "").strip() or uuid4().hex
+    pending = _filter_pending_candidates(db, candidate_ids, "xiaohongshu_diandian")
+    job = DOUBAO_EXTRACT_JOBS.setdefault(
+        job_id,
+        {
+            "platform": "xiaohongshu_diandian",
+            "candidate_ids": [int(c) for c in candidate_ids if str(c).strip()],
+            "status": "running",
+            "paused_reason": None,
+            "done_ids": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "items": [],
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    job["status"] = "running"
+    job["paused_reason"] = None
 
     extractor = XiaohongshuDiandianExtractor()
     keep_diandian_tab_open = False
@@ -3410,8 +3560,13 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
         items: list[dict[str, Any]] = []
         success_count = 0
         failed_count = 0
-        for raw_candidate_id in candidate_ids:
-            candidate_id = int(raw_candidate_id)
+        paused = False
+        for i, candidate_id in enumerate(pending):
+            if i > 0 and i % switch_every == 0:
+                try:
+                    await extractor.start_new_conversation()
+                except Exception:
+                    pass
             candidate = db.get(CandidateItem, candidate_id)
             if candidate is None:
                 failed_count += 1
@@ -3433,9 +3588,16 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
             attempts = int(getattr(result, "attempts", 1) or 1)
             retried = bool(getattr(result, "retried", False))
             if not result.success or not str(result.transcript or result.text_content or "").strip():
+                # 人机验证：保留进度、暂停、break，由前端续跑。
+                if result.error == "xiaohongshu_diandian_human_verification_required":
+                    keep_diandian_tab_open = True
+                    paused = True
+                    break
                 if result.error == "xiaohongshu_diandian_not_ready":
                     keep_diandian_tab_open = True
-                    raise HTTPException(status_code=428, detail=not_ready_detail)
+                    paused = True
+                    job["paused_reason"] = "not_ready"
+                    break
                 failed_count += 1
                 metadata = safe_json(candidate.metadata_json)
                 metadata.update(
@@ -3454,6 +3616,8 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
                     ledger.classification_label = "xiaohongshu_diandian_failed"
                 db.commit()
                 items.append({"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response", "attempts": attempts, "retried": retried})
+                if i < len(pending) - 1:
+                    await asyncio.sleep(random.uniform(delay_min, delay_max))
                 continue
 
             content = str(result.transcript or result.text_content).strip()
@@ -3484,16 +3648,47 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
                 ledger.classification_label = "knowledge"
                 ledger.raw_source_id = raw_source.id
                 db.commit()
+            ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
             wiki_page_id = None
             if generate_wiki_draft:
                 page = await wiki_service.create_page_from_raw_source(raw_source.id)
                 wiki_page_id = page.page_id
             success_count += 1
+            job["done_ids"].append(candidate.id)
             items.append({"candidate_id": candidate.id, "success": True, "raw_source_id": raw_source.id, "wiki_page_id": wiki_page_id, "attempts": attempts, "retried": retried, "error": None})
+            if i < len(pending) - 1:
+                await asyncio.sleep(random.uniform(delay_min, delay_max))
     finally:
         await extractor.close(close_tab=not keep_diandian_tab_open)
 
-    return {"status": "completed", "success_count": success_count, "failed_count": failed_count, "items": items}
+    job["success_count"] = job.get("success_count", 0) + success_count
+    job["failed_count"] = job.get("failed_count", 0) + failed_count
+    job["items"].extend(items)
+
+    if paused:
+        remaining = _filter_pending_candidates(db, job["candidate_ids"], "xiaohongshu_diandian")
+        reason = job.get("paused_reason") or "human_verification"
+        job["status"] = "paused"
+        job["paused_reason"] = reason
+        message = (
+            "检测到小红书点点人机验证。请在已打开的点点页面完成验证，然后点「我已完成，继续」继续提取剩余条目。"
+            if reason == "human_verification"
+            else "小红书点点页面未就绪。请在点点页面重新登录/打开后，点「我已完成，继续」继续提取剩余条目。"
+        )
+        return {
+            "status": "paused",
+            "job_id": job_id,
+            "reason": reason,
+            "message": message,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "done": len(job["done_ids"]),
+            "pending_remaining": len(remaining),
+            "items": items,
+        }
+
+    job["status"] = "completed"
+    return {"status": "completed", "job_id": job_id, "success_count": success_count, "failed_count": failed_count, "items": items}
 
 
 @router.post("/api/doubao/extract-selected")
@@ -3507,6 +3702,28 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
         raise HTTPException(status_code=400, detail="candidate_ids required")
     per_item_timeout = int(data.get("per_item_timeout_seconds") or 240)
     generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
+    switch_every, delay_min, delay_max = _pacing_params(data)
+
+    # 断点续跑：带 job_id 则复用，否则新建。无论新建/续跑，pending 都由
+    # already_extracted（metadata 标记）过滤——已完成的 candidate 直接跳过，幂等。
+    job_id = str(data.get("job_id") or "").strip() or uuid4().hex
+    pending = _filter_pending_candidates(db, candidate_ids, "doubao")
+    job = DOUBAO_EXTRACT_JOBS.setdefault(
+        job_id,
+        {
+            "platform": "doubao",
+            "candidate_ids": [int(c) for c in candidate_ids if str(c).strip()],
+            "status": "running",
+            "paused_reason": None,
+            "done_ids": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "items": [],
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    job["status"] = "running"
+    job["paused_reason"] = None
 
     extractor = DoubaoExtractor()
     keep_doubao_tab_open = False
@@ -3530,8 +3747,14 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
         items: list[dict[str, Any]] = []
         success_count = 0
         failed_count = 0
-        for raw_candidate_id in candidate_ids:
-            candidate_id = int(raw_candidate_id)
+        paused = False
+        for i, candidate_id in enumerate(pending):
+            # 每 switch_every 条换新对话窗口（反爬节流，推迟人机验证出现）。
+            if i > 0 and i % switch_every == 0:
+                try:
+                    await extractor.start_new_conversation()
+                except Exception:
+                    pass
             candidate = db.get(CandidateItem, candidate_id)
             if candidate is None:
                 failed_count += 1
@@ -3549,8 +3772,20 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                 continue
 
             if not result.success or not str(result.transcript or result.text_content or "").strip():
-                if result.error == "doubao_login_required":
+                # 人机验证：不中断、不报错码 428，保留已完成进度，置 paused 并 break，
+                # 由前端弹窗提示用户手动验证后带 job_id 重 POST 续跑。
+                if result.error == "doubao_human_verification_required":
                     keep_doubao_tab_open = True
+                    paused = True
+                    break
+                if result.error == "doubao_login_required":
+                    # 新建批次首条登录失效 → 保留现状 428（让前端走登录引导）。
+                    # 批中途（已成功提取过至少一条）→ 走暂停续跑路径，保住已完成进度。
+                    keep_doubao_tab_open = True
+                    if success_count > 0:
+                        paused = True
+                        job["paused_reason"] = "login_required"
+                        break
                     raise HTTPException(status_code=428, detail=login_required_detail)
                 failed_count += 1
                 metadata = safe_json(candidate.metadata_json)
@@ -3568,6 +3803,9 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                     ledger.classification_label = "doubao_failed"
                 db.commit()
                 items.append({"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response"})
+                # 失败条之间也节流，避免快速重试触发反爬。
+                if i < len(pending) - 1:
+                    await asyncio.sleep(random.uniform(delay_min, delay_max))
                 continue
 
             content = str(result.transcript or result.text_content).strip()
@@ -3591,11 +3829,13 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
             candidate.title = result.title or candidate.title
             db.commit()
             raw_source = raw_service.ingest_candidate(candidate.id)
+            ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
             wiki_page_id = None
             if generate_wiki_draft:
                 page = await wiki_service.create_page_from_raw_source(raw_source.id)
                 wiki_page_id = page.page_id
             success_count += 1
+            job["done_ids"].append(candidate.id)
             items.append(
                 {
                     "candidate_id": candidate.id,
@@ -3604,11 +3844,43 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
                     "wiki_page_id": wiki_page_id,
                 }
             )
+            # 成功条之间随机延时（最后一条不必等）。
+            if i < len(pending) - 1:
+                await asyncio.sleep(random.uniform(delay_min, delay_max))
     finally:
         await extractor.close(close_tab=not keep_doubao_tab_open)
 
+    job["success_count"] = job.get("success_count", 0) + success_count
+    job["failed_count"] = job.get("failed_count", 0) + failed_count
+    job["items"].extend(items)
+
+    if paused:
+        # 暂停未完成的剩余（含当前这条未成功的）由 metadata 标记决定，续跑时重新过滤。
+        remaining = _filter_pending_candidates(db, job["candidate_ids"], "doubao")
+        reason = job.get("paused_reason") or "human_verification"
+        job["status"] = "paused"
+        job["paused_reason"] = reason
+        message = (
+            "检测到豆包人机验证。请在已打开的豆包页面完成验证，然后点「我已完成，继续」继续提取剩余条目。"
+            if reason == "human_verification"
+            else "豆包登录状态失效。请在豆包页面重新登录后，点「我已完成，继续」继续提取剩余条目。"
+        )
+        return {
+            "status": "paused",
+            "job_id": job_id,
+            "reason": reason,
+            "message": message,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "done": len(job["done_ids"]),
+            "pending_remaining": len(remaining),
+            "items": items,
+        }
+
+    job["status"] = "completed"
     return {
         "status": "completed",
+        "job_id": job_id,
         "success_count": success_count,
         "failed_count": failed_count,
         "items": items,

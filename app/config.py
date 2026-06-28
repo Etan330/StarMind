@@ -13,6 +13,13 @@ BROWSER_DATA_DIR = LOCAL_DATA_DIR / "browser"
 DATABASE_PATH = LOCAL_DATA_DIR / "starmind.db"
 DATABASE_URL = os.getenv("STARMIND_DATABASE_URL", f"sqlite:///{DATABASE_PATH}")
 
+# 豆包/点点 批量提取节奏节流（反爬：推迟人机验证出现）。
+# 端点循环按此调度——每 N 条换新对话窗口，条间随机延时 [MIN, MAX] 秒。
+# 默认值偏保守；请求体可传同名键覆盖以便实测调小。
+DOUBAO_SWITCH_CONVO_EVERY = int(os.getenv("STARMIND_DOUBAO_SWITCH_EVERY", "2"))
+DOUBAO_ITEM_DELAY_MIN = float(os.getenv("STARMIND_DOUBAO_DELAY_MIN", "15"))
+DOUBAO_ITEM_DELAY_MAX = float(os.getenv("STARMIND_DOUBAO_DELAY_MAX", "40"))
+
 DATA_DIRECTORIES = [
     LOCAL_DATA_DIR,
     LOCAL_DATA_DIR / "raw_sources",

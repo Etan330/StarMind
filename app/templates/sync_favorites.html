@@ -3,7 +3,24 @@
 {% set title = "同步收藏夹" %}
 
 {% block content %}
-{{ ui.page_header("收藏来源管理", "每个社交媒体平台一条，点击「管理」进入采集流程。", "连接来源") }}
+{{ ui.page_header("收藏来源管理", "点上方平台标签，在本页直接进入该平台的采集流程；无需跳转。", "连接来源") }}
+
+{% if live_platforms %}
+<section class="glass-card v1-section platform-tab-section" data-platform-section>
+  <div class="platform-tabbar" role="tablist" data-platform-tabs>
+    {% for p in live_platforms %}
+      <button class="platform-tab{{ ' is-active' if loop.first else '' }}" type="button" role="tab"
+              data-platform-tab="{{ p.platform }}" aria-selected="{{ 'true' if loop.first else 'false' }}">
+        {% if p.logo_url %}<img src="{{ p.logo_url }}" alt="{{ p.name }}" width="20" height="20">{% endif %}
+        <span>{{ p.name }}</span>
+      </button>
+    {% endfor %}
+  </div>
+  <div class="platform-panel-host" data-platform-panel-host data-default-platform="{{ live_platforms[0].platform }}">
+    <p class="platform-panel-loading">正在加载提取面板…</p>
+  </div>
+</section>
+{% endif %}
 
 <section class="glass-card v1-section">
   <div class="panel-title-row">

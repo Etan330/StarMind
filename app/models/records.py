@@ -27,6 +27,13 @@ class Connector(Base):
     last_top_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     scan_mode: Mapped[str] = mapped_column(String(120), nullable=False, default="stop_when_seen_existing_raw_source_or_ledger")
     max_scan_pages: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    # 历史/新增收藏夹切分：首次扫描的全部条目算「历史」，记最新一条为分界锚点；之后扫到的算「新增」。
+    # 存量库由 app.database._ensure_columns 在 init_db 里幂等补这两列（create_all 不会给已存在的表加列）。
+    first_scan_done: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    history_boundary_external_id: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # 历史「采集一次保存」：用户保存历史收藏后置 True → 重入历史 Tab 走只读模式（不再扫描/分类）。
+    # 「重新扫描历史」会同时清此列与 first_scan_done，使下次扫描重新走 history 全量。
+    history_saved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_sync_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     auto_sync_cron: Mapped[str | None] = mapped_column(String(40), nullable=True, default="0 0 * * *")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
@@ -287,3 +294,44 @@ class KnowledgeGraphEdge(Base):
     weight: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
     shared_concepts_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ScanEntry(Base):
+    """扫描+分类结果的权威持久层。
+
+    一条收藏跨「扫描展示 → 勾选建 CandidateItem → 提取建 RawSource」三个阶段由这张表串起来，
+    与现有 candidate/ledger/raw_source 解耦。DB 为权威源，前端 localStorage 仅作离线缓存/断点续跑。
+    唯一约束 (platform, external_item_id) 与 sync_ledger_items 对齐，便于去重对照。
+    """
+
+    __tablename__ = "scan_entries"
+    __table_args__ = (
+        Index("ux_scan_entry_platform_external", "platform", "external_item_id", unique=True),
+        Index("ix_scan_entry_kind", "platform", "collection_kind"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    platform: Mapped[str] = mapped_column(String(80), nullable=False)
+    external_item_id: Mapped[str] = mapped_column(String(300), nullable=False)
+    canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    author: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # history | incremental
+    collection_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="incremental")
+    # useful | useless | None(未分类)
+    usefulness: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    subcategory: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # DOM 抓到的发布时间原文，抓不到留 None
+    published_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    extracted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidate_items.id"), nullable=True)
+    raw_source_id: Mapped[int | None] = mapped_column(ForeignKey("raw_sources.id"), nullable=True)
+    scan_run_id: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+    classified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
