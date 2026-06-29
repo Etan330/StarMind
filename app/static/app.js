@@ -1101,6 +1101,17 @@
       return String(numeric)
     }
 
+    const cleanCreatorWorkTitle = (value) => String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^(?:(?:点赞|赞|收藏|喜欢)\s*[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k)?|[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k))\s+/i, "")
+      .trim()
+
+    const normalizeCreatorWorkItem = (item) => ({
+      ...item,
+      title: cleanCreatorWorkTitle(item.title) || item.title || "未命名作品",
+    })
+
     const saveCreatorState = () => {
       try {
         window.localStorage?.setItem(creatorStateKey, JSON.stringify({
@@ -1138,7 +1149,7 @@
         const state = JSON.parse(raw)
         if (!state || state.version !== 1 || !Array.isArray(state.items)) return
         currentPlatform = state.platform || "douyin"
-        scannedItems = state.items || []
+        scannedItems = (state.items || []).map(normalizeCreatorWorkItem)
         selectedItemIds = state.selectedItemIds || []
         selectedCandidateIds = state.selectedCandidateIds || []
         currentJobId = state.currentJobId || null
@@ -1203,7 +1214,7 @@
           platform: currentPlatform,
           creator_url: creatorUrl,
         })
-        scannedItems = response.items || []
+        scannedItems = (response.items || []).map(normalizeCreatorWorkItem)
         currentCreator = response.creator || null
         selectedItemIds = []
         selectedCandidateIds = []
@@ -1245,7 +1256,7 @@
           <input class="creator-work-checkbox" type="checkbox" data-item-checkbox value="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.title)}">
           <div class="creator-work-body">
             <div class="creator-work-title-row">
-              <strong class="creator-work-title">${escapeHtml(item.title)}</strong>
+              <strong class="creator-work-title">${escapeHtml(cleanCreatorWorkTitle(item.title) || item.title)}</strong>
               ${item.bucket === "both" ? '<span class="creator-work-badge">最新 + 高赞</span>' : item.bucket === "top_liked" ? '<span class="creator-work-badge">高赞</span>' : '<span class="creator-work-badge">最新</span>'}
             </div>
             <div class="creator-work-stats">

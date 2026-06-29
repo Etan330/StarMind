@@ -165,18 +165,30 @@ def test_creator_work_title_removes_leading_like_count_prefix():
     """作品标题不应把卡片上的点赞量/统计数字拼进标题开头"""
     from app.services.creator_profile_service import normalize_creator_work
 
+    title = "17.0万 Flipbook爆火：UI的未来是无限视觉 我这两天被这个爆火的Flipbook刷屏并被震撼到，现在的UI界面也许会在不久的将来彻底改变。"
     item = normalize_creator_work(
         "xiaohongshu",
         {
             "id": "work-1",
             "url": "https://www.xiaohongshu.com/user/profile/u/work-1",
-            "title": "17.0万 Flipbook爆火：UI的未来是无限视觉 我这两天被这个爆火的Flipbook刷屏并被震撼到",
+            "title": title,
             "like_count": 170000,
         },
     )
 
     assert item["title"].startswith("Flipbook爆火：UI的未来是无限视觉")
     assert not item["title"].startswith("17.0万")
+
+
+def test_creator_frontend_cleans_cached_work_titles_before_rendering():
+    """localStorage/API 中残留旧标题时，前端渲染前也要兜底清洗点赞量前缀"""
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert "cleanCreatorWorkTitle" in app_js
+    assert "normalizeCreatorWorkItem" in app_js
+    assert "scannedItems = (state.items || []).map(normalizeCreatorWorkItem)" in app_js
+    assert "scannedItems = (response.items || []).map(normalizeCreatorWorkItem)" in app_js
+    assert "cleanCreatorWorkTitle(item.title)" in app_js
 
 
 def test_creator_work_title_keeps_legitimate_numeric_prefix():
