@@ -925,6 +925,275 @@ def test_prepare_selected_uses_extracted_creator_name_for_raw_source_grouping():
         app.dependency_overrides.clear()
 
 
+def test_sources_creator_group_has_create_wiki_button():
+    """原始资料的博主分组应提供加入知识库入口"""
+    template = open("app/templates/sources.html", encoding="utf-8").read()
+
+    assert "加入知识库" in template
+    assert "/api/creator/" in template
+    assert "/create-wiki" in template
+
+
+def test_create_creator_wiki_aggregates_raw_sources(tmp_path, monkeypatch):
+    """点击加入知识库应聚合同一博主 RawSource，生成博主分析 WikiPage"""
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    from app.models import RawSource, WikiPage
+
+    class Provider:
+        provider_name = "mock"
+
+        async def chat(self, messages, model, temperature=0.2):
+            return "## 人设\n本地测试分析\n\n## 最新与高赞差异\n最新和高赞有差异"
+
+    monkeypatch.setattr(
+        "app.services.wiki_service.get_provider_runtime",
+        lambda provider_id=None, model=None: (Provider(), "mock-model", {"api_style": "mock"}),
+    )
+    metadata = {"creator_key": "douyin:abc123", "creator_name": "大牙大", "creator_bucket": "top_liked"}
+    db.add_all(
+        [
+            RawSource(
+                platform="douyin",
+                source_url="https://www.douyin.com/video/1",
+                canonical_url="https://www.douyin.com/video/1",
+                external_item_id="work-1",
+                source_type="distill_profile",
+                title="高赞作品",
+                author="大牙大",
+                transcript_path=str(tmp_path / "work-1.txt"),
+                metadata_json=json.dumps(metadata, ensure_ascii=False),
+            ),
+            RawSource(
+                platform="douyin",
+                source_url="https://www.douyin.com/video/2",
+                canonical_url="https://www.douyin.com/video/2",
+                external_item_id="work-2",
+                source_type="distill_profile",
+                title="最新作品",
+                author="大牙大",
+                transcript_path=str(tmp_path / "work-2.txt"),
+                metadata_json=json.dumps({**metadata, "creator_bucket": "latest"}, ensure_ascii=False),
+            ),
+        ]
+    )
+    (tmp_path / "work-1.txt").write_text("高赞作品逐字稿", encoding="utf-8")
+    (tmp_path / "work-2.txt").write_text("最新作品逐字稿", encoding="utf-8")
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post("/api/creator/douyin%3Aabc123/create-wiki")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "created"
+        page = db.query(WikiPage).one()
+        assert page.page_type == "creator"
+        assert page.title == "博主分析：大牙大"
+        assert "creator:douyin:abc123" in page.tags_json
+        assert "高赞作品" in Path(page.markdown_path).read_text(encoding="utf-8")
+        assert "最新与高赞差异" in Path(page.markdown_path).read_text(encoding="utf-8")
+        assert payload["source_count"] == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+
+def test_create_creator_wiki_uses_llm_when_configured(tmp_path, monkeypatch):
+    """博主加入知识库阶段应调用模型生成分析，而不是豆包/点点提取阶段做分析"""
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    from app.models import RawSource, WikiPage
+
+    class Provider:
+        provider_name = "mock"
+
+        async def chat(self, messages, model, temperature=0.2):
+            assert "人设" in messages[-1]["content"]
+            assert "高赞作品逐字稿" in messages[-1]["content"]
+            return "## 人设\n模型生成的人设分析\n\n## 商业价值\n模型生成的商业价值"
+
+    monkeypatch.setattr(
+        "app.services.wiki_service.get_provider_runtime",
+        lambda provider_id=None, model=None: (Provider(), "mock-model", {"api_style": "mock"}),
+    )
+    metadata = {"creator_key": "douyin:abc123", "creator_name": "大牙大", "creator_bucket": "top_liked"}
+    db.add(
+        RawSource(
+            platform="douyin",
+            source_url="https://www.douyin.com/video/1",
+            canonical_url="https://www.douyin.com/video/1",
+            external_item_id="work-1",
+            source_type="distill_profile",
+            title="高赞作品",
+            author="大牙大",
+            transcript_path=str(tmp_path / "work-1.txt"),
+            metadata_json=json.dumps(metadata, ensure_ascii=False),
+        )
+    )
+    (tmp_path / "work-1.txt").write_text("高赞作品逐字稿", encoding="utf-8")
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post("/api/creator/douyin%3Aabc123/create-wiki", json={"force": True})
+
+        assert response.status_code == 200
+        page = db.query(WikiPage).one()
+        markdown = Path(page.markdown_path).read_text(encoding="utf-8")
+        assert "已调用模型完成博主分析" in markdown
+        assert "模型生成的人设分析" in markdown
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_creator_wiki_page_shows_creator_section_and_sources(tmp_path, monkeypatch):
+    """知识库应提供博主一级目录，并在博主页展示作品来源列表"""
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    from app.models import RawSource
+    from app.services.wiki_service import WikiMaintenanceService
+
+    metadata = {"creator_key": "douyin:abc123", "creator_name": "大牙大", "creator_bucket": "top_liked"}
+    source = RawSource(
+        platform="douyin",
+        source_url="https://www.douyin.com/video/1",
+        canonical_url="https://www.douyin.com/video/1",
+        external_item_id="work-1",
+        source_type="distill_profile",
+        title="高赞作品",
+        author="大牙大",
+        transcript_path=str(tmp_path / "work-1.txt"),
+        metadata_json=json.dumps(metadata, ensure_ascii=False),
+    )
+    db.add(source)
+    (tmp_path / "work-1.txt").write_text("高赞作品逐字稿", encoding="utf-8")
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        client.post("/api/creator/douyin%3Aabc123/create-wiki")
+        response = client.get("/ui/wiki?section=creator")
+
+        assert response.status_code == 200
+        assert "博主" in response.text
+        assert "大牙大" in response.text
+        assert "高赞作品" in response.text
+        assert "creator-source-ref-list" in response.text
+        assert "高赞" in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_creator_wiki_page_has_creator_scoped_question_marker():
+    """博主页问答表单应携带 creator_key，避免全局检索串台"""
+    template = open("app/templates/wiki.html", encoding="utf-8").read()
+
+    assert 'name="creator_key"' in template
+    assert "selected_creator_key" in template
+    assert "只能基于该博主资料回答" in template
+
+
+def test_creator_wiki_section_ignores_non_creator_page_id(tmp_path, monkeypatch):
+    """section=creator 时不应渲染非博主页，避免问答范围错乱"""
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    from app.models import RawSource, WikiPage
+
+    creator_meta = {"creator_key": "douyin:abc123", "creator_name": "大牙大", "creator_bucket": "top_liked"}
+    db.add_all(
+        [
+            WikiPage(page_id="knowledge-page", page_type="knowledge", title="普通知识页", markdown_path=str(tmp_path / "knowledge.md"), source_refs_json="[]", tags_json="[]"),
+            RawSource(platform="douyin", source_url="https://a", canonical_url="https://a", external_item_id="a", source_type="distill_profile", title="大牙大作品", transcript_path=str(tmp_path / "creator.txt"), metadata_json=json.dumps(creator_meta, ensure_ascii=False)),
+        ]
+    )
+    (tmp_path / "knowledge.md").write_text("普通知识", encoding="utf-8")
+    (tmp_path / "creator.txt").write_text("博主资料", encoding="utf-8")
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        creator_page_id = client.post("/api/creator/douyin%3Aabc123/create-wiki").json()["wiki_page_id"]
+        response = client.get("/ui/wiki?section=creator&page_id=knowledge-page")
+
+        assert response.status_code == 200
+        assert "普通知识页" not in response.text
+        assert creator_page_id in response.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_creator_wiki_question_filters_before_global_limit(tmp_path, monkeypatch):
+    """博主限定检索应先按 creator_key 过滤，再限制数量"""
+    monkeypatch.setattr("app.agent.tools.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    from app.agent.tools import KnowledgeSearchTool
+    from app.models import RawSource
+
+    for index in range(35):
+        path = tmp_path / f"other-{index}.txt"
+        path.write_text("其他博主内容", encoding="utf-8")
+        db.add(RawSource(platform="douyin", source_url=f"https://o/{index}", canonical_url=f"https://o/{index}", external_item_id=f"o-{index}", source_type="distill_profile", title=f"其他作品 {index}", transcript_path=str(path), metadata_json=json.dumps({"creator_key": "douyin:other"}, ensure_ascii=False)))
+    creator_path = tmp_path / "creator-old.txt"
+    creator_path.write_text("只属于大牙大的深层资料", encoding="utf-8")
+    creator_source = RawSource(platform="douyin", source_url="https://a", canonical_url="https://a", external_item_id="a", source_type="distill_profile", title="大牙大旧作品", transcript_path=str(creator_path), metadata_json=json.dumps({"creator_key": "douyin:abc123", "creator_name": "大牙大"}, ensure_ascii=False))
+    db.add(creator_source)
+    db.commit()
+    creator_source.created_at = creator_source.created_at.replace(year=2000)
+    db.commit()
+
+    result = KnowledgeSearchTool(db).run("深层资料", creator_key="douyin:abc123")
+
+    assert "大牙大旧作品" in result.content
+    assert "其他作品" not in result.content
+
+
+def test_creator_wiki_question_uses_creator_scoped_search(tmp_path, monkeypatch):
+    """博主页追问应只检索同一 creator_key 的资料"""
+    monkeypatch.setattr("app.agent.tools.LOCAL_DATA_DIR", tmp_path)
+    db = make_session()
+    from app.agent.tools import KnowledgeSearchTool
+    from app.models import RawSource, WikiPage
+
+    creator_meta = {"creator_key": "douyin:abc123", "creator_name": "大牙大"}
+    other_meta = {"creator_key": "douyin:other", "creator_name": "其他博主"}
+    creator_file = tmp_path / "creator.txt"
+    other_file = tmp_path / "other.txt"
+    creator_file.write_text("只属于大牙大的商业化内容", encoding="utf-8")
+    other_file.write_text("其他博主内容不应该出现", encoding="utf-8")
+    db.add_all(
+        [
+            RawSource(platform="douyin", source_url="https://a", canonical_url="https://a", external_item_id="a", source_type="distill_profile", title="大牙大作品", transcript_path=str(creator_file), metadata_json=json.dumps(creator_meta, ensure_ascii=False)),
+            RawSource(platform="douyin", source_url="https://b", canonical_url="https://b", external_item_id="b", source_type="distill_profile", title="其他作品", transcript_path=str(other_file), metadata_json=json.dumps(other_meta, ensure_ascii=False)),
+            WikiPage(page_id="creator-page", page_type="creator", title="博主分析：大牙大", markdown_path=str(creator_file), source_refs_json="[]", tags_json=json.dumps(["creator:douyin:abc123"], ensure_ascii=False)),
+        ]
+    )
+    db.commit()
+
+    result = KnowledgeSearchTool(db).run("内容", creator_key="douyin:abc123")
+
+    assert "大牙大" in result.content
+    assert "其他博主" not in result.content
+    assert result.metadata["creator_key"] == "douyin:abc123"
+
+
 def test_select_creator_works_prioritizes_top_liked_desc_then_latest():
     """高赞列表应取点赞量最高的 10 条并排在最新列表之前"""
     from app.services.creator_profile_service import CreatorProfileService

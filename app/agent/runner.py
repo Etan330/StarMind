@@ -28,6 +28,7 @@ class AgentRunner:
         provider_id: str | None = None,
         model: str | None = None,
         model_profile_name: str | None = None,
+        creator_key: str | None = None,
     ) -> AgentAnswer:
         run_id = f"run-{uuid4().hex}"
         try:
@@ -49,7 +50,7 @@ class AgentRunner:
             return await self._run_sync(run_id, question, provider_id, model, model_profile_name)
 
         # Default: knowledge Q&A
-        search = KnowledgeSearchTool(self.db).run(question)
+        search = KnowledgeSearchTool(self.db).run(question, creator_key=creator_key)
         provider, resolved_model, provider_config = get_provider_runtime(provider_id, model)
         resolved_provider = provider.provider_name
         self.tracer.log(

@@ -95,6 +95,11 @@
                 <strong>{{ group.platform }} / {{ group.creator_name }}</strong>
                 <span>已提取 {{ group.sources | length }} 条 · 最新 {{ group.latest_count }} · 高赞 {{ group.top_liked_count }}</span>
               </summary>
+              <div class="source-group-actions">
+                <form method="post" action="/api/creator/{{ group.creator_key | urlencode }}/create-wiki">
+                  <button class="btn secondary small" type="submit">加入知识库</button>
+                </form>
+              </div>
               <div class="source-group-list nested">
                 {% for source in group.sources %}
                   <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}">

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session
@@ -62,6 +63,161 @@ class WikiMaintenanceService:
         self.db.commit()
         self.db.refresh(page)
         return page
+
+    async def create_creator_page(self, creator_key: str, force: bool = False) -> WikiPage:
+        sources = self._creator_sources(creator_key)
+        if not sources:
+            raise ValueError(f"Creator {creator_key} has no distill_profile sources")
+        first = sources[0]
+        first_meta = self._json_dict(first.metadata_json)
+        creator_name = str(first_meta.get("creator_name") or first.author or "未命名博主").strip()
+        existing = self._find_creator_page(creator_key)
+        markdown = await self._creator_analysis_markdown(creator_key, creator_name, sources)
+        title = f"博主分析：{creator_name}"
+        refs = [
+            {"raw_source_id": source.id, "url": source.canonical_url, "title": source.title}
+            for source in sources
+        ]
+        tags = ["博主", f"creator:{creator_key}", creator_name, first.platform]
+
+        if existing and not force:
+            return existing
+        if existing and force:
+            path = Path(existing.markdown_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(markdown, encoding="utf-8")
+            existing.title = title
+            existing.source_refs_json = json.dumps(refs, ensure_ascii=False)
+            existing.tags_json = json.dumps(tags, ensure_ascii=False)
+            existing.updated_by = "agent"
+            existing.status = "needs_review"
+            self._write_log("update_creator_page", existing, first, f"Regenerated creator analysis for {creator_name}.")
+            self.db.commit()
+            self.db.refresh(existing)
+            return existing
+
+        page_id = f"creator-{uuid4().hex}"
+        path = LOCAL_DATA_DIR / "wiki" / f"{page_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(markdown, encoding="utf-8")
+        page = WikiPage(
+            page_id=page_id,
+            page_type="creator",
+            title=title,
+            markdown_path=str(path),
+            source_refs_json=json.dumps(refs, ensure_ascii=False),
+            tags_json=json.dumps(tags, ensure_ascii=False),
+            status="needs_review",
+            updated_by="agent",
+        )
+        self.db.add(page)
+        self.db.flush()
+        self._write_log("create_creator_page", page, first, f"Created creator analysis for {creator_name} from {len(sources)} sources.")
+        self.db.commit()
+        self.db.refresh(page)
+        return page
+
+    def _creator_sources(self, creator_key: str) -> list[RawSource]:
+        matches: list[RawSource] = []
+        for source in self.db.query(RawSource).filter(RawSource.source_type == "distill_profile").all():
+            metadata = self._json_dict(source.metadata_json)
+            if str(metadata.get("creator_key") or "") == creator_key:
+                matches.append(source)
+        return matches
+
+    def _find_creator_page(self, creator_key: str) -> WikiPage | None:
+        marker = f"creator:{creator_key}"
+        for page in self.db.query(WikiPage).filter(WikiPage.page_type == "creator").all():
+            try:
+                tags = json.loads(page.tags_json or "[]")
+            except json.JSONDecodeError:
+                tags = []
+            if marker in tags:
+                return page
+        return None
+
+    async def _creator_analysis_markdown(self, creator_key: str, creator_name: str, sources: list[RawSource]) -> str:
+        source_blocks = []
+        latest_titles: list[str] = []
+        top_liked_titles: list[str] = []
+        for source in sources:
+            metadata = self._json_dict(source.metadata_json)
+            bucket = str(metadata.get("creator_bucket") or "")
+            if bucket in {"latest", "both"}:
+                latest_titles.append(source.title)
+            if bucket in {"top_liked", "both"}:
+                top_liked_titles.append(source.title)
+            text = self._read_text(source.transcript_path) or self._read_text(source.clean_text_path) or self._read_text(source.raw_content_path)
+            source_blocks.append(
+                f"- [{source.title}]({source.canonical_url})\n"
+                f"  - 标签：{bucket or '未标记'}\n"
+                f"  - 片段：{(text or '暂无正文')[:500]}"
+            )
+        latest_text = "、".join(latest_titles[:8]) or "暂无最新作品样本"
+        top_liked_text = "、".join(top_liked_titles[:8]) or "暂无高赞作品样本"
+        evidence = "\n".join(source_blocks)
+        fallback_body = (
+            "## 人设\n\n"
+            f"围绕 {creator_name} 已入库作品做初步画像，后续可结合更多作品持续修正。\n\n"
+            "## 选题\n\n"
+            f"当前样本包含：{latest_text}。\n\n"
+            "## 表达方式\n\n"
+            "从标题、逐字稿和正文中归纳表达风格；当前版本保留来源证据，避免无依据扩写。\n\n"
+            "## 受众\n\n"
+            "根据选题和表达方式推断目标受众；资料不足时应以来源证据为准。\n\n"
+            "## 商业价值\n\n"
+            "结合高赞内容、稳定选题和受众匹配度评估潜在商业化方向。\n\n"
+            "## 最新与高赞差异\n\n"
+            f"- 最新样本：{latest_text}\n"
+            f"- 高赞样本：{top_liked_text}\n"
+        )
+        body = fallback_body
+        status_line = "> 生成状态：模型未成功返回，当前使用本地兜底模板；配置可用模型后可重新生成。"
+        try:
+            provider, model, provider_config = get_provider_runtime()
+            if provider_config.get("api_style") != "mock" and not provider_config.get("base_url"):
+                raise ValueError("model provider base_url is not configured")
+            prompt = (
+                f"请基于博主 {creator_name} 的已提取作品，生成博主分析。\n"
+                "必须包含：人设、选题、表达方式、受众、商业价值、最新与高赞差异、来源引用。\n"
+                "只能基于下面的资料，不足就明确说明不足，不能编造。\n\n"
+                f"最新样本：{latest_text}\n"
+                f"高赞样本：{top_liked_text}\n\n"
+                f"来源资料：\n{evidence}"
+            )
+            generated = await provider.chat(
+                [
+                    {"role": "system", "content": "你是 StarMind 博主蒸馏分析专家。只能基于给定来源生成结构化分析。"},
+                    {"role": "user", "content": prompt},
+                ],
+                model=model,
+                temperature=0.3,
+            )
+            if generated.strip():
+                body = generated.strip()
+                if "最新与高赞差异" not in body:
+                    body = f"{body}\n\n## 最新与高赞差异\n\n- 最新样本：{latest_text}\n- 高赞样本：{top_liked_text}"
+                status_line = "> 生成状态：已调用模型完成博主分析。"
+        except Exception as e:
+            import logging
+            logging.getLogger("starmind.wiki").warning(f"Creator analysis failed: {e}")
+        return (
+            f"# 博主分析：{creator_name}\n\n"
+            f"{status_line}\n\n"
+            f"- 博主标识：`{creator_key}`\n"
+            f"- 来源数量：{len(sources)}\n\n"
+            f"{body}\n\n"
+            "## 来源引用\n\n"
+            + evidence
+            + "\n"
+        )
+
+    def _json_dict(self, raw_value: str | None) -> dict[str, Any]:
+        try:
+            value = json.loads(raw_value or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return value if isinstance(value, dict) else {}
 
     async def _summarize(self, raw_source: RawSource, transcript: str, page_type: str) -> str:
         prompt_map = {

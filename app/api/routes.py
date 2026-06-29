@@ -673,6 +673,7 @@ WIKI_SECTIONS = [
     {"id": "knowledge", "name": "知识主题", "page_type": "knowledge"},
     {"id": "methodology", "name": "方法论", "page_type": "methodology"},
     {"id": "sop", "name": "SOP", "page_type": "sop"},
+    {"id": "creator", "name": "博主", "page_type": "creator"},
 ]
 
 
@@ -716,6 +717,13 @@ def page_tags(raw_value: str | None) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(item) for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def creator_key_from_page(page: WikiPage | None) -> str:
+    for tag in page_tags(page.tags_json if page else "[]"):
+        if tag.startswith("creator:"):
+            return tag.removeprefix("creator:")
+    return ""
 
 
 def safe_json(raw_value: str | None) -> dict[str, Any]:
@@ -2584,7 +2592,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         pages = query.all()
 
     page_id = request.query_params.get("page_id")
-    selected_page = next((page for page in all_pages if page.page_id == page_id), None) if page_id else None
+    selected_page = next((page for page in pages if page.page_id == page_id), None) if page_id else None
     if selected_page is None and pages:
         selected_page = pages[0]
     selected_refs = page_json_list(selected_page.source_refs_json if selected_page else "[]")
@@ -2594,6 +2602,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         "knowledge": db.query(WikiPage).filter(WikiPage.page_type == "knowledge").count(),
         "methodology": db.query(WikiPage).filter(WikiPage.page_type == "methodology").count(),
         "sop": db.query(WikiPage).filter(WikiPage.page_type == "sop").count(),
+        "creator": db.query(WikiPage).filter(WikiPage.page_type == "creator").count(),
         "skills": db.query(WikiPage).filter(WikiPage.page_type == "skill").count(),
         "index": len(all_pages),
     }
@@ -2611,6 +2620,13 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         wiki_categories.append(SimpleNamespace(id=cat.id, name=cat.name, slug=cat.slug, count=cnt))
 
     selected_markdown = read_wiki_markdown(selected_page)
+    selected_creator_key = creator_key_from_page(selected_page)
+    selected_creator_sources = []
+    if selected_creator_key:
+        selected_creator_sources = [
+            source for source in source_map.values()
+            if safe_json(source.metadata_json).get("creator_key") == selected_creator_key
+        ]
     wiki_question = request.query_params.get("q") or ""
     wiki_answer = None
     wiki_answer_html = ""
@@ -2618,7 +2634,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         track_event(db, "previous_task_reused", {"reuse_type": "page_question"}, page_id=selected_page.page_id)
         track_event(db, "v3_followup_question_clicked", {"question_type": "page_question"}, page_id=selected_page.page_id)
         contextual_question = f"请优先基于知识页《{selected_page.title}》和它的来源回答：{wiki_question}"
-        wiki_answer = await AgentRunner(db).answer_question(contextual_question)
+        wiki_answer = await AgentRunner(db).answer_question(contextual_question, creator_key=selected_creator_key or None)
         wiki_answer_html = render_markdown(wiki_answer.answer)
         track_event(
             db,
@@ -2641,6 +2657,8 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
             selected_refs=selected_refs,
             selected_tags=selected_tags,
             source_map=source_map,
+            selected_creator_key=selected_creator_key,
+            selected_creator_sources=selected_creator_sources,
             wiki_sections=WIKI_SECTIONS,
             section_counts=section_counts,
             active_section=active_section,
@@ -2959,6 +2977,25 @@ async def process_candidate(candidate_id: int, request: Request, db: Session = D
     if wants_html(request):
         return RedirectResponse(f"/ui/review/{page.page_id}?saved=processed", status_code=303)
     return {"status": "processed", "raw_source_id": raw_source.id, "wiki_page_id": page.page_id}
+
+
+@router.post("/api/creator/{creator_key:path}/create-wiki")
+async def create_creator_wiki(creator_key: str, request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    force = truthy(data.get("force"), False)
+    try:
+        page = await WikiMaintenanceService(db).create_creator_page(creator_key, force=force)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    refs = page_json_list(page.source_refs_json)
+    if wants_html(request):
+        return RedirectResponse(f"/ui/wiki?section=creator&page_id={page.page_id}&created=creator-wiki", status_code=303)
+    return {
+        "status": "created",
+        "creator_key": creator_key,
+        "wiki_page_id": page.page_id,
+        "source_count": len(refs),
+    }
 
 
 @router.post("/agent/classify-pending")

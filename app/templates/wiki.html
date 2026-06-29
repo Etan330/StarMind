@@ -38,10 +38,16 @@
       <button class="wiki-prefs-btn" onclick="openPrefsPanel()" title="偏好设置">⚙️</button>
     </div>
     <nav class="wiki-primary-nav">
-      <a class="tree-item {{ 'active' if not active_category else '' }}" href="/ui/wiki">
+      <a class="tree-item {{ 'active' if not active_category and active_section.id == 'index' else '' }}" href="/ui/wiki?section=index">
         <span>全部</span>
         <b>{{ total_page_count }}</b>
       </a>
+      {% for section in wiki_sections %}
+        <a class="tree-item {{ 'active' if not active_category and active_section.id == section.id else '' }}" href="/ui/wiki?section={{ section.id }}">
+          <span>{{ section.name }}</span>
+          <b>{{ section_counts.get(section.id, 0) }}</b>
+        </a>
+      {% endfor %}
       {% for cat in wiki_categories %}
         <a class="tree-item {{ 'active' if active_category and active_category.id == cat.id else '' }}" href="/ui/wiki?category={{ cat.id }}">
           <span class="cat-name">📁 {{ cat.name }} <button class="cat-rename-btn" title="重命名" onclick="event.preventDefault();event.stopPropagation();renameCat({{ cat.id }}, '{{ cat.name }}')">✏️</button></span>
@@ -83,8 +89,12 @@
         <div class="v1-callout v1-error">此页面没有来源引用，不能标记为可信 AI 生成结果。</div>
       {% endif %}
       <form class="wiki-inline-query" method="get" action="/ui/wiki">
+        <input type="hidden" name="section" value="{{ active_section.id }}">
         <input type="hidden" name="page_id" value="{{ selected_page.page_id }}">
-        <input name="q" value="{{ wiki_question or '' }}" placeholder="基于这篇页面提问，例如：核心观点是什么？">
+        {% if selected_creator_key %}
+          <input type="hidden" name="creator_key" value="{{ selected_creator_key }}">
+        {% endif %}
+        <input name="q" value="{{ wiki_question or '' }}" placeholder="{{ '只能基于该博主资料回答，例如：他的商业价值是什么？' if selected_creator_key else '基于这篇页面提问，例如：核心观点是什么？' }}">
         <button class="btn primary" type="submit">基于此页提问</button>
       </form>
       {% if wiki_question %}
@@ -106,6 +116,19 @@
             {% else %}
               <span class="status-chip warning">没有找到相关本地资料</span>
             {% endif %}
+          </div>
+        </section>
+      {% endif %}
+      {% if selected_creator_sources %}
+        <section class="creator-source-ref-list">
+          <h3>作品列表</h3>
+          <div class="compact-list">
+            {% for source in selected_creator_sources %}
+              <a class="source-ref-link" href="/ui/sources?source_id={{ source.id }}">
+                <strong>{{ source.title }}</strong>
+                <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+              </a>
+            {% endfor %}
           </div>
         </section>
       {% endif %}
