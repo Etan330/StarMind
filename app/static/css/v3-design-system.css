@@ -1518,6 +1518,17 @@ select:focus {
   font-size: 15px;
 }
 
+.creator-work-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.creator-work-section-head .btn {
+  flex: 0 0 auto;
+}
+
 .creator-work-list {
   display: grid;
   gap: 8px;

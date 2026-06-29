@@ -1076,6 +1076,7 @@
     const creatorInput = panel.querySelector("[data-creator-input]")
     const scanButton = panel.querySelector("[data-creator-scan]")
     const extractButton = panel.querySelector("[data-creator-extract]")
+    const creatorResumeButton = panel.querySelector("[data-creator-resume]")
     const status = panel.querySelector("[data-creator-status]")
     const results = panel.querySelector("[data-creator-results]")
 
@@ -1143,6 +1144,7 @@
         currentJobId = state.currentJobId || null
         currentCreator = state.creator || null
         if (creatorInput) creatorInput.value = state.creatorUrl || ""
+        if (creatorResumeButton) creatorResumeButton.hidden = !currentJobId
         tabs.forEach((tab) => {
           const active = tab.dataset.creatorPlatformTab === currentPlatform
           tab.classList.toggle("is-active", active)
@@ -1170,6 +1172,9 @@
         scannedItems = []
         selectedItemIds = []
         currentCreator = null
+        selectedCandidateIds = []
+        currentJobId = null
+        if (creatorResumeButton) creatorResumeButton.hidden = true
         saveCreatorState()
         if (results) {
           results.innerHTML = ""
@@ -1203,6 +1208,7 @@
         selectedItemIds = []
         selectedCandidateIds = []
         currentJobId = null
+        if (creatorResumeButton) creatorResumeButton.hidden = true
 
         if (scannedItems.length === 0) {
           setStatusText("未找到作品，请检查链接是否正确。", "bad")
@@ -1257,25 +1263,78 @@
       results.innerHTML = `
         ${renderCreatorProfile()}
         <section class="creator-work-section">
-          <h3>高赞 10 条</h3>
+          <div class="creator-work-section-head">
+            <h3>高赞 10 条</h3>
+            <button class="btn secondary small" type="button" data-select-group="top_liked">全选</button>
+          </div>
           <div class="creator-work-list">${topLikedItems.map(itemCard).join("") || '<p class="muted">暂无高赞作品</p>'}</div>
         </section>
         <section class="creator-work-section">
-          <h3>最新 10 条</h3>
+          <div class="creator-work-section-head">
+            <h3>最新 10 条</h3>
+            <button class="btn secondary small" type="button" data-select-group="latest">全选</button>
+          </div>
           <div class="creator-work-list">${latestItems.map(itemCard).join("") || '<p class="muted">暂无最新作品</p>'}</div>
         </section>
       `
+
+      const syncCreatorCheckboxes = (itemId, checked) => {
+        results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+          if (checkbox.value === itemId) checkbox.checked = checked
+        })
+      }
+
+      const selectCreatorGroup = (group) => {
+        const groupItems = group === "top_liked" ? topLikedItems : latestItems
+        selectedItemIds = Array.from(new Set(selectedItemIds.concat(groupItems.map((item) => String(item.id)))))
+        results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+          checkbox.checked = selectedItemIds.includes(checkbox.value)
+        })
+        saveCreatorState()
+      }
+
+      results.querySelectorAll("[data-select-group]").forEach((button) => {
+        button.addEventListener("click", () => selectCreatorGroup(button.dataset.selectGroup))
+      })
 
       // 绑定复选框事件
       results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
         checkbox.checked = selectedItemIds.includes(checkbox.value)
         checkbox.addEventListener("change", () => {
-          selectedItemIds = Array.from(
-            results.querySelectorAll("[data-item-checkbox]:checked")
-          ).map((cb) => cb.value)
+          syncCreatorCheckboxes(checkbox.value, checkbox.checked)
+          selectedItemIds = Array.from(new Set(
+            Array.from(results.querySelectorAll("[data-item-checkbox]:checked")).map((cb) => cb.value)
+          ))
           saveCreatorState()
         })
       })
+    }
+
+    const runCreatorExtraction = async () => {
+      if (!selectedCandidateIds.length) return null
+      const extractEndpoint = currentPlatform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      if (currentJobId) payload.job_id = currentJobId
+      const response = await apiPost(extractEndpoint, payload)
+      currentJobId = response.job_id || currentJobId
+      saveCreatorState()
+      if (response.status === "paused") {
+        const remaining = response.pending_remaining != null ? response.pending_remaining : "若干"
+        setStatusText(`${response.message || "检测到人机验证，已暂停。"} 本轮已入库 ${response.success_count || 0} 条，剩余 ${remaining} 条。完成验证后点“我已完成验证，继续”。`, "bad")
+        if (creatorResumeButton) creatorResumeButton.hidden = false
+        return response
+      }
+      if (creatorResumeButton) creatorResumeButton.hidden = true
+      currentJobId = null
+      setStatusText(`提取完成：成功 ${response.success_count || 0} 条，失败 ${response.failed_count || 0} 条。`, "ok")
+      selectedItemIds = []
+      if (results) {
+        results.querySelectorAll("[data-item-checkbox]").forEach((cb) => {
+          cb.checked = false
+        })
+      }
+      saveCreatorState()
+      return response
     }
 
     // 提取选中的作品
@@ -1296,33 +1355,34 @@
           selected_items: selectedItems,
         })
         selectedCandidateIds = prepared.candidate_ids || []
+        currentJobId = null
+        if (creatorResumeButton) creatorResumeButton.hidden = true
         saveCreatorState()
         if (!selectedCandidateIds.length) {
           setStatusText("没有可提取的作品，请重新扫描后再试。", "bad")
           return
         }
-        const extractEndpoint = currentPlatform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
-        const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
-        if (currentJobId) payload.job_id = currentJobId
-        const response = await apiPost(extractEndpoint, payload)
-        currentJobId = response.job_id || currentJobId
-        saveCreatorState()
-        if (response.status === "paused") {
-          setStatusText(response.reason || "提取暂停，请处理登录或验证后重试。", "bad")
-          return
-        }
-        setStatusText(`提取完成：成功 ${response.success_count || 0} 条，失败 ${response.failed_count || 0} 条。`, "ok")
-        // 清空选择
-        selectedItemIds = []
-        if (results) {
-          results.querySelectorAll("[data-item-checkbox]").forEach((cb) => {
-            cb.checked = false
-          })
-        }
+        await runCreatorExtraction()
       } catch (error) {
         setStatusText(error.message || "提取失败", "bad")
       } finally {
         setBusy(extractButton, false)
+      }
+    })
+
+    creatorResumeButton?.addEventListener("click", async () => {
+      if (!selectedCandidateIds.length || !currentJobId) {
+        setStatusText("没有可续跑的提取任务。", "bad")
+        return
+      }
+      setBusy(creatorResumeButton, true, "续跑中...")
+      setStatusText("已收到验证完成反馈，正在从断点继续提取剩余作品...")
+      try {
+        await runCreatorExtraction()
+      } catch (error) {
+        setStatusText(error.message || "续跑失败", "bad")
+      } finally {
+        setBusy(creatorResumeButton, false)
       }
     })
     restoreCreatorState()

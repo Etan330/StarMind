@@ -142,6 +142,59 @@ def test_creator_results_js_groups_items_and_uses_compact_checkboxes():
     assert "share_count" in app_js
 
 
+def test_creator_result_groups_have_select_all_buttons():
+    """高赞 10 条和最新 10 条分组都应支持各自全选"""
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert 'data-select-group="top_liked"' in app_js
+    assert 'data-select-group="latest"' in app_js
+    assert "selectCreatorGroup" in app_js
+    assert "selectedItemIds = Array.from(new Set" in app_js
+
+
+def test_creator_duplicate_work_checkboxes_stay_in_sync():
+    """同一作品同时出现在高赞和最新时，两个复选框状态应同步"""
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert "syncCreatorCheckboxes" in app_js
+    assert 'checkbox.value === itemId' in app_js
+    assert "syncCreatorCheckboxes(checkbox.value, checkbox.checked)" in app_js
+
+
+def test_creator_work_title_removes_leading_like_count_prefix():
+    """作品标题不应把卡片上的点赞量/统计数字拼进标题开头"""
+    from app.services.creator_profile_service import normalize_creator_work
+
+    item = normalize_creator_work(
+        "xiaohongshu",
+        {
+            "id": "work-1",
+            "url": "https://www.xiaohongshu.com/user/profile/u/work-1",
+            "title": "17.0万 Flipbook爆火：UI的未来是无限视觉 我这两天被这个爆火的Flipbook刷屏并被震撼到",
+            "like_count": 170000,
+        },
+    )
+
+    assert item["title"].startswith("Flipbook爆火：UI的未来是无限视觉")
+    assert not item["title"].startswith("17.0万")
+
+
+def test_creator_work_title_keeps_legitimate_numeric_prefix():
+    """标题本身以年份/编号开头时不应被误删"""
+    from app.services.creator_profile_service import normalize_creator_work
+
+    item = normalize_creator_work(
+        "xiaohongshu",
+        {
+            "id": "work-2",
+            "url": "https://www.xiaohongshu.com/user/profile/u/work-2",
+            "title": "2024 年最值得看的设计趋势",
+        },
+    )
+
+    assert item["title"] == "2024 年最值得看的设计趋势"
+
+
 def test_creator_panel_persists_last_scan_state_and_shows_profile_card():
     """离开后返回输入博主页，应能从 localStorage 恢复上次扫描结果，并展示博主基础信息"""
     app_js = open("app/static/app.js", encoding="utf-8").read()
@@ -154,6 +207,20 @@ def test_creator_panel_persists_last_scan_state_and_shows_profile_card():
     assert "获赞" in app_js
     assert "liked_count" in app_js
     assert "data-creator-profile" in app_js
+
+
+def test_creator_extract_can_resume_after_human_verification():
+    """博主作品提取遇到豆包/点点人机验证后，应显示反馈按钮并带 job_id 续跑"""
+    template = open("app/templates/sync_favorites.html", encoding="utf-8").read()
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert "data-creator-resume" in template
+    assert "我已完成验证，继续" in template
+    assert "creatorResumeButton" in app_js
+    assert "response.status === \"paused\"" in app_js
+    assert "payload.job_id = currentJobId" in app_js
+    assert "runCreatorExtraction" in app_js
+    assert "pending_remaining" in app_js
 
 
 # ─── Task 2: Creator Input Normalization ───────────────────────────────────

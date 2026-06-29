@@ -235,7 +235,7 @@ def select_creator_works(
 
 def normalize_creator_work(platform: str, item: dict[str, Any]) -> dict[str, Any]:
     url = str(item.get("url") or item.get("href") or "").strip()
-    title = str(item.get("title") or item.get("desc") or url or "未命名作品").strip()
+    title = _clean_creator_work_title(str(item.get("title") or item.get("desc") or url or "未命名作品").strip())
     work_id = str(item.get("id") or item.get("work_id") or _work_id_from_url(url) or url).strip()
     return {
         "id": work_id,
@@ -252,6 +252,18 @@ def normalize_creator_work(platform: str, item: dict[str, Any]) -> dict[str, Any
         "bucket": str(item.get("bucket") or ""),
         "scan_status": str(item.get("scan_status") or "ok"),
     }
+
+
+def _clean_creator_work_title(value: str) -> str:
+    title = re.sub(r"\s+", " ", value or "").strip()
+    title = re.sub(
+        r"^(?:(?:点赞|赞|收藏|喜欢)\s*[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k)?|[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k))\s+",
+        "",
+        title,
+        count=1,
+        flags=re.IGNORECASE,
+    ).strip()
+    return title or "未命名作品"
 
 
 def normalize_creator_profile_info(info: dict[str, Any]) -> dict[str, Any]:
@@ -356,6 +368,23 @@ def _creator_work_extract_script(platform: str) -> str:
   const seen = new Set();
   const items = [];
   const clean = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+  const cleanTitle = (value) => clean(value).replace(/^(?:(?:点赞|赞|收藏|喜欢)\s*[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k)?|[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k))\s+/i, '').trim();
+  const isBadTitle = (value) => {{
+    const text = cleanTitle(value);
+    if (!text || text === "置顶") return true;
+    if (/^[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k)?$/i.test(text)) return true;
+    if (/^(点赞|赞|收藏|评论|分享|关注|粉丝|获赞|获赞与收藏)$/i.test(text)) return true;
+    if (/^https?:\/\//i.test(text)) return true;
+    return text.length < 4;
+  }};
+  const titleScore = (value) => {{
+    const text = cleanTitle(value);
+    if (isBadTitle(text)) return 0;
+    let score = text.length;
+    if (/[\u4e00-\u9fffA-Za-z]/.test(text)) score += 20;
+    if (text.length > 160) score -= 80;
+    return score;
+  }};
   const parseCount = (text) => {{
     const raw = String(text || "").replace(/,/g, "").trim();
     const matched = raw.match(/([0-9]+(?:\\.[0-9]+)?)\\s*(万|亿|w|k)?/i);
@@ -399,15 +428,19 @@ def _creator_work_extract_script(platform: str) -> str:
       node = node.parentElement;
     }}
     const lines = text.split("\\n").map(line => line.trim()).filter(Boolean);
-    const titleAnchor = Array.from(card?.querySelectorAll('a[href]') || []).find(link => clean(link.innerText).length > 4);
-    const title = clean(titleAnchor?.innerText) || lines.find(line => line.length > 4 && !/^\\d/.test(line) && line !== "置顶") || clean(a.innerText) || url.href;
+    const titleCandidates = Array.from(card?.querySelectorAll('[class*="title"], [class*="desc"], [class*="content"], a[href]') || [])
+      .map(node => node.getAttribute?.('title') || node.getAttribute?.('aria-label') || node.innerText || node.textContent || '')
+      .concat(lines)
+      .map(cleanTitle)
+      .filter(value => !isBadTitle(value));
+    const title = titleCandidates.sort((a, b) => titleScore(b) - titleScore(a))[0] || cleanTitle(a.innerText) || url.href;
     const countText = lines.join(" ");
     const img = card?.querySelector("img") || a.querySelector("img") || a.closest("div")?.querySelector("img");
     items.push({{
       id: key,
       work_id: key,
       url: url.href,
-      title: title.slice(0, 160),
+      title: title.slice(0, 220),
       like_count: parseCount(countText),
       comment_count: 0,
       collect_count: 0,
