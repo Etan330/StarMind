@@ -20,7 +20,7 @@
 
 <!-- Batch toolbar -->
 <div id="wiki-batch-toolbar" style="display:none;position:sticky;top:0;z-index:100;background:#fff;border-bottom:1px solid #eee;padding:12px 24px;margin-bottom:16px;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.05);">
-  <form method="post" action="/api/wiki/batch-delete" id="wiki-batch-form" onsubmit="return confirm('确定删除选中的知识页面？')">
+    <form method="post" action="/api/wiki/batch-delete" id="wiki-batch-form" onsubmit="return confirm('确定删除选中的知识页面？删除后进入回收站，30天内可恢复。')">
     <div style="display:flex;align-items:center;gap:12px;">
       <label style="cursor:pointer;"><input type="checkbox" id="wiki-select-all" onchange="wikiToggleAll(this.checked)"> 全选</label>
       <span id="wiki-selected-count" style="color:#666;">已选 0 条</span>
