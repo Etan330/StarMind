@@ -176,6 +176,25 @@ const document = new Element('document', {}, '', [
     assert items[0]["title"] == "Anthropic博客的Agent Eval实践心得"
 
 
+def test_xiaohongshu_extractor_prefers_profile_note_link_over_hidden_explore_link():
+    items = run_extractor(
+        "extension/xiaohongshu_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('section', {class: 'note-item'}, '', [
+    new Element('a', {href: 'https://www.xiaohongshu.com/explore/6a338bc10000000021014bc8'}, ''),
+    new Element('a', {href: 'https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33/6a338bc10000000021014bc8?xsec_token=TOKEN&xsec_source=pc_user'}, ''),
+    new Element('div', {class: 'title'}, 'Anthropic博客的Agent Eval实践心得')
+  ])
+]);
+''',
+    )
+
+    assert len(items) == 1
+    assert items[0]["url"].startswith("https://www.xiaohongshu.com/user/profile/")
+    assert "/explore/" not in items[0]["url"]
+
+
 def test_xiaohongshu_extractor_deduplicates_multiple_anchors_in_same_card():
     items = run_extractor(
         "extension/xiaohongshu_eval.js",

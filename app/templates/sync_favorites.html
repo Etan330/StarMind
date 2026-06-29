@@ -117,7 +117,7 @@
             <li><strong>勾选提取</strong><span>选择要提取的作品，发送到豆包或点点处理。</span></li>
           </ol>
 
-          <section class="glass-card v1-section platform-tab-section" data-creator-platform-section>
+          <section class="glass-card v1-section platform-tab-section creator-toolbar" data-creator-platform-section>
             <div class="platform-tabbar" role="tablist" data-creator-platform-tabs>
               <button class="platform-tab is-active" type="button" role="tab"
                       data-creator-platform-tab="douyin" aria-selected="true">
@@ -130,12 +130,14 @@
             </div>
           </section>
 
-          <div class="source-filter-controls">
-            <label>博主主页链接
+          <div class="source-filter-controls creator-scan-controls">
+            <label class="creator-url-field">博主主页链接
               <input type="text" data-creator-input placeholder="https://www.douyin.com/user/xxx 或 https://www.xiaohongshu.com/user/profile/xxx" required>
             </label>
-            <button class="btn primary" type="button" data-creator-scan>扫描作品</button>
-            <button class="btn primary" type="button" data-creator-extract disabled>提取选中作品</button>
+            <div class="creator-action-buttons">
+              <button class="btn primary" type="button" data-creator-scan>扫描作品</button>
+              <button class="btn primary" type="button" data-creator-extract disabled>提取选中作品</button>
+            </div>
           </div>
 
           <div class="source-filter-status" data-creator-status>请输入博主主页链接并点击"扫描作品"。</div>

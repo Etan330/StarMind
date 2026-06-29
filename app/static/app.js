@@ -1079,6 +1079,7 @@
     const status = panel.querySelector("[data-creator-status]")
     const results = panel.querySelector("[data-creator-results]")
 
+    const creatorStateKey = "creatorDistillState:v4"
     let currentPlatform = "douyin"
     let scannedItems = []
     let selectedItemIds = []
@@ -1090,6 +1091,69 @@
       if (!status) return
       status.textContent = message
       status.dataset.tone = tone || ""
+    }
+
+    const numberText = (value) => {
+      const numeric = Number(value || 0)
+      if (!numeric) return ""
+      if (numeric >= 10000) return `${(numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1)}万`
+      return String(numeric)
+    }
+
+    const saveCreatorState = () => {
+      try {
+        window.localStorage?.setItem(creatorStateKey, JSON.stringify({
+          version: 1,
+          platform: currentPlatform,
+          creatorUrl: creatorInput?.value || "",
+          creator: currentCreator,
+          items: scannedItems,
+          selectedItemIds,
+          selectedCandidateIds,
+          currentJobId,
+          updatedAt: new Date().toISOString(),
+        }))
+      } catch (_error) {}
+    }
+
+    const renderCreatorProfile = () => {
+      if (!results || !currentCreator) return ""
+      const name = currentCreator.creator_name || "未命名博主"
+      const fans = numberText(currentCreator.follower_count)
+      const liked = numberText(currentCreator.liked_count)
+      return `
+        <section class="creator-profile-card" data-creator-profile>
+          <strong>${escapeHtml(name)}</strong>
+          <span>${fans ? `粉丝 ${escapeHtml(fans)}` : "粉丝数未抓到"}</span>
+          <span>${liked ? `获赞 ${escapeHtml(liked)}` : "获赞数未抓到"}</span>
+        </section>
+      `
+    }
+
+    const restoreCreatorState = () => {
+      try {
+        const raw = window.localStorage?.getItem(creatorStateKey)
+        if (!raw) return
+        const state = JSON.parse(raw)
+        if (!state || state.version !== 1 || !Array.isArray(state.items)) return
+        currentPlatform = state.platform || "douyin"
+        scannedItems = state.items || []
+        selectedItemIds = state.selectedItemIds || []
+        selectedCandidateIds = state.selectedCandidateIds || []
+        currentJobId = state.currentJobId || null
+        currentCreator = state.creator || null
+        if (creatorInput) creatorInput.value = state.creatorUrl || ""
+        tabs.forEach((tab) => {
+          const active = tab.dataset.creatorPlatformTab === currentPlatform
+          tab.classList.toggle("is-active", active)
+          tab.setAttribute("aria-selected", active ? "true" : "false")
+        })
+        if (scannedItems.length) {
+          renderResults()
+          if (extractButton) extractButton.disabled = false
+          setStatusText(`已恢复上次扫描：找到 ${scannedItems.length} 个作品，请继续勾选或提取。`, "ok")
+        }
+      } catch (_error) {}
     }
 
     // 平台切换
@@ -1105,6 +1169,8 @@
         // 清空扫描结果
         scannedItems = []
         selectedItemIds = []
+        currentCreator = null
+        saveCreatorState()
         if (results) {
           results.innerHTML = ""
           results.hidden = true
@@ -1143,6 +1209,7 @@
         } else {
           setStatusText(`找到 ${scannedItems.length} 个作品，请勾选要提取的内容。`, "ok")
           renderResults()
+          saveCreatorState()
           if (extractButton) extractButton.disabled = false
         }
       } catch (error) {
@@ -1156,13 +1223,6 @@
     const renderResults = () => {
       if (!results) return
       results.hidden = false
-
-      const numberText = (value) => {
-        const numeric = Number(value || 0)
-        if (!numeric) return ""
-        if (numeric >= 10000) return `${(numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1)}万`
-        return String(numeric)
-      }
 
       const itemStats = (item) => [
         ["点赞", item.like_count],
@@ -1190,25 +1250,30 @@
         </div>
       `
 
+      const topLikedItems = scannedItems
+        .filter((item) => item.bucket === "top_liked" || item.bucket === "both")
+        .sort((a, b) => Number(b.like_count || 0) - Number(a.like_count || 0))
       const latestItems = scannedItems.filter((item) => item.bucket === "latest" || item.bucket === "both")
-      const topLikedItems = scannedItems.filter((item) => item.bucket === "top_liked")
       results.innerHTML = `
-        <section class="creator-work-section">
-          <h3>最新 10 条</h3>
-          <div class="creator-work-list">${latestItems.map(itemCard).join("") || '<p class="muted">暂无最新作品</p>'}</div>
-        </section>
+        ${renderCreatorProfile()}
         <section class="creator-work-section">
           <h3>高赞 10 条</h3>
           <div class="creator-work-list">${topLikedItems.map(itemCard).join("") || '<p class="muted">暂无高赞作品</p>'}</div>
+        </section>
+        <section class="creator-work-section">
+          <h3>最新 10 条</h3>
+          <div class="creator-work-list">${latestItems.map(itemCard).join("") || '<p class="muted">暂无最新作品</p>'}</div>
         </section>
       `
 
       // 绑定复选框事件
       results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+        checkbox.checked = selectedItemIds.includes(checkbox.value)
         checkbox.addEventListener("change", () => {
           selectedItemIds = Array.from(
             results.querySelectorAll("[data-item-checkbox]:checked")
           ).map((cb) => cb.value)
+          saveCreatorState()
         })
       })
     }
@@ -1231,6 +1296,7 @@
           selected_items: selectedItems,
         })
         selectedCandidateIds = prepared.candidate_ids || []
+        saveCreatorState()
         if (!selectedCandidateIds.length) {
           setStatusText("没有可提取的作品，请重新扫描后再试。", "bad")
           return
@@ -1240,6 +1306,7 @@
         if (currentJobId) payload.job_id = currentJobId
         const response = await apiPost(extractEndpoint, payload)
         currentJobId = response.job_id || currentJobId
+        saveCreatorState()
         if (response.status === "paused") {
           setStatusText(response.reason || "提取暂停，请处理登录或验证后重试。", "bad")
           return
@@ -1258,6 +1325,7 @@
         setBusy(extractButton, false)
       }
     })
+    restoreCreatorState()
   }
   document.querySelectorAll("[data-creator-distill-panel]").forEach(initCreatorDistillPanel)
 

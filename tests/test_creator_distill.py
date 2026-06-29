@@ -129,14 +129,31 @@ def test_creator_mode_js_helper_exists():
 
 
 def test_creator_results_js_groups_items_and_uses_compact_checkboxes():
-    """扫描结果应按最新/高赞分组，并使用小型左对齐勾选框"""
+    """扫描结果应先展示高赞、再展示最新，并使用小型左对齐勾选框"""
     app_js = open("app/static/app.js", encoding="utf-8").read()
 
-    assert "最新 10 条" in app_js
     assert "高赞 10 条" in app_js
+    assert "最新 10 条" in app_js
+    assert app_js.index("高赞 10 条") < app_js.index("最新 10 条")
+    assert "topLikedItems = scannedItems" in app_js
+    assert "sort((a, b) => Number(b.like_count" in app_js
     assert "creator-work-checkbox" in app_js
     assert "creator-work-stats" in app_js
     assert "share_count" in app_js
+
+
+def test_creator_panel_persists_last_scan_state_and_shows_profile_card():
+    """离开后返回输入博主页，应能从 localStorage 恢复上次扫描结果，并展示博主基础信息"""
+    app_js = open("app/static/app.js", encoding="utf-8").read()
+
+    assert "creatorDistillState:v4" in app_js
+    assert "saveCreatorState" in app_js
+    assert "restoreCreatorState" in app_js
+    assert "renderCreatorProfile" in app_js
+    assert "粉丝" in app_js
+    assert "获赞" in app_js
+    assert "liked_count" in app_js
+    assert "data-creator-profile" in app_js
 
 
 # ─── Task 2: Creator Input Normalization ───────────────────────────────────
@@ -629,8 +646,196 @@ def test_sources_page_groups_distill_raw_sources_by_creator(tmp_path, monkeypatc
         app.dependency_overrides.clear()
 
 
-def test_select_creator_works_extends_top_liked_when_overlapping():
-    """最新作品和高赞作品重合时，高赞列表应顺延补足不重复作品"""
+def test_xiaohongshu_creator_work_script_prefers_profile_note_urls():
+    """小红书博主页作品应使用能直接打开的 /user/profile/{user}/{note} 链接，而不是封面或 /explore 链接"""
+    from app.services.creator_profile_service import _creator_work_extract_script
+
+    script = _creator_work_extract_script("xiaohongshu")
+
+    assert "/user/profile/[^/]+/[0-9a-fA-F]+" in script
+    assert "normalizeXhsUrl" in script
+    assert 'url: url.href' in script
+    assert "cover_url: img?.src" in script
+    assert "data:image" not in script
+
+
+def test_creator_profile_info_normalizes_homepage_text_name_followers_and_likes():
+    """主页上名字/粉丝数/获赞数即使分散在相邻文本里，也应归一化为可展示数据"""
+    from app.services.creator_profile_service import normalize_creator_profile_info
+
+    result = normalize_creator_profile_info(
+        {
+            "creator_name": "大牙大 - 抖音",
+            "body_text": "获赞\n12.8万\n关注\n52\n粉丝\n3.4万",
+        }
+    )
+
+    assert result["creator_name"] == "大牙大"
+    assert result["follower_count"] == 34000
+    assert result["liked_count"] == 128000
+
+    douyin_precise = normalize_creator_profile_info(
+        {
+            "platform": "douyin",
+            "creator_name": "架构师阿Q",
+            "follower_text": "粉丝 1.3万",
+            "liked_text": "获赞 3.9万",
+        }
+    )
+
+    assert douyin_precise["creator_name"] == "架构师阿Q"
+    assert douyin_precise["follower_count"] == 13000
+    assert douyin_precise["liked_count"] == 39000
+
+    xiaohongshu = normalize_creator_profile_info(
+        {
+            "creator_name": "孙沐晏_小红书",
+            "body_text": "关注 30 粉丝 1170 获赞与收藏 2万",
+            "platform": "xiaohongshu",
+        }
+    )
+
+    assert xiaohongshu["creator_name"] == "孙沐晏"
+    assert xiaohongshu["follower_count"] == 1170
+    assert xiaohongshu["liked_count"] == 20000
+
+    xiaohongshu_precise = normalize_creator_profile_info(
+        {
+            "platform": "xiaohongshu",
+            "creator_name": "孙沐晏",
+            "follower_count": "1170",
+            "liked_count": "2万",
+        }
+    )
+
+    assert xiaohongshu_precise["creator_name"] == "孙沐晏"
+    assert xiaohongshu_precise["follower_count"] == 1170
+    assert xiaohongshu_precise["liked_count"] == 20000
+
+    body_only = normalize_creator_profile_info(
+        {
+            "body_text": "李云放而已\n关注\n64\n粉丝\n2877\n获赞\n21.4万\n抖音号：1002336398",
+            "platform": "douyin",
+        }
+    )
+
+    assert body_only["creator_name"] == "李云放而已"
+    assert body_only["follower_count"] == 2877
+    assert body_only["liked_count"] == 214000
+
+
+
+def test_collect_creator_profile_retries_profile_after_work_scan(monkeypatch):
+    """如果主页信息初次渲染为空，应在作品扫描后再兜底抓一次主页信息"""
+    import asyncio
+    import types
+
+    from app.services import creator_profile_service as service
+
+    class FakeCDP:
+        def __init__(self):
+            self.profile_calls = 0
+
+        async def connect(self):
+            return True
+
+        async def new_tab(self, url):
+            return types.SimpleNamespace(tab_id="tab-1")
+
+        async def wait_for_load(self, tab, timeout=12):
+            return None
+
+        async def eval_script(self, tab, script):
+            if "creator_name" in script and "body_text" in script:
+                self.profile_calls += 1
+                if self.profile_calls <= 8:
+                    return '{"creator_name":"","body_text":""}'
+                return '{"creator_name":"李云放而已","body_text":"李云放而已\\n关注\\n64\\n粉丝\\n2877\\n获赞\\n21.4万"}'
+            return '[{"id":"work-1","url":"https://www.douyin.com/video/1","title":"测试作品","like_count":1}]'
+
+        async def scroll(self, tab, distance=800):
+            return None
+
+        async def close_tab(self, tab):
+            return None
+
+    fake_cdp = FakeCDP()
+    monkeypatch.setitem(__import__("sys").modules, "app.connectors.cdp_proxy", types.SimpleNamespace(cdp_proxy=fake_cdp))
+
+    result = asyncio.run(service.collect_creator_profile_works("douyin", "https://www.douyin.com/user/test"))
+
+    assert result["creator_name"] == "李云放而已"
+    assert result["follower_count"] == 2877
+    assert result["liked_count"] == 214000
+    assert result["works"]
+
+
+
+def test_scan_profile_returns_creator_name_and_follower_count(monkeypatch):
+    """扫描主页时应返回博主名和粉丝数，供页面和 RawSource 分组使用"""
+    from app.services.creator_profile_service import CreatorProfileService
+
+    async def fake_collect(platform, profile_url):
+        return {
+            "creator_name": "大牙大",
+            "follower_count": 123456,
+            "works": [
+                {
+                    "id": "work-1",
+                    "title": "测试作品标题",
+                    "url": "https://www.douyin.com/video/1",
+                    "published_at": "2026-06-28",
+                    "like_count": 10,
+                }
+            ],
+        }
+
+    monkeypatch.setattr("app.services.creator_profile_service.collect_creator_profile_works", fake_collect)
+    result = __import__("asyncio").run(CreatorProfileService().scan_profile("douyin", "https://v.douyin.com/abc123/"))
+    assert result["creator"]["creator_name"] == "大牙大"
+    assert result["creator"]["follower_count"] == 123456
+
+
+def test_prepare_selected_uses_extracted_creator_name_for_raw_source_grouping():
+    """prepare-selected 应用扫描到的博主名，避免原始资料显示未命名博主"""
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/creator/prepare-selected",
+            json={
+                "platform": "douyin",
+                "creator": {
+                    "creator_key": "douyin:abc123",
+                    "creator_name": "大牙大",
+                    "creator_profile_id": "abc123",
+                    "creator_profile_url": "https://v.douyin.com/abc123/",
+                    "follower_count": 123456,
+                    "liked_count": 214000,
+                },
+                "selected_items": [
+                    {"id": "work-1", "title": "测试作品标题", "url": "https://www.douyin.com/video/1", "bucket": "latest"}
+                ],
+            },
+        )
+        assert response.status_code == 200
+        from app.models import CandidateItem
+        candidate = db.get(CandidateItem, response.json()["candidate_ids"][0])
+        assert candidate.author == "大牙大"
+        assert "\"creator_name\": \"大牙大\"" in candidate.metadata_json
+        assert "\"follower_count\": 123456" in candidate.metadata_json
+        assert "\"liked_count\": 214000" in candidate.metadata_json
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_select_creator_works_prioritizes_top_liked_desc_then_latest():
+    """高赞列表应取点赞量最高的 10 条并排在最新列表之前"""
     from app.services.creator_profile_service import CreatorProfileService
 
     works = []
@@ -652,6 +857,8 @@ def test_select_creator_works_extends_top_liked_when_overlapping():
     latest = [item for item in selected if item["bucket"] in ("latest", "both")]
     top_liked = [item for item in selected if item["bucket"] in ("top_liked", "both")]
     assert len(latest) == 10
-    assert len(top_liked) == 3
+    assert len(top_liked) == 10
+    assert [item["like_count"] for item in top_liked] == sorted([item["like_count"] for item in top_liked], reverse=True)
+    assert selected[0]["bucket"] in ("top_liked", "both")
     assert snapshot["overlap_count"] == 10
-    assert snapshot["top_liked_extension_count"] == 3
+    assert snapshot["top_liked_extension_count"] == 10

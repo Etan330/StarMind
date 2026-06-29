@@ -1449,6 +1449,63 @@ select:focus {
   background: var(--color-primary-soft);
 }
 
+.creator-scan-controls {
+  display: grid;
+  grid-template-columns: minmax(420px, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.creator-url-field {
+  min-width: 0;
+}
+
+.creator-url-field input {
+  width: 100%;
+  min-width: min(680px, 100%);
+}
+
+.creator-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 860px) {
+  .creator-scan-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .creator-url-field input {
+    min-width: 0;
+  }
+
+  .creator-action-buttons {
+    justify-content: flex-start;
+  }
+}
+
+.creator-profile-card {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-soft);
+}
+
+.creator-profile-card strong {
+  font-size: 15px;
+}
+
+.creator-profile-card span {
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
 .creator-work-section {
   display: grid;
   gap: 10px;

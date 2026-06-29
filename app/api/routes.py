@@ -3340,6 +3340,8 @@ async def prepare_selected_creator_items(request: Request, db: Session = Depends
             "creator_profile_id": creator_profile_id,
             "creator_profile_url": creator_profile_url,
             "creator_platform": platform,
+            "follower_count": creator.get("follower_count") or 0,
+            "liked_count": creator.get("liked_count") or 0,
             "creator_bucket": str(item.get("bucket") or "").strip(),
             "creator_task_id": str(data.get("creator_task_id") or "").strip(),
             "creator_scan_snapshot_id": str(data.get("creator_scan_snapshot_id") or "").strip(),
