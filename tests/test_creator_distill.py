@@ -725,6 +725,18 @@ def test_sources_page_groups_distill_raw_sources_by_creator(tmp_path, monkeypatc
         app.dependency_overrides.clear()
 
 
+def test_douyin_creator_work_script_restricts_to_profile_work_area():
+    """抖音博主页扫描只应从主页作品区域取 /video/，不能混入推荐/侧边栏视频"""
+    from app.services.creator_profile_service import _creator_work_extract_script
+
+    script = _creator_work_extract_script("douyin")
+
+    assert "douyinWorkRoots" in script
+    assert "isDouyinProfileWorkAnchor" in script
+    assert "douyinRejectRoot" in script
+    assert "if (platform === \"douyin\" && !isDouyinProfileWorkAnchor(a, url)) continue;" in script
+
+
 def test_xiaohongshu_creator_work_script_prefers_profile_note_urls():
     """小红书博主页作品应使用能直接打开的 /user/profile/{user}/{note} 链接，而不是封面或 /explore 链接"""
     from app.services.creator_profile_service import _creator_work_extract_script

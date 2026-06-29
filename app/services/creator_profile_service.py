@@ -406,6 +406,20 @@ def _creator_work_extract_script(platform: str) -> str:
       || candidates.find((url) => /\/discovery\/item\/[0-9a-fA-F]+/.test(url.pathname))
       || candidates.find((url) => /\/explore\/[0-9a-fA-F]+/.test(url.pathname));
   }};
+  const douyinRejectRoot = (anchor) => anchor.closest('[role="dialog"], [data-e2e*="recommend"], [data-e2e*="comment"], [class*="recommend"], [class*="comment"], [class*="sidebar"], [class*="search"], [class*="modal"]');
+  const douyinWorkRoots = Array.from(document.querySelectorAll('[data-e2e="user-post-list"], [data-e2e="user-post"], [data-e2e*="user-post"], [data-e2e*="post-list"], [data-e2e*="user-tab"], [class*="user"] [class*="post"], main'))
+    .filter((root) => root.querySelector?.('a[href*="/video/"]'));
+  const isDouyinProfileWorkAnchor = (anchor, url) => {{
+    if (platform !== "douyin") return true;
+    if (!/^\/video\/\d+/.test(url.pathname)) return false;
+    if (douyinRejectRoot(anchor)) return false;
+    if (douyinWorkRoots.length && !douyinWorkRoots.some((root) => root.contains(anchor))) return false;
+    const card = anchor.closest('[data-e2e*="user-post"], [data-e2e*="post"], article, section, li, div') || anchor;
+    const cardText = clean(card.innerText || anchor.innerText || "");
+    const hasMedia = Boolean(card.querySelector?.('img, video, canvas') || anchor.querySelector?.('img, video, canvas'));
+    const hasWorkSignal = hasMedia || /(?:点赞|评论|收藏|转发|分享|[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k)?)/i.test(cardText);
+    return hasWorkSignal;
+  }};
   const canonicalKey = (url) => {{
     const matched = url.pathname.match(/([0-9a-fA-F]{{16,}})$/);
     return matched ? matched[1] : url.pathname;
@@ -416,6 +430,7 @@ def _creator_work_extract_script(platform: str) -> str:
     if (!url.hostname.includes(hostPattern)) continue;
     if (platform === "xiaohongshu") url = normalizeXhsUrl(a) || url;
     if (!pathPattern.test(url.pathname)) continue;
+    if (platform === "douyin" && !isDouyinProfileWorkAnchor(a, url)) continue;
     if (platform === "xiaohongshu" && !/\/user\/profile\/[^/]+\/[0-9a-fA-F]+/.test(url.pathname)) continue;
     const key = canonicalKey(url);
     if (seen.has(key)) continue;
