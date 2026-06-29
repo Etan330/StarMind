@@ -376,6 +376,7 @@
     const summary = root.querySelector("[data-filter-summary]")
     const results = root.querySelector("[data-filter-results]")
     const filterToolbar = root.querySelector("[data-filter-toolbar]")
+    const controls = root.querySelector("[data-filter-controls]")
     const usefulnessFilter = root.querySelector("[data-filter-usefulness]")
     const categoryFilter = root.querySelector("[data-filter-category]")
     const timeFilter = root.querySelector("[data-filter-time]")
@@ -401,31 +402,43 @@
     }
 
     const show = (el, visible) => { if (el) el.hidden = !visible }
+    const setControlsLayout = (mode) => {
+      if (!controls) return
+      controls.classList.toggle("source-filter-controls--saved", mode === "saved")
+      controls.classList.toggle("source-filter-controls--scan", mode !== "saved")
+    }
 
     // 历史 Tab 三态布局（gate 在 isHistory）：
-    // - 扫描模式：采集数量/扫描/分类/提取可用，藏 保存/重新扫描。
-    // - 只读模式（已保存历史）：藏 采集数量/扫描/分类/保存，留 提取(仅勾选)/重新扫描/筛选栏。
+    // - 扫描模式：采集数量/扫描/分类可用，藏 保存/重新扫描/续跑。
+    // - 只读模式（已保存历史）：藏 采集数量/扫描/分类/保存，留 重新扫描/提取/续跑，并切到三列紧凑排版。
     const enterScanMode = () => {
       if (!isHistory) return
       const limitLabel = limitSelect?.closest("label")
+      setControlsLayout("scan")
       show(limitLabel, true)
       show(scanButton, true)
       show(classifyButton, true)
       show(saveHistoryButton, false)
       show(rescanHistoryButton, false)
+      show(extractButton, true)
+      show(resumeButton, false)
     }
     const revealSaveButton = () => {
       if (!isHistory) return
+      setControlsLayout("scan")
       show(saveHistoryButton, true)
     }
     const enterReadOnlyMode = () => {
       if (!isHistory) return
       const limitLabel = limitSelect?.closest("label")
+      setControlsLayout("saved")
       show(limitLabel, false)
       show(scanButton, false)
       show(classifyButton, false)
       show(saveHistoryButton, false)
       show(rescanHistoryButton, true)
+      show(extractButton, true)
+      show(resumeButton, true)
     }
 
     const setStatus = (message, tone = "") => {
@@ -764,6 +777,7 @@
           summary.hidden = false
           summary.textContent = `已保存 ${body.history_count != null ? body.history_count : scannedItems.length} 条历史收藏。下次进入历史收藏将直接展示，不再需要重新扫描分类。`
         }
+        clearSavedState()
         setStatus("历史收藏已保存。", "ok")
         enterReadOnlyMode()
       } catch (error) {
@@ -778,7 +792,17 @@
       setBusy(rescanHistoryButton, true, "重置中...")
       try {
         await apiPost("/api/sync/reset-history", { platform })
-        setStatus("已重置历史收藏，可重新扫描。", "ok")
+        scannedItems = []
+        classifiedItems = []
+        selectedCandidateIds = []
+        lastGroups = []
+        clearSavedState()
+        if (results) { results.hidden = true; results.innerHTML = "" }
+        if (filterToolbar) filterToolbar.hidden = true
+        if (summary) { summary.hidden = true; summary.textContent = "" }
+        classifyButton.disabled = true
+        extractButton.disabled = true
+        setStatus("已清空历史收藏，可重新扫描。", "ok")
         enterScanMode()
       } catch (error) {
         setStatus(error.message || "重置失败", "bad")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -147,11 +148,9 @@ class WikiMaintenanceService:
                 latest_titles.append(source.title)
             if bucket in {"top_liked", "both"}:
                 top_liked_titles.append(source.title)
-            text = self._read_text(source.transcript_path) or self._read_text(source.clean_text_path) or self._read_text(source.raw_content_path)
             source_blocks.append(
                 f"- [{source.title}]({source.canonical_url})\n"
-                f"  - 标签：{bucket or '未标记'}\n"
-                f"  - 片段：{(text or '暂无正文')[:500]}"
+                f"  - 标签：{bucket or '未标记'}"
             )
         latest_text = "、".join(latest_titles[:8]) or "暂无最新作品样本"
         top_liked_text = "、".join(top_liked_titles[:8]) or "暂无高赞作品样本"
@@ -162,7 +161,7 @@ class WikiMaintenanceService:
             "## 选题\n\n"
             f"当前样本包含：{latest_text}。\n\n"
             "## 表达方式\n\n"
-            "从标题、逐字稿和正文中归纳表达风格；当前版本保留来源证据，避免无依据扩写。\n\n"
+            "从标题和正文中归纳表达风格；当前版本保留来源证据，避免无依据扩写。\n\n"
             "## 受众\n\n"
             "根据选题和表达方式推断目标受众；资料不足时应以来源证据为准。\n\n"
             "## 商业价值\n\n"
@@ -194,9 +193,7 @@ class WikiMaintenanceService:
                 temperature=0.3,
             )
             if generated.strip():
-                body = generated.strip()
-                if "最新与高赞差异" not in body:
-                    body = f"{body}\n\n## 最新与高赞差异\n\n- 最新样本：{latest_text}\n- 高赞样本：{top_liked_text}"
+                body = self._format_creator_analysis_body(generated, latest_text, top_liked_text)
                 status_line = "> 生成状态：已调用模型完成博主分析。"
         except Exception as e:
             import logging
@@ -211,6 +208,39 @@ class WikiMaintenanceService:
             + evidence
             + "\n"
         )
+
+    def _format_creator_analysis_body(self, generated: str, latest_text: str, top_liked_text: str) -> str:
+        text = self._strip_transcript_sections(generated)
+        text = re.sub(r"\r\n?", "\n", str(text or "")).strip()
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        if not text:
+            return ""
+        if "## " not in text:
+            sentences = [part.strip() for part in re.split(r"(?<=[。！？.!?])\s*", text) if part.strip()]
+            grouped = "\n\n".join(sentences) if sentences else text
+            text = f"## 综合分析\n\n{grouped}"
+        required_sections = {
+            "人设": "资料不足，暂无法进一步归纳人设。",
+            "选题": "资料不足，暂无法进一步归纳选题。",
+            "表达方式": "资料不足，暂无法进一步归纳表达方式。",
+            "受众": "资料不足，暂无法进一步归纳受众。",
+            "商业价值": "资料不足，暂无法进一步归纳商业价值。",
+        }
+        for heading, fallback in required_sections.items():
+            if f"## {heading}" not in text:
+                text += f"\n\n## {heading}\n\n{fallback}"
+        if "最新与高赞差异" not in text:
+            text += f"\n\n## 最新与高赞差异\n\n- 最新样本：{latest_text}\n- 高赞样本：{top_liked_text}"
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    def _strip_transcript_sections(self, value: str) -> str:
+        text = re.sub(r"\r\n?", "\n", str(value or ""))
+        text = re.sub(r"(?ims)^#{1,6}\s*逐字稿\s*\n.*?(?=^#{1,6}\s+|\Z)", "", text)
+        text = re.sub(r"(?ims)^逐字稿\s*\n.*?(?=^#{1,6}\s+|\n\s*(?:标签|来源|链接|作者|生成时间|状态)：|\Z)", "", text)
+        text = re.sub(r"(?ims)^片段：.*?(?=\n\s*(?:标签|来源|链接|作者|生成时间|状态)：|^#{1,6}\s+|\Z)", "", text)
+        text = re.sub(r"(?ims)^链接解析结果.*?(?=^#{1,6}\s+|\n\s*(?:标签|来源|链接|作者|生成时间|状态)：|\Z)", "", text)
+        text = re.sub(r"(?ims)^完整视频口播.*?(?=^#{1,6}\s+|\n\s*(?:标签|来源|链接|作者|生成时间|状态)：|\Z)", "", text)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
 
     def _json_dict(self, raw_value: str | None) -> dict[str, Any]:
         try:

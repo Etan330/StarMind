@@ -81,17 +81,22 @@ class ScanEntryService:
         self.db.commit()
 
     def reset_history(self, platform: str) -> None:
-        """「重新扫描历史」：清 history_saved AND first_scan_done，使下次扫描重新走 history 全量。
+        """「重新扫描历史」：清 history_saved、first_scan_done 和旧历史条目。
 
         关键——只清 history_saved 不清 first_scan_done 的话，determine_kind 仍返回 incremental，
         下次扫描会被 filter_incremental 把已见条目全滤掉 → "0 new"，违背「重新扫描历史」。
-        保留 ScanEntry 行（不删），否则丢分类/提取状态；幂等 re-upsert 不覆盖 usefulness/extracted。
+        清掉历史 ScanEntry 后，用户重新扫描时看到的是新的干净历史集合。
         """
         connector = self._connector(platform)
         if connector is None:
             return
         connector.history_saved = False
         connector.first_scan_done = False
+        connector.history_boundary_external_id = None
+        self.db.query(ScanEntry).filter(
+            ScanEntry.platform == platform,
+            ScanEntry.collection_kind == HISTORY,
+        ).delete(synchronize_session=False)
         self.db.commit()
 
     def _seen_external_ids(self, platform: str) -> set[str]:
@@ -106,15 +111,24 @@ class ScanEntryService:
         return seen
 
     def filter_incremental(self, platform: str, items: list[ConnectorItem]) -> list[ConnectorItem]:
-        """新增扫描：过滤掉已见条目（已是历史/已扫过），实现跨天去重。"""
+        """新增扫描：从最新往旧扫，遇到已见条目即停止。"""
+        kept, _boundary_hit = self.filter_incremental_until_boundary(platform, items)
+        return kept
+
+    def filter_incremental_until_boundary(self, platform: str, items: list[ConnectorItem]) -> tuple[list[ConnectorItem], bool]:
+        """新增扫描：只返回边界之前的新条目，遇到历史/已提取条目即停止。
+
+        收藏页通常按新到旧排列。首次遇到已见 external_item_id 代表后面都是历史或上次已扫过的
+        内容，不再继续提取或展示，避免新增 Tab 混入历史收藏。
+        """
         seen = self._seen_external_ids(platform)
         kept: list[ConnectorItem] = []
         for item in items:
             normalized = normalize_url(item.raw_url, platform)
             if normalized.external_item_id in seen:
-                continue
+                return kept, True
             kept.append(item)
-        return kept
+        return kept, False
 
     # ---- upsert ----
 

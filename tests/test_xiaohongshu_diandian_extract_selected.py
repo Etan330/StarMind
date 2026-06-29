@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem
+from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem, WikiPage
 
 
 class FakeDiandianResult:
@@ -91,6 +91,54 @@ def create_candidate(db, metadata=None, raw_url=None, title="Anthropic博客的A
     db.commit()
     db.refresh(candidate)
     return candidate
+
+
+def test_diandian_extract_selected_creator_candidate_auto_updates_creator_wiki(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", FakeDiandianExtractor)
+    FakeDiandianExtractor.calls = []
+    FakeDiandianExtractor.results = []
+    FakeDiandianExtractor.close_calls = []
+
+    class Provider:
+        provider_name = "mock"
+
+        async def chat(self, messages, model, temperature=0.2):
+            return "## 人设\n小红书博主人设分析\n\n## 最新与高赞差异\n高赞更偏案例"
+
+    monkeypatch.setattr(
+        "app.services.wiki_service.get_provider_runtime",
+        lambda provider_id=None, model=None: (Provider(), "mock-model", {"api_style": "mock"}),
+    )
+    db = make_session()
+    candidate = create_candidate(
+        db,
+        metadata={"creator_key": "xiaohongshu:creator-1", "creator_name": "孙沐晏", "creator_bucket": "latest"},
+        title="小红书博主作品",
+    )
+    candidate.source_type = "distill_profile"
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post("/api/xiaohongshu/diandian/extract-selected", json={"candidate_ids": [candidate.id]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["items"][0]["wiki_page_id"]
+        assert body["creator_wiki_pages"] == [{"creator_key": "xiaohongshu:creator-1", "wiki_page_id": body["items"][0]["wiki_page_id"], "creator_name": "孙沐晏"}]
+        assert db.query(RawSource).count() == 1
+        page = db.query(WikiPage).one()
+        assert page.page_type == "creator"
+        assert "小红书博主人设分析" in open(page.markdown_path, encoding="utf-8").read()
+    finally:
+        app.dependency_overrides.clear()
+
 
 
 def test_xiaohongshu_diandian_extract_selected_creates_raw_source(tmp_path, monkeypatch):

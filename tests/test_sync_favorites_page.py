@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,6 +9,9 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models import ProductEvent
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def make_session():
@@ -236,6 +240,53 @@ def test_sync_favorites_page_renders_live_platform_tabbar():
         assert 'data-default-platform="douyin"' in text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_source_setup_history_controls_expose_saved_state_hooks():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        panel = client.get("/ui/source-setup/douyin/panel")
+
+        assert panel.status_code == 200
+        text = panel.text
+        history_panel = re.search(
+            r'data-collection-kind="history".*?(?=data-collection-kind="incremental")',
+            text,
+            flags=re.S,
+        )
+        assert history_panel is not None
+        html = history_panel.group(0)
+        assert "data-filter-limit" in html
+        assert "data-filter-scan" in html
+        assert "data-filter-classify" in html
+        assert "data-filter-save-history" in html
+        assert "data-filter-rescan-history" in html
+        assert "仅提取我勾选的内容" in html
+        assert "我已完成验证，继续" in html
+        assert "data-history-scan-control" in html
+        assert "data-history-saved-control" in html
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_setup_history_saved_layout_hooks_are_available():
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "app" / "static" / "css" / "v3-design-system.css").read_text(encoding="utf-8")
+
+    assert "source-filter-controls--saved" in app_js
+    assert "source-filter-controls--saved" in css
+    assert "source-filter-controls--scan" in app_js
+    assert "source-filter-controls--scan" in css
+    assert "show(resumeButton, true)" in app_js
+    assert "show(resumeButton, false)" in app_js
+    assert "show(extractButton, true)" in app_js
+
 
 
 def test_source_setup_panel_endpoint_returns_fragment_only():

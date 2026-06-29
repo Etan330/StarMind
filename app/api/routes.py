@@ -1151,6 +1151,35 @@ def _pacing_params(data: dict[str, Any]) -> tuple[int, float, float]:
     return switch_every, delay_min, delay_max
 
 
+async def auto_update_creator_wiki_pages(db: Session, raw_sources: list[RawSource], items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    creator_keys: dict[str, str] = {}
+    source_creator_keys: dict[int, str] = {}
+    for source in raw_sources:
+        if source.source_type != "distill_profile":
+            continue
+        metadata = safe_json(source.metadata_json)
+        creator_key = str(metadata.get("creator_key") or "").strip()
+        if creator_key:
+            creator_keys[creator_key] = str(metadata.get("creator_name") or source.author or "未命名博主").strip()
+            source_creator_keys[source.id] = creator_key
+    pages: list[dict[str, Any]] = []
+    page_ids_by_creator: dict[str, str] = {}
+    service = WikiMaintenanceService(db)
+    for creator_key, creator_name in creator_keys.items():
+        page = await service.create_creator_page(creator_key, force=True)
+        page_ids_by_creator[creator_key] = page.page_id
+        pages.append({"creator_key": creator_key, "wiki_page_id": page.page_id, "creator_name": creator_name})
+    if items is not None:
+        for item in items:
+            raw_source_id = item.get("raw_source_id")
+            if not raw_source_id:
+                continue
+            creator_key = source_creator_keys.get(int(raw_source_id))
+            if creator_key and page_ids_by_creator.get(creator_key):
+                item["wiki_page_id"] = page_ids_by_creator[creator_key]
+    return pages
+
+
 def _filter_pending_candidates(db: Session, candidate_ids: list[Any], platform: str) -> list[int]:
     """从 candidate_ids 里筛出该平台尚未提取的（断点续跑用，幂等跳过已完成）。"""
     from app.connectors.extract_pacing import next_pending
@@ -3782,6 +3811,7 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
 
     data = await request_data(request)
     platform = str(data.get("platform") or "").strip()
+    requested_kind = str(data.get("collection_kind") or "").strip()
     limit = parse_collection_limit(data, default=10)
     homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
 
@@ -3823,19 +3853,23 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     except DouyinPageNotReady as exc:
         raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
 
-    # 「全部已入库」UX 提示：本次扫到的条目里，扣掉已成功入库的，看是否一条新的都没有。
+    # 「全部已入库」只适用于新增扫描。历史扫描是在重建/扩展基线，即使前 N 条已入库也不能提示用户去新增收藏。
     fresh_count = sum(
         1 for i in items
         if _extract_note_id(i.raw_url) not in existing_note_ids
     )
     total_scanned = len(items)
-    all_duplicates = total_scanned > 0 and fresh_count == 0
+    all_duplicates = requested_kind != "history" and total_scanned > 0 and fresh_count == 0
 
-    # 落库（DB 权威源）：历史 vs 新增切分 + 跨天去重 + 回传 scan_entry_id/已分类/已提取状态。
+    # 落库（DB 权威源）：历史 Tab 永远按历史请求处理，避免首次扫 10 条后再选 20/50/100 被误判为新增。
+    # 新增 Tab 从最新往旧扫，遇到 ScanEntry/SyncLedger 已见边界即停止。
     svc = ScanEntryService(db)
-    kind = svc.determine_kind(platform)
-    if kind == "incremental":
-        items = svc.filter_incremental(platform, items)
+    stored_kind = svc.determine_kind(platform)
+    kind = "history" if requested_kind == "history" else stored_kind
+    boundary_hit = False
+    if requested_kind == "incremental" or kind == "incremental":
+        kind = "incremental"
+        items, boundary_hit = svc.filter_incremental_until_boundary(platform, items)
     scan_run_id = f"scan_titles_{uuid4().hex[:8]}"
     entries = svc.upsert_from_items(platform, items, kind, scan_run_id)
     if kind == "history":
@@ -3845,6 +3879,7 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
         "items": entries,
         "total": len(entries),
         "collection_kind": kind,
+        "boundary_hit": boundary_hit,
         "total_scanned": total_scanned,
         "all_duplicates": all_duplicates,
         "message": "收藏夹内容均已入库，请先在平台新增收藏后再扫描" if all_duplicates else "",
@@ -4129,6 +4164,7 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
         raw_service = RawSourceService(db)
         wiki_service = WikiMaintenanceService(db)
         items: list[dict[str, Any]] = []
+        successful_raw_sources: list[RawSource] = []
         success_count = 0
         failed_count = 0
         paused = False
@@ -4229,6 +4265,7 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
             candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
             db.commit()
             raw_source = raw_service.ingest_candidate(candidate.id)
+            successful_raw_sources.append(raw_source)
             ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
             if ledger:
                 ledger.classification_label = "knowledge"
@@ -4257,6 +4294,7 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
     finally:
         await extractor.close(close_tab=not keep_diandian_tab_open)
 
+    creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
     job["success_count"] = job.get("success_count", 0) + success_count
     job["failed_count"] = job.get("failed_count", 0) + failed_count
     job["items"].extend(items)
@@ -4281,10 +4319,11 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
             "done": len(job["done_ids"]),
             "pending_remaining": len(remaining),
             "items": items,
+            "creator_wiki_pages": creator_wiki_pages,
         }
 
     job["status"] = "completed"
-    return {"status": "completed", "job_id": job_id, "success_count": success_count, "failed_count": failed_count, "items": items}
+    return {"status": "completed", "job_id": job_id, "success_count": success_count, "failed_count": failed_count, "items": items, "creator_wiki_pages": creator_wiki_pages}
 
 
 @router.post("/api/doubao/extract-selected")
@@ -4341,6 +4380,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
         raw_service = RawSourceService(db)
         wiki_service = WikiMaintenanceService(db)
         items: list[dict[str, Any]] = []
+        successful_raw_sources: list[RawSource] = []
         success_count = 0
         failed_count = 0
         paused = False
@@ -4425,6 +4465,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
             candidate.title = result.title or candidate.title
             db.commit()
             raw_source = raw_service.ingest_candidate(candidate.id)
+            successful_raw_sources.append(raw_source)
             ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
             wiki_page_id = None
             if generate_wiki_draft:
@@ -4448,6 +4489,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
     finally:
         await extractor.close(close_tab=not keep_doubao_tab_open)
 
+    creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
     job["success_count"] = job.get("success_count", 0) + success_count
     job["failed_count"] = job.get("failed_count", 0) + failed_count
     job["items"].extend(items)
@@ -4473,6 +4515,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
             "done": len(job["done_ids"]),
             "pending_remaining": len(remaining),
             "items": items,
+            "creator_wiki_pages": creator_wiki_pages,
         }
 
     job["status"] = "completed"
@@ -4482,6 +4525,7 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
         "success_count": success_count,
         "failed_count": failed_count,
         "items": items,
+        "creator_wiki_pages": creator_wiki_pages,
     }
 
 

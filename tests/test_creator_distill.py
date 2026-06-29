@@ -672,6 +672,52 @@ def test_creator_prepare_selected_creates_distill_profile_candidates():
         app.dependency_overrides.clear()
 
 
+def test_sources_page_links_and_ideas_are_selectable_sources(tmp_path):
+    """用户贴的链接和临时 idea 应能在右侧预览 RawSource，而不是跳待处理页或点不动"""
+    from app.models import RawSource
+
+    db = make_session()
+    link_path = tmp_path / "link.md"
+    idea_path = tmp_path / "idea.md"
+    link_path.write_text("用户链接抓取正文", encoding="utf-8")
+    idea_path.write_text("临时 idea 原始正文", encoding="utf-8")
+    db.add_all(
+        [
+            RawSource(platform="web", source_url="https://example.com/a", canonical_url="https://example.com/a", external_item_id="link-1", source_type="passive_link", title="用户贴的链接标题", transcript_path=str(link_path), metadata_json="{}"),
+            RawSource(platform="manual", source_url="manual://idea", canonical_url="manual://idea", external_item_id="idea-1", source_type="manual_idea", title="临时 idea 标题", transcript_path=str(idea_path), metadata_json="{}"),
+        ]
+    )
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get("/ui/sources")
+        assert response.status_code == 200
+        assert 'href="/ui/sources?source_id=1"' in response.text
+        assert 'href="/ui/sources?source_id=2"' in response.text
+        assert 'href="/ui/pending" data-expand-item' not in response.text
+        detail = client.get("/ui/sources?source_id=2")
+        assert "临时 idea 原始正文" in detail.text
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sources_page_preserves_scroll_and_open_groups_for_source_links():
+    """点击原始资料条目后应保存滚动位置和展开分组，返回详情页时不跳到顶部/不收起博主"""
+    template = open("app/templates/sources.html", encoding="utf-8").read()
+
+    assert 'data-source-select-link' in template
+    assert 'sessionStorage.setItem("sourcesScrollY"' in template
+    assert 'window.scrollTo(0, savedScrollY)' in template
+    assert 'data-source-group-key' in template
+    assert 'sessionStorage.setItem("sourcesOpenGroups"' in template
+    assert 'details.open = openGroups.includes(key)' in template
+
+
 def test_sources_page_groups_distill_raw_sources_by_creator(tmp_path, monkeypatch):
     """原始资料页应在博主蒸馏下按平台/博主名分组展示 RawSource"""
     from app.models import CandidateItem, RawSource
@@ -996,8 +1042,11 @@ def test_create_creator_wiki_aggregates_raw_sources(tmp_path, monkeypatch):
         assert page.page_type == "creator"
         assert page.title == "博主分析：大牙大"
         assert "creator:douyin:abc123" in page.tags_json
-        assert "高赞作品" in Path(page.markdown_path).read_text(encoding="utf-8")
-        assert "最新与高赞差异" in Path(page.markdown_path).read_text(encoding="utf-8")
+        markdown = Path(page.markdown_path).read_text(encoding="utf-8")
+        assert "高赞作品" in markdown
+        assert "最新与高赞差异" in markdown
+        assert "高赞作品逐字稿" not in markdown
+        assert "最新作品逐字稿" not in markdown
         assert payload["source_count"] == 2
     finally:
         app.dependency_overrides.clear()
@@ -1015,7 +1064,8 @@ def test_create_creator_wiki_uses_llm_when_configured(tmp_path, monkeypatch):
 
         async def chat(self, messages, model, temperature=0.2):
             assert "人设" in messages[-1]["content"]
-            assert "高赞作品逐字稿" in messages[-1]["content"]
+            assert "高赞作品逐字稿" not in messages[-1]["content"]
+            assert "## 逐字稿" not in messages[-1]["content"]
             return "## 人设\n模型生成的人设分析\n\n## 商业价值\n模型生成的商业价值"
 
     monkeypatch.setattr(
@@ -1105,6 +1155,58 @@ def test_creator_wiki_page_has_creator_scoped_question_marker():
     assert 'name="creator_key"' in template
     assert "selected_creator_key" in template
     assert "只能基于该博主资料回答" in template
+
+
+def test_creator_wiki_and_sources_use_structured_layout_classes():
+    """博主原始资料和知识库页面应有结构化排版容器，避免文字堆叠"""
+    sources_template = open("app/templates/sources.html", encoding="utf-8").read()
+    wiki_template = open("app/templates/wiki.html", encoding="utf-8").read()
+    css = open("app/static/css/v3-design-system.css", encoding="utf-8").read()
+
+    assert "creator-source-folder-head" in sources_template
+    assert "creator-source-summary-grid" in sources_template
+    assert "creator-wiki-article" in wiki_template
+    assert "creator-analysis-layout" in css
+    assert "creator-source-ref-list" in css
+    assert "wiki-markdown" in css
+
+
+def test_creator_wiki_sources_are_collapsed_and_transcript_hidden():
+    """知识库博主页的作品列表默认折叠，页面分析里不展示逐字稿片段"""
+    wiki_template = open("app/templates/wiki.html", encoding="utf-8").read()
+    service = open("app/services/wiki_service.py", encoding="utf-8").read()
+
+    assert '<details class="creator-source-ref-list"' in wiki_template
+    assert "<summary>作品列表" in wiki_template
+    creator_markdown_builder = service.split("async def _creator_analysis_markdown", 1)[1].split("def _format_creator_analysis_body", 1)[0]
+    assert "片段：" not in creator_markdown_builder
+    assert "逐字稿" not in creator_markdown_builder
+
+
+def test_creator_analysis_strips_transcript_sections_from_generated_text():
+    """模型输出里若夹带逐字稿章节，落盘前应删掉整段逐字稿内容"""
+    from app.services.wiki_service import WikiMaintenanceService
+
+    dirty = """## 人设
+正常分析
+
+## 逐字稿
+链接解析结果 链接地址：https://www.douyin.com/video/1
+片段：这些原始内容不该进知识库
+完整视频口播逐字稿（原文完整保留）
+更多原始正文
+
+## 商业价值
+可合作方向明确"""
+
+    cleaned = WikiMaintenanceService(None)._strip_transcript_sections(dirty)
+
+    assert "## 人设" in cleaned
+    assert "## 商业价值" in cleaned
+    assert "链接解析结果" not in cleaned
+    assert "片段：" not in cleaned
+    assert "完整视频口播" not in cleaned
+    assert "更多原始正文" not in cleaned
 
 
 def test_creator_wiki_section_ignores_non_creator_page_id(tmp_path, monkeypatch):

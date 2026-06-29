@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.connectors.doubao_extractor import PROMPTS, DoubaoExtractor, normalize_content_type
-from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem
+from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem, WikiPage
 
 
 def make_session():
@@ -112,6 +112,66 @@ def test_doubao_prompts_use_one_universal_template():
     assert "纯文字" in universal_prompt or "文章" in universal_prompt
     assert "不要只" in universal_prompt
     assert "链接：{url}" in universal_prompt
+
+
+def test_extract_selected_creator_candidate_auto_updates_creator_wiki(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", FakeDoubaoExtractor)
+
+    class Provider:
+        provider_name = "mock"
+
+        async def chat(self, messages, model, temperature=0.2):
+            return "## 人设\n自动生成的人设分析\n\n## 最新与高赞差异\n高赞更偏教程"
+
+    monkeypatch.setattr(
+        "app.services.wiki_service.get_provider_runtime",
+        lambda provider_id=None, model=None: (Provider(), "mock-model", {"api_style": "mock"}),
+    )
+    db = make_session()
+    candidate = CandidateItem(
+        source_type="distill_profile",
+        platform="douyin",
+        external_item_id="7380000112233",
+        canonical_url="https://www.douyin.com/video/7380000112233",
+        raw_url="https://www.douyin.com/video/7380000112233",
+        title="博主教程作品",
+        author="大牙大",
+        content_type="video",
+        metadata_json=json.dumps(
+            {
+                "creator_key": "douyin:creator-1",
+                "creator_name": "大牙大",
+                "creator_bucket": "top_liked",
+            },
+            ensure_ascii=False,
+        ),
+        status="pending_classification",
+    )
+    db.add(candidate)
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post("/api/doubao/extract-selected", json={"candidate_ids": [candidate.id]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["items"][0]["wiki_page_id"]
+        assert body["creator_wiki_pages"] == [{"creator_key": "douyin:creator-1", "wiki_page_id": body["items"][0]["wiki_page_id"], "creator_name": "大牙大"}]
+        assert db.query(RawSource).count() == 1
+        page = db.query(WikiPage).one()
+        assert page.page_type == "creator"
+        markdown = open(page.markdown_path, encoding="utf-8").read()
+        assert "自动生成的人设分析" in markdown
+    finally:
+        app.dependency_overrides.clear()
+
 
 
 def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monkeypatch):

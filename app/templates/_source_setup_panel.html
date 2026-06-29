@@ -79,9 +79,9 @@
 
     {% for kind in ["history", "incremental"] %}
     <div class="source-collection-panel{{ '' if kind == 'history' else ' is-hidden' }}" data-source-filter data-platform="{{ preset.platform }}" data-collection-kind="{{ kind }}" data-homepage-url="{{ connection.homepage_url or '' }}"{{ ' hidden' if kind != 'history' else '' }}>
-      <div class="source-filter-controls">
+      <div class="source-filter-controls source-filter-controls--scan" data-filter-controls>
         {% if kind == "history" %}
-        <label>采集数量
+        <label data-history-scan-control>采集数量
           <select data-filter-limit>
             <option value="5">5 条</option>
             <option value="10" selected>10 条</option>
@@ -91,17 +91,17 @@
             <option value="all">所有</option>
           </select>
         </label>
-        <button class="btn primary" type="button" data-filter-scan>扫描标题</button>
+        <button class="btn primary" type="button" data-filter-scan data-history-scan-control>扫描标题</button>
         {% else %}
         <button class="btn primary" type="button" data-filter-scan>采集新增收藏</button>
         {% endif %}
-        <button class="btn secondary" type="button" data-filter-classify disabled>AI 分类</button>
+        <button class="btn secondary" type="button" data-filter-classify disabled{% if kind == "history" %} data-history-scan-control{% endif %}>AI 分类</button>
         {% if kind == "history" %}
-        <button class="btn secondary" type="button" data-filter-save-history hidden>保存历史收藏</button>
-        <button class="btn secondary" type="button" data-filter-rescan-history hidden>重新扫描历史</button>
+        <button class="btn secondary" type="button" data-filter-save-history data-history-scan-control hidden>保存历史收藏</button>
+        <button class="btn secondary" type="button" data-filter-rescan-history data-history-saved-control hidden>重新扫描历史</button>
         {% endif %}
-        <button class="btn primary" type="button" data-filter-extract disabled>仅提取我勾选的内容</button>
-        <button class="btn primary" type="button" data-filter-resume hidden>我已完成验证，继续</button>
+        <button class="btn primary" type="button" data-filter-extract disabled{% if kind == "history" %} data-history-saved-control{% endif %}>仅提取我勾选的内容</button>
+        <button class="btn primary" type="button" data-filter-resume{% if kind == "history" %} data-history-saved-control{% endif %} hidden>我已完成验证，继续</button>
       </div>
 
       <div class="source-filter-toolbar" data-filter-toolbar hidden>

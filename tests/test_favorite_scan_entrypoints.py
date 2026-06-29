@@ -963,6 +963,56 @@ def test_scan_titles_persists_scan_entries_and_returns_collection_kind(monkeypat
         app.dependency_overrides.clear()
 
 
+def test_scan_titles_history_request_can_extend_existing_history_scan(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    items = [
+        ConnectorItem(
+            raw_url=f"https://www.xiaohongshu.com/explore/{index:024x}",
+            title=f"历史笔记{index}",
+            platform="xiaohongshu",
+            content_type="note",
+            metadata={"source": "test"},
+        )
+        for index in range(20)
+    ]
+    calls = []
+
+    async def fake_extract(url=None, limit=None):
+        calls.append(limit)
+        return items[:limit]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        first = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 10, "homepage_url": favorites_url, "collection_kind": "history"},
+        )
+        assert first.status_code == 200
+        assert first.json()["collection_kind"] == "history"
+        assert first.json()["total"] == 10
+
+        second = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 20, "homepage_url": favorites_url, "collection_kind": "history"},
+        )
+        body = second.json()
+        assert second.status_code == 200
+        assert calls == [10, 20]
+        assert body["collection_kind"] == "history"
+        assert body["total"] == 20
+        assert db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu", ScanEntry.collection_kind == "history").count() == 20
+    finally:
+        app.dependency_overrides.clear()
+
+
+
 def test_scan_titles_second_scan_is_incremental_and_dedups(monkeypatch):
     db = make_session()
 
@@ -1001,17 +1051,29 @@ def test_scan_titles_second_scan_is_incremental_and_dedups(monkeypatch):
         )
         assert first.json()["collection_kind"] == "history"
 
-        # 第二次：返回 A+B，但 A 已见 → 只剩 B，kind=incremental
-        state["items"] = [item_a, item_b]
+        # 第二次：真实收藏页从最新到最旧返回 B+A；遇到 A 这个已见边界后停止，只保留 B。
+        state["items"] = [item_b, item_a]
         second = client.post(
             "/api/sync/scan-titles",
-            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url, "collection_kind": "incremental"},
         )
         body = second.json()
         assert body["collection_kind"] == "incremental"
         assert body["total"] == 1
         assert body["items"][0]["title"] == "新增笔记B"
         assert body["items"][0]["collection_kind"] == "incremental"
+        assert body["boundary_hit"] is True
+
+        # 第三次：B 也已见，扫描到 B 就停止，不再展示 B 或更旧的历史 A。
+        third = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url, "collection_kind": "incremental"},
+        )
+        third_body = third.json()
+        assert third_body["collection_kind"] == "incremental"
+        assert third_body["total"] == 0
+        assert third_body["items"] == []
+        assert third_body["boundary_hit"] is True
 
         # DB 现在两条
         entries = {e.external_item_id for e in db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").all()}
@@ -1109,7 +1171,7 @@ def test_save_history_endpoint_sets_flag_and_returns_count(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_reset_history_endpoint_clears_flag_and_first_scan_done_and_keeps_rows(monkeypatch):
+def test_reset_history_endpoint_clears_flag_first_scan_done_and_history_rows(monkeypatch):
     db = make_session()
 
     def override_get_db():
@@ -1146,14 +1208,13 @@ def test_reset_history_endpoint_clears_flag_and_first_scan_done_and_keeps_rows(m
         assert body["status"] == "reset"
         assert body["history_saved"] is False
 
-        # flag + first_scan_done 都被清；ScanEntry 行保留
+        # flag + first_scan_done 都被清；历史 ScanEntry 行清空，重新扫描从干净历史集合开始
         db.expire_all()
         connector = db.query(Connector).filter(Connector.platform == "xiaohongshu").first()
         assert connector is not None
         assert connector.history_saved is False
         assert connector.first_scan_done is False
-        after_rows = db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").count()
-        assert after_rows == before_rows
+        assert db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu", ScanEntry.collection_kind == "history").count() == 0
     finally:
         app.dependency_overrides.clear()
 

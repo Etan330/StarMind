@@ -73,7 +73,7 @@
       {% endfor %}
     </div>
   </aside>
-  <article class="glass-card wiki-reader">
+  <article class="glass-card wiki-reader {{ 'creator-wiki-article' if selected_creator_key else '' }}">
     {% if selected_page %}
       <div class="doc-title-row"><span>▣</span><h2>{{ selected_page.title }}</h2></div>
       <div class="doc-meta-row">
@@ -120,8 +120,8 @@
         </section>
       {% endif %}
       {% if selected_creator_sources %}
-        <section class="creator-source-ref-list">
-          <h3>作品列表</h3>
+        <details class="creator-source-ref-list">
+          <summary>作品列表 <span>{{ selected_creator_sources | length }} 条</span></summary>
           <div class="compact-list">
             {% for source in selected_creator_sources %}
               <a class="source-ref-link" href="/ui/sources?source_id={{ source.id }}">
@@ -130,7 +130,7 @@
               </a>
             {% endfor %}
           </div>
-        </section>
+        </details>
       {% endif %}
       <div class="markdown-body wiki-markdown">{{ selected_markdown_html | safe }}</div>
     {% else %}
