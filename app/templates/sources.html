@@ -32,7 +32,7 @@
 <section class="raw-source-layout">
   <div class="source-groups">
     <article class="source-group glass-card" data-source-group="favorites">
-      <details open>
+      <details open data-source-group-key="favorites">
         <summary><span>收藏夹<small>点击展开 / 收起</small></span><b>{{ favorite_sources | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
           {% for source in favorite_sources %}
@@ -52,14 +52,14 @@
     </article>
 
     <article class="source-group glass-card" data-source-group="links">
-      <details>
+      <details data-source-group-key="links">
         <summary><span>用户贴的链接<small>点击展开 / 收起</small></span><b>{{ link_items | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
-          {% for item in link_items %}
-            <div class="source-line source-line-static" data-expand-item data-source-no-nav>
-              <strong>{{ item.title }}</strong>
-              <span>{{ item.platform }} · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
-            </div>
+          {% for source in link_items %}
+            <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-expand-item data-source-select-link>
+              <strong>{{ source.title }}</strong>
+              <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+            </a>
           {% else %}
             {{ ui.empty_state("还没有单独导入的链接", "用导入链接功能加入第一条。") }}
           {% endfor %}
@@ -69,14 +69,14 @@
     </article>
 
     <article class="source-group glass-card" data-source-group="ideas">
-      <details>
+      <details data-source-group-key="ideas">
         <summary><span>临时 idea<small>点击展开 / 收起</small></span><b>{{ idea_items | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
-          {% for item in idea_items %}
-            <div class="source-line source-line-static" data-expand-item data-source-no-nav>
-              <strong>{{ item.title }}</strong>
-              <span>手动录入 · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
-            </div>
+          {% for source in idea_items %}
+            <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-expand-item data-source-select-link>
+              <strong>{{ source.title }}</strong>
+              <span>手动录入 · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+            </a>
           {% else %}
             {{ ui.empty_state("还没有手动想法", "用记录想法功能把临时 idea 写进来。") }}
           {% endfor %}
@@ -86,11 +86,11 @@
     </article>
 
     <article class="source-group glass-card" data-source-group="distill">
-      <details>
+      <details data-source-group-key="distill">
         <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_creator_groups | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
           {% for group in distill_creator_groups %}
-            <details class="source-line-wrapper creator-source-folder" data-expand-item>
+            <details class="source-line-wrapper creator-source-folder" data-expand-item data-source-group-key="creator:{{ group.creator_key }}">
               <summary class="source-line creator-source-folder-head">
                 <div>
                   <strong>{{ group.creator_name }}</strong>
@@ -202,17 +202,38 @@
 
   document.addEventListener('change', (e) => { if (e.target.classList.contains('batch-checkbox')) updateCount(); });
 
+  const sourceGroupDetails = Array.from(document.querySelectorAll('details[data-source-group-key]'));
+  const getOpenSourceGroups = () => sourceGroupDetails
+    .filter((details) => details.open)
+    .map((details) => details.dataset.sourceGroupKey);
+  const saveSourceViewState = () => {
+    sessionStorage.setItem("sourcesScrollY", String(window.scrollY || 0));
+    sessionStorage.setItem("sourcesOpenGroups", JSON.stringify(getOpenSourceGroups()));
+  };
+  try {
+    const openGroups = JSON.parse(sessionStorage.getItem("sourcesOpenGroups") || "[]");
+    sourceGroupDetails.forEach((details) => {
+      const key = details.dataset.sourceGroupKey;
+      if (key) details.open = openGroups.includes(key) || details.open;
+    });
+  } catch (error) {
+    sessionStorage.removeItem("sourcesOpenGroups");
+  }
+  sourceGroupDetails.forEach((details) => {
+    details.addEventListener("toggle", () => {
+      sessionStorage.setItem("sourcesOpenGroups", JSON.stringify(getOpenSourceGroups()));
+    });
+  });
   const savedScrollY = Number(sessionStorage.getItem("sourcesScrollY") || 0);
   if (savedScrollY > 0) {
     requestAnimationFrame(() => window.scrollTo(0, savedScrollY));
   }
   document.querySelectorAll('[data-source-select-link]').forEach((link) => {
-    link.addEventListener('click', () => {
-      sessionStorage.setItem("sourcesScrollY", String(window.scrollY || 0));
-    });
+    link.addEventListener('click', saveSourceViewState);
   });
 
   // Expand/collapse
+
   document.querySelectorAll("[data-expand-list]").forEach((list) => {
     const items = Array.from(list.querySelectorAll("[data-expand-item]"));
     const button = list.parentElement.querySelector("[data-expand-button]");

@@ -2530,6 +2530,8 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
         candidate = db.get(CandidateItem, source.candidate_id) if source.candidate_id else None
         source.title = raw_service.display_title_for_source(source, candidate)
     favorite_sources = [source for source in sources if source.source_type not in {"passive_link", "manual_idea", "distill_profile"}]
+    link_items = [source for source in sources if source.source_type == "passive_link"]
+    idea_items = [source for source in sources if source.source_type == "manual_idea"]
     distill_sources = [source for source in sources if source.source_type == "distill_profile"]
     distill_creator_groups: dict[str, dict[str, Any]] = {}
     for source in distill_sources:
@@ -2560,8 +2562,6 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
         key=lambda group: max((source.created_at for source in group["sources"]), default=datetime.min),
         reverse=True,
     )
-    link_items = db.query(CandidateItem).filter(CandidateItem.source_type == "passive_link").order_by(CandidateItem.created_at.desc()).all()
-    idea_items = db.query(CandidateItem).filter(CandidateItem.source_type == "manual_idea").order_by(CandidateItem.created_at.desc()).all()
     source_id = request.query_params.get("source_id")
     selected_source = db.get(RawSource, int(source_id)) if source_id and source_id.isdigit() else (sources[0] if sources else None)
     if selected_source:
