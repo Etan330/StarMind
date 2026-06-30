@@ -230,11 +230,11 @@ def test_sync_favorites_page_renders_live_platform_tabbar():
         # 顶部平台标签栏 + 内联面板宿主
         assert "data-platform-tabs" in text
         assert "data-platform-panel-host" in text
-        # 三个可执行平台各有标签
+        # 顶部只保留已开通同步收藏路径的平台入口
         assert 'data-platform-tab="douyin"' in text
         assert 'data-platform-tab="xiaohongshu"' in text
-        assert 'data-platform-tab="bilibili"' in text
-        # 未接入平台不上标签（TikTok 只在下方降级列表）
+        assert 'data-platform-tab="bilibili"' not in text
+        # 未开通平台不上标签（B站/TikTok 只在下方列表）
         assert 'data-platform-tab="tiktok"' not in text
         # 默认平台 = 抖音（排序后首位）
         assert 'data-default-platform="douyin"' in text

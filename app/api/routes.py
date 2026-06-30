@@ -380,11 +380,11 @@ FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
         "workflow": "打开官网 → 登录小红书 → 自动进入收藏页 → 扫描标题并预筛选",
     },
     "bilibili": {
-        "status_label": "可执行同步",
-        "status_tone": "success",
-        "support_level": "live",
-        "capability": "保存 B站收藏夹链接后，可扫描收藏标题并进入筛选提取流程。",
-        "workflow": "保存收藏夹链接 → 扫描标题并预筛选 → 勾选提取",
+        "status_label": "待接入",
+        "status_tone": "neutral",
+        "support_level": "planned",
+        "capability": "暂时只作为收藏来源展示，不进入同步收藏顶部实现区。",
+        "workflow": "等待 B站解析器接入",
     },
 }
 
@@ -2113,7 +2113,7 @@ def guide_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/ui/sync", response_class=HTMLResponse)
 def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
     cards = favorite_platform_cards(db)
-    live_platforms = [card for card in cards if card["support_level"] == "live" and card["platform"] in {"douyin", "xiaohongshu", "bilibili"}]
+    live_platforms = [card for card in cards if card["support_level"] == "live" and card["platform"] in {"douyin", "xiaohongshu"}]
     planned_platforms = [card for card in cards if card["support_level"] != "live"]
     mode = str(request.query_params.get("mode") or "sync").strip()
     if mode not in {"sync", "link", "creator", "idea"}:
