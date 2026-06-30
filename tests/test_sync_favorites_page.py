@@ -255,27 +255,28 @@ def test_source_setup_history_controls_expose_saved_state_hooks():
 
         assert panel.status_code == 200
         text = panel.text
-        history_panel = re.search(
-            r'data-collection-kind="history".*?(?=data-collection-kind="incremental")',
-            text,
-            flags=re.S,
-        )
-        assert history_panel is not None
-        html = history_panel.group(0)
-        assert "data-filter-limit" in html
-        assert "data-filter-scan" in html
-        assert "data-filter-classify" in html
-        assert "data-filter-save-history" in html
-        assert "data-filter-rescan-history" in html
+        start = text.index('data-collection-kind="history"')
+        panel_start = text.rfind('<div class="source-collection-panel', 0, start)
+        panel_end = text.find('</div>\n    </div>', start)
+        assert panel_start >= 0
+        assert panel_end > panel_start
+        html = text[panel_start:panel_end]
+        assert "data-filter-limit" not in html
+        assert "data-filter-scan" not in html
+        assert "data-filter-classify" not in html
+        assert "data-filter-save-history" not in html
+        assert "data-filter-rescan-history" not in html
+        assert "data-filter-clear-history" in html
+        assert "清空当前收藏列表" in html
         assert "仅提取我勾选的内容" in html
-        assert "我已完成验证，继续" in html
-        assert "data-history-scan-control" in html
-        assert "data-history-saved-control" in html
+        assert "data-filter-resume" not in html
+        assert "我已完成验证，继续" not in html
+        assert "data-filter-ingested" in html
     finally:
         app.dependency_overrides.clear()
 
 
-def test_source_setup_history_saved_layout_hooks_are_available():
+def test_source_setup_extract_polling_layout_hooks_are_available():
     app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
     css = (ROOT / "app" / "static" / "css" / "v3-design-system.css").read_text(encoding="utf-8")
 
@@ -283,9 +284,10 @@ def test_source_setup_history_saved_layout_hooks_are_available():
     assert "source-filter-controls--saved" in css
     assert "source-filter-controls--scan" in app_js
     assert "source-filter-controls--scan" in css
-    assert "show(resumeButton, true)" in app_js
-    assert "show(resumeButton, false)" in app_js
-    assert "show(extractButton, true)" in app_js
+    assert "pollExtractJob" in app_js
+    assert "showExtractPauseDialog" in app_js
+    assert "extract-overlay" in css
+    assert "extract-item-list" in css
 
 
 

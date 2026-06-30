@@ -422,7 +422,7 @@ def test_xiaohongshu_diandian_extract_selected_failure_does_not_block_later_item
     FakeDiandianExtractor.calls = []
     FakeDiandianExtractor.close_calls = []
     FakeDiandianExtractor.results = [
-        FakeDiandianResult(success=False, error="xiaohongshu_diandian_unhelpful_response", attempts=2, retried=True),
+        FakeDiandianResult(success=False, error="low_quality_response", attempts=2, retried=True),
         FakeDiandianResult(url="https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bd2"),
     ]
     db = make_session()
@@ -444,10 +444,10 @@ def test_xiaohongshu_diandian_extract_selected_failure_does_not_block_later_item
         assert db.query(RawSource).count() == 1
         assert body["items"][0]["attempts"] == 2
         assert body["items"][0]["retried"] is True
-        assert body["items"][0]["error"] == "xiaohongshu_diandian_unhelpful_response"
+        assert body["items"][0]["error"] == "low_quality_response"
         assert body["items"][1]["success"] is True
         metadata = json.loads(db.get(CandidateItem, first.id).metadata_json)
-        assert metadata["xiaohongshu_diandian_error"] == "xiaohongshu_diandian_unhelpful_response"
+        assert metadata["xiaohongshu_diandian_error"] == "low_quality_response"
     finally:
         app.dependency_overrides.clear()
 

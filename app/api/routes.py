@@ -380,11 +380,11 @@ FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
         "workflow": "打开官网 → 登录小红书 → 自动进入收藏页 → 扫描标题并预筛选",
     },
     "bilibili": {
-        "status_label": "待接入",
-        "status_tone": "neutral",
-        "support_level": "planned",
-        "capability": "暂时只作为收藏来源展示，不进入同步收藏顶部实现区。",
-        "workflow": "等待 B站解析器接入",
+        "status_label": "可执行同步",
+        "status_tone": "success",
+        "support_level": "live",
+        "capability": "保存 B站收藏夹链接后，可扫描收藏标题并进入筛选提取流程。",
+        "workflow": "保存收藏夹链接 → 扫描标题并预筛选 → 勾选提取",
     },
 }
 
@@ -1196,6 +1196,383 @@ def _filter_pending_candidates(db: Session, candidate_ids: list[Any], platform: 
     return next_pending(metas, platform)
 
 
+# --- 批量提取共用骨架（豆包/点点）：逐条 per_item 状态 + 异步轮询支撑 ---
+
+# 逐条状态机：待提取 → 提取中 → 已入库 / 失败 / 需登录。前端据此渲染徽章。
+ITEM_PENDING = "pending"
+ITEM_EXTRACTING = "extracting"
+ITEM_INGESTED = "ingested"
+ITEM_FAILED = "failed"
+ITEM_NEEDS_LOGIN = "needs_login"
+
+
+def _init_extract_job(job_id: str, candidate_ids: list[Any], platform: str, pending: list[int]) -> dict[str, Any]:
+    """新建/复用 job dict，确保 §2.3 的逐条字段齐备（续跑时补齐缺失键）。
+
+    per_item 以 candidate_id(str) 为键；首次见到的 pending 条目初始化为 ITEM_PENDING。
+    已完成（不在 pending 里）的条目若 job 里没有记录，标记为 ITEM_INGESTED 占位，
+    使 job-status 的 items 顺序覆盖全部 candidate_ids。
+    """
+    ids = [int(c) for c in candidate_ids if str(c).strip()]
+    job = DOUBAO_EXTRACT_JOBS.setdefault(
+        job_id,
+        {
+            "platform": platform,
+            "candidate_ids": ids,
+            "status": "running",
+            "paused_reason": None,
+            "error": None,
+            "total": len(ids),
+            "current_index": 0,
+            "per_item": {},
+            "done_ids": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "items": [],
+            "message": None,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    # 续跑：合并新传入的 candidate_ids（保持原顺序，去重），补齐缺失字段。
+    if ids and ids != job.get("candidate_ids"):
+        job["candidate_ids"] = ids
+    job.setdefault("per_item", {})
+    job.setdefault("done_ids", [])
+    job.setdefault("items", [])
+    job["platform"] = platform
+    job["total"] = len(job["candidate_ids"])
+    job["status"] = "running"
+    job["paused_reason"] = None
+    job["error"] = None
+    job["message"] = None
+    pending_set = {int(c) for c in pending}
+    for cid in job["candidate_ids"]:
+        key = str(cid)
+        if cid in pending_set:
+            # 未完成条目（含续跑剩余）重置为待提取，清掉上轮的失败/需登录态。
+            existing = job["per_item"].get(key) or {}
+            if existing.get("status") != ITEM_INGESTED:
+                job["per_item"][key] = {"candidate_id": cid, "status": ITEM_PENDING, "title": existing.get("title"), "preview": None, "error": None}
+        elif key not in job["per_item"]:
+            # 已提取但本 job 无记录（重启/换 extractor 续跑）→ 占位为已入库。
+            job["per_item"][key] = {"candidate_id": cid, "status": ITEM_INGESTED, "title": None, "preview": None, "error": None}
+    return job
+
+
+def _set_item_status(job: dict[str, Any], candidate_id: int, status: str, **fields: Any) -> None:
+    """更新 job["per_item"][cid] 的状态与附加字段（title/preview/error）。"""
+    key = str(candidate_id)
+    item = job.setdefault("per_item", {}).setdefault(key, {"candidate_id": candidate_id, "status": ITEM_PENDING, "title": None, "preview": None, "error": None})
+    item["status"] = status
+    for name, value in fields.items():
+        item[name] = value
+
+
+def build_extract_args(db: Session, candidate: CandidateItem, platform: str) -> dict[str, Any]:
+    """构造调用 extractor.extract_content 的入参（平台差异点之一）。
+
+    豆包：url（raw_url 优先）+ content_type（默认 auto）。
+    点点：share_text（必填，由分享文案构造）+ url + content_type（默认 note）。
+    """
+    if platform == "doubao":
+        return {
+            "url": candidate.raw_url or candidate.canonical_url,
+            "content_type": candidate.content_type or "auto",
+        }
+    share_text, share_url = xiaohongshu_share_text_for_candidate(candidate)
+    return {
+        "share_text": share_text,
+        "url": share_url or candidate.raw_url or candidate.canonical_url,
+        "content_type": candidate.content_type or "note",
+        "_share_text": share_text,
+        "_share_url": share_url,
+    }
+
+
+# 平台差异封装：metadata 键前缀、失败 ledger label、人机验证/登录失效 error 串、是否回写标题。
+_EXTRACT_PLATFORM_SPEC: dict[str, dict[str, Any]] = {
+    "doubao": {
+        "extractor_module": "app.connectors.doubao_extractor",
+        "extractor_class": "DoubaoExtractor",
+        "prompt_version_attr": "DOUBAO_PROMPT_VERSION",
+        "meta_prefix": "doubao",
+        "failed_label": "doubao_failed",
+        "human_verification_error": "doubao_human_verification_required",
+        "login_required_error": "doubao_login_required",
+        "writes_title": True,
+        "sets_knowledge_label": False,
+        "verification_message": "检测到豆包人机验证。请在已打开的豆包页面完成验证，然后点「我已完成，继续」继续提取剩余条目。",
+        "login_message": "豆包登录状态失效。请在豆包页面重新登录后，点「我已完成，继续」继续提取剩余条目。",
+    },
+    "xiaohongshu_diandian": {
+        "extractor_module": "app.connectors.xiaohongshu_diandian_extractor",
+        "extractor_class": "XiaohongshuDiandianExtractor",
+        "prompt_version_attr": "DIANDIAN_PROMPT_VERSION",
+        "meta_prefix": "xiaohongshu_diandian",
+        "failed_label": "xiaohongshu_diandian_failed",
+        "human_verification_error": "xiaohongshu_diandian_human_verification_required",
+        "login_required_error": "xiaohongshu_diandian_not_ready",
+        "writes_title": False,
+        "sets_knowledge_label": True,
+        "verification_message": "检测到小红书点点人机验证。请在已打开的点点页面完成验证，然后点「我已完成，继续」继续提取剩余条目。",
+        "login_message": "小红书点点页面未就绪。请在点点页面重新登录/打开后，点「我已完成，继续」继续提取剩余条目。",
+    },
+}
+
+
+def _resolve_prompt_version(platform: str) -> str:
+    spec = _EXTRACT_PLATFORM_SPEC[platform]
+    import importlib
+
+    module = importlib.import_module(spec["extractor_module"])
+    return str(getattr(module, spec["prompt_version_attr"], ""))
+
+
+async def _run_extraction_job(
+    job_id: str,
+    candidate_ids: list[Any],
+    platform: str,
+    extractor: Any,
+    *,
+    db: Session,
+    per_item_timeout: int,
+    switch_every: int,
+    delay_min: float,
+    delay_max: float,
+    generate_wiki_draft: bool,
+) -> dict[str, Any]:
+    """豆包/点点共用的提取主循环（预检已在端点完成）。
+
+    全程维护 job["per_item"] 实时状态，使 GET /api/extract/job-status 可并发轮询。
+    返回端点要回传的 completed/paused 结果字典；顶层异常写 job["status"]="error"。
+    """
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    spec = _EXTRACT_PLATFORM_SPEC[platform]
+    prefix = spec["meta_prefix"]
+    prompt_version = _resolve_prompt_version(platform)
+    job = DOUBAO_EXTRACT_JOBS[job_id]
+    keep_tab_open = False
+
+    raw_service = RawSourceService(db)
+    wiki_service = WikiMaintenanceService(db)
+    items: list[dict[str, Any]] = []
+    successful_raw_sources: list[RawSource] = []
+    success_count = 0
+    failed_count = 0
+    paused = False
+    pause_reason: str | None = None
+    try:
+        pending = _filter_pending_candidates(db, candidate_ids, platform)
+        job["total"] = len(job.get("candidate_ids") or pending)
+        for i, candidate_id in enumerate(pending):
+            job["current_index"] = i
+            if i > 0 and i % switch_every == 0:
+                try:
+                    await extractor.start_new_conversation()
+                except Exception:
+                    pass
+            candidate = db.get(CandidateItem, candidate_id)
+            if candidate is None:
+                failed_count += 1
+                _set_item_status(job, candidate_id, ITEM_FAILED, error="candidate_not_found")
+                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
+                continue
+
+            _set_item_status(job, candidate_id, ITEM_EXTRACTING, title=candidate.title)
+            extract_args = build_extract_args(db, candidate, platform)
+            share_text = extract_args.pop("_share_text", "")
+            share_url = extract_args.pop("_share_url", "")
+            try:
+                result = await extractor.extract_content(**extract_args, timeout_seconds=per_item_timeout)
+            except _CDPErr as exc:
+                failed_count += 1
+                _set_item_status(job, candidate.id, ITEM_FAILED, error=str(exc))
+                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
+                continue
+
+            attempts = int(getattr(result, "attempts", 1) or 1)
+            retried = bool(getattr(result, "retried", False))
+            content = str(result.transcript or result.text_content or "").strip()
+
+            if not result.success or not content:
+                # 人机验证 / 登录失效：保留进度、暂停、break，由前端续跑。
+                if result.error == spec["human_verification_error"]:
+                    keep_tab_open = True
+                    paused = True
+                    pause_reason = "human_verification"
+                    _set_item_status(job, candidate.id, ITEM_NEEDS_LOGIN, error=result.error)
+                    break
+                if result.error == spec["login_required_error"]:
+                    keep_tab_open = True
+                    paused = True
+                    pause_reason = "login_required" if platform == "doubao" else "not_ready"
+                    _set_item_status(job, candidate.id, ITEM_NEEDS_LOGIN, error=result.error)
+                    break
+                # 普通失败（含低质量回绝）：记 metadata、置失败、继续。
+                failed_count += 1
+                metadata = safe_json(candidate.metadata_json)
+                fail_meta = {
+                    f"{prefix}_extracted": False,
+                    f"{prefix}_error": result.error or "empty_response",
+                    f"{prefix}_prompt": str(getattr(result, "prompt", "") or ""),
+                    f"{prefix}_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                }
+                if platform == "xiaohongshu_diandian":
+                    fail_meta.update({
+                        f"{prefix}_share_text": share_text,
+                        f"{prefix}_share_url": share_url,
+                        f"{prefix}_attempts": attempts,
+                        f"{prefix}_retried": retried,
+                    })
+                metadata.update(fail_meta)
+                candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+                if ledger:
+                    ledger.classification_label = spec["failed_label"]
+                db.commit()
+                _set_item_status(job, candidate.id, ITEM_FAILED, error=result.error or "empty_response")
+                fail_item = {"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response"}
+                if platform == "xiaohongshu_diandian":
+                    fail_item.update({"attempts": attempts, "retried": retried})
+                items.append(fail_item)
+                if i < len(pending) - 1:
+                    await asyncio.sleep(random.uniform(delay_min, delay_max))
+                continue
+
+            # 成功：写 metadata（含 extract_prompt_version）→ 入库 → mark_extracted。
+            metadata = safe_json(candidate.metadata_json)
+            prompt = str(getattr(result, "prompt", "") or "")
+            success_meta = {
+                "transcript": content,
+                "content": content,
+                "page_text": content,
+                f"{prefix}_extracted": True,
+                f"{prefix}_error": None,
+                f"{prefix}_prompt": prompt,
+                f"{prefix}_extracted_at": datetime.now().isoformat(timespec="seconds"),
+                f"{prefix}_response_length": len(content),
+                f"{prefix}_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                "extract_prompt_version": prompt_version,
+            }
+            if platform == "xiaohongshu_diandian":
+                success_meta.update({
+                    f"{prefix}_share_text": share_text,
+                    f"{prefix}_share_url": share_url,
+                    f"{prefix}_attempts": attempts,
+                    f"{prefix}_retried": retried,
+                })
+            metadata.update(success_meta)
+            candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            if spec["writes_title"]:
+                candidate.title = result.title or candidate.title
+            db.commit()
+            raw_source = raw_service.ingest_candidate(candidate.id)
+            successful_raw_sources.append(raw_source)
+            ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+            if ledger and spec["sets_knowledge_label"]:
+                ledger.classification_label = "knowledge"
+                ledger.raw_source_id = raw_source.id
+                db.commit()
+            ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
+            wiki_page_id = None
+            if generate_wiki_draft:
+                page = await wiki_service.create_page_from_raw_source(raw_source.id)
+                wiki_page_id = page.page_id
+            success_count += 1
+            job["done_ids"].append(candidate.id)
+            preview = content_preview_payload(raw_source)
+            _set_item_status(job, candidate.id, ITEM_INGESTED, title=raw_source.title, preview=preview, error=None)
+            success_item = {
+                "candidate_id": candidate.id,
+                "success": True,
+                "raw_source_id": raw_source.id,
+                "wiki_page_id": wiki_page_id,
+                "title": raw_source.title,
+                "preview": preview,
+                "error": None,
+            }
+            if platform == "xiaohongshu_diandian":
+                success_item.update({"attempts": attempts, "retried": retried})
+            items.append(success_item)
+            if i < len(pending) - 1:
+                await asyncio.sleep(random.uniform(delay_min, delay_max))
+    except Exception as exc:  # noqa: BLE001 — 后台/await 路径异常须落 job，避免轮询永转。
+        job["status"] = "error"
+        job["error"] = str(exc)
+        try:
+            await extractor.close(close_tab=not keep_tab_open)
+        except Exception:
+            pass
+        return {"status": "error", "job_id": job_id, "error": str(exc), "items": items}
+    finally:
+        if job.get("status") != "error":
+            await extractor.close(close_tab=not keep_tab_open)
+
+    creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
+    job["success_count"] = job.get("success_count", 0) + success_count
+    job["failed_count"] = job.get("failed_count", 0) + failed_count
+    job["items"].extend(items)
+
+    if paused:
+        remaining = _filter_pending_candidates(db, job["candidate_ids"], platform)
+        reason = pause_reason or "human_verification"
+        message = spec["verification_message"] if reason == "human_verification" else spec["login_message"]
+        job["status"] = "paused"
+        job["paused_reason"] = reason
+        job["message"] = message
+        return {
+            "status": "paused",
+            "job_id": job_id,
+            "reason": reason,
+            "message": message,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "done": len(job["done_ids"]),
+            "pending_remaining": len(remaining),
+            "items": items,
+            "creator_wiki_pages": creator_wiki_pages,
+        }
+
+    job["status"] = "completed"
+    job["message"] = None
+    return {
+        "status": "completed",
+        "job_id": job_id,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "items": items,
+        "creator_wiki_pages": creator_wiki_pages,
+    }
+
+
+@router.get("/api/extract/job-status")
+async def extract_job_status(job_id: str):
+    job = DOUBAO_EXTRACT_JOBS.get(str(job_id or "").strip())
+    if not job:
+        raise HTTPException(status_code=404, detail="extract job not found")
+    candidate_ids = job.get("candidate_ids") or []
+    per_item = job.get("per_item") or {}
+    items = [per_item.get(str(cid), {"candidate_id": cid, "status": ITEM_PENDING, "title": None, "preview": None, "error": None}) for cid in candidate_ids]
+    status = job.get("status") or "running"
+    message = job.get("message")
+    if status == "paused" and not message:
+        message = "检测到登录或人机验证，已暂停。请在浏览器页面完成处理后继续。"
+    return {
+        "job_id": job_id,
+        "platform": job.get("platform"),
+        "status": status,
+        "paused_reason": job.get("paused_reason"),
+        "error": job.get("error"),
+        "total": job.get("total") or len(candidate_ids),
+        "current_index": job.get("current_index") or 0,
+        "items": items,
+        "success_count": job.get("success_count") or 0,
+        "failed_count": job.get("failed_count") or 0,
+        "message": message,
+    }
+
+
 async def process_candidate_ids(db: Session, candidate_ids: list[int], limit: int = 10) -> list[dict[str, Any]]:
     processed: list[dict[str, Any]] = []
     raw_service = RawSourceService(db)
@@ -1736,7 +2113,7 @@ def guide_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/ui/sync", response_class=HTMLResponse)
 def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
     cards = favorite_platform_cards(db)
-    live_platforms = [card for card in cards if card["support_level"] == "live" and card["platform"] in {"douyin", "xiaohongshu"}]
+    live_platforms = [card for card in cards if card["support_level"] == "live" and card["platform"] in {"douyin", "xiaohongshu", "bilibili"}]
     planned_platforms = [card for card in cards if card["support_level"] != "live"]
     mode = str(request.query_params.get("mode") or "sync").strip()
     if mode not in {"sync", "link", "creator", "idea"}:
@@ -3861,24 +4238,27 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     total_scanned = len(items)
     all_duplicates = requested_kind != "history" and total_scanned > 0 and fresh_count == 0
 
-    # 落库（DB 权威源）：历史 Tab 永远按历史请求处理，避免首次扫 10 条后再选 20/50/100 被误判为新增。
-    # 新增 Tab 从最新往旧扫，遇到 ScanEntry/SyncLedger 已见边界即停止。
+    # 落库（DB 权威源）：采集即并入历史——无论历史还是新增 Tab，collection_kind 一律落 "history"，
+    # 不再产生 incremental 行。新增 Tab 只是「本次扫描批次」的临时视图，靠 scan_run_id 在前端过滤。
+    # determine_kind 仍用于区分首扫（全量历史）vs 后续扫描（增量去重），不决定落库 kind。
     svc = ScanEntryService(db)
     stored_kind = svc.determine_kind(platform)
-    kind = "history" if requested_kind == "history" else stored_kind
+    # is_incremental 仅由本次请求的 Tab 决定：历史 Tab 可扩展重扫，新增 Tab 才遇已见即停；落库 kind 恒 history。
+    is_incremental = requested_kind == "incremental"
     boundary_hit = False
-    if requested_kind == "incremental" or kind == "incremental":
-        kind = "incremental"
+    if is_incremental:
         items, boundary_hit = svc.filter_incremental_until_boundary(platform, items)
     scan_run_id = f"scan_titles_{uuid4().hex[:8]}"
-    entries = svc.upsert_from_items(platform, items, kind, scan_run_id)
-    if kind == "history":
+    entries = svc.upsert_from_items(platform, items, "history", scan_run_id)
+    # 首扫（stored_kind==history）记录分界锚点；增量扫描不动锚点。
+    if stored_kind == "history" and requested_kind != "incremental":
         svc.record_boundary(platform, items)
 
     return {
         "items": entries,
         "total": len(entries),
-        "collection_kind": kind,
+        "collection_kind": "history",
+        "scan_run_id": scan_run_id,
         "boundary_hit": boundary_hit,
         "total_scanned": total_scanned,
         "all_duplicates": all_duplicates,
@@ -3934,6 +4314,29 @@ async def reset_history_favorites(request: Request, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
     ScanEntryService(db).reset_history(platform)
     return {"status": "reset", "history_saved": False}
+
+
+async def _clear_history_list_response(request: Request, db: Session) -> dict[str, Any]:
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    if not any(item["platform"] == platform for item in PLATFORM_PRESETS):
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    result = ScanEntryService(db).clear_history_list(platform)
+    return {"status": "cleared", "history_saved": False, **result}
+
+
+@router.post("/api/sync/clear-history-list")
+async def clear_history_list(request: Request, db: Session = Depends(get_db)):
+    """清空当前历史收藏列表，保留已经入库的 RawSource/Wiki。"""
+    return await _clear_history_list_response(request, db)
+
+
+@router.post("/api/sync/clear-history")
+async def clear_history_list_compat(request: Request, db: Session = Depends(get_db)):
+    """兼容旧前端缓存里的清空历史收藏列表路径。"""
+    return await _clear_history_list_response(request, db)
 
 
 @router.post("/api/classify/batch-titles")
@@ -4127,203 +4530,40 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
 
     job_id = str(data.get("job_id") or "").strip() or uuid4().hex
     pending = _filter_pending_candidates(db, candidate_ids, "xiaohongshu_diandian")
-    job = DOUBAO_EXTRACT_JOBS.setdefault(
-        job_id,
-        {
-            "platform": "xiaohongshu_diandian",
-            "candidate_ids": [int(c) for c in candidate_ids if str(c).strip()],
-            "status": "running",
-            "paused_reason": None,
-            "done_ids": [],
-            "success_count": 0,
-            "failed_count": 0,
-            "items": [],
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        },
-    )
-    job["status"] = "running"
-    job["paused_reason"] = None
+    job = _init_extract_job(job_id, candidate_ids, "xiaohongshu_diandian", pending)
 
     extractor = XiaohongshuDiandianExtractor()
-    keep_diandian_tab_open = False
     not_ready_detail = {
         "code": "xiaohongshu_diandian_not_ready",
         "message": "小红书点点页面未就绪。请确认浏览器仍登录小红书，并打开 https://www.xiaohongshu.com/ai_chat 后重试。",
         "action": "open_xiaohongshu_diandian_then_retry",
         "login_url": "https://www.xiaohongshu.com/ai_chat",
     }
+    # 预检留同步：失败抛 428/503，前端据状态码做就绪引导（绝不挪进后台协程）。
     try:
-        try:
-            ready = await extractor.check_ready()
-        except _CDPErr as exc:
-            raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
-        if not ready:
-            keep_diandian_tab_open = True
-            raise HTTPException(status_code=428, detail=not_ready_detail)
+        ready = await extractor.check_ready()
+    except _CDPErr as exc:
+        await extractor.close(close_tab=True)
+        job["status"] = "error"
+        raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
+    if not ready:
+        await extractor.close(close_tab=False)
+        job["status"] = "error"
+        raise HTTPException(status_code=428, detail=not_ready_detail)
 
-        raw_service = RawSourceService(db)
-        wiki_service = WikiMaintenanceService(db)
-        items: list[dict[str, Any]] = []
-        successful_raw_sources: list[RawSource] = []
-        success_count = 0
-        failed_count = 0
-        paused = False
-        for i, candidate_id in enumerate(pending):
-            if i > 0 and i % switch_every == 0:
-                try:
-                    await extractor.start_new_conversation()
-                except Exception:
-                    pass
-            candidate = db.get(CandidateItem, candidate_id)
-            if candidate is None:
-                failed_count += 1
-                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
-                continue
-            # Skip already extracted (dedup)
-            c_meta = safe_json(candidate.metadata_json)
-            if c_meta.get("xiaohongshu_diandian_extracted") is True:
-                raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate_id).first()
-                items.append({
-                    "candidate_id": candidate_id,
-                    "success": True,
-                    "error": None,
-                    "skipped": True,
-                    "raw_source_id": raw_source.id if raw_source else None,
-                    "title": raw_source.title if raw_source else candidate.title,
-                    "preview": content_preview_payload(raw_source) if raw_source else None,
-                })
-                success_count += 1
-                continue
-            share_text, share_url = xiaohongshu_share_text_for_candidate(candidate)
-            try:
-                result = await extractor.extract_content(
-                    share_text=share_text,
-                    url=share_url or candidate.raw_url or candidate.canonical_url,
-                    content_type=candidate.content_type or "note",
-                    timeout_seconds=per_item_timeout,
-                )
-            except _CDPErr as exc:
-                failed_count += 1
-                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
-                continue
-
-            attempts = int(getattr(result, "attempts", 1) or 1)
-            retried = bool(getattr(result, "retried", False))
-            if not result.success or not str(result.transcript or result.text_content or "").strip():
-                # 人机验证：保留进度、暂停、break，由前端续跑。
-                if result.error == "xiaohongshu_diandian_human_verification_required":
-                    keep_diandian_tab_open = True
-                    paused = True
-                    break
-                if result.error == "xiaohongshu_diandian_not_ready":
-                    keep_diandian_tab_open = True
-                    paused = True
-                    job["paused_reason"] = "not_ready"
-                    break
-                failed_count += 1
-                metadata = safe_json(candidate.metadata_json)
-                metadata.update(
-                    {
-                        "xiaohongshu_diandian_extracted": False,
-                        "xiaohongshu_diandian_share_text": share_text,
-                        "xiaohongshu_diandian_share_url": share_url,
-                        "xiaohongshu_diandian_attempts": attempts,
-                        "xiaohongshu_diandian_retried": retried,
-                        "xiaohongshu_diandian_error": result.error or "empty_response",
-                    }
-                )
-                candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
-                ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
-                if ledger:
-                    ledger.classification_label = "xiaohongshu_diandian_failed"
-                db.commit()
-                items.append({"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response", "attempts": attempts, "retried": retried})
-                if i < len(pending) - 1:
-                    await asyncio.sleep(random.uniform(delay_min, delay_max))
-                continue
-
-            content = str(result.transcript or result.text_content).strip()
-            metadata = safe_json(candidate.metadata_json)
-            prompt = str(getattr(result, "prompt", "") or "")
-            metadata.update(
-                {
-                    "transcript": content,
-                    "content": content,
-                    "page_text": content,
-                    "xiaohongshu_diandian_extracted": True,
-                    "xiaohongshu_diandian_prompt": prompt,
-                    "xiaohongshu_diandian_share_text": share_text,
-                    "xiaohongshu_diandian_share_url": share_url,
-                    "xiaohongshu_diandian_extracted_at": datetime.now().isoformat(timespec="seconds"),
-                    "xiaohongshu_diandian_response_length": len(content),
-                    "xiaohongshu_diandian_elapsed_seconds": getattr(result, "elapsed_seconds", None),
-                    "xiaohongshu_diandian_attempts": attempts,
-                    "xiaohongshu_diandian_retried": retried,
-                    "xiaohongshu_diandian_error": None,
-                }
-            )
-            candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
-            db.commit()
-            raw_source = raw_service.ingest_candidate(candidate.id)
-            successful_raw_sources.append(raw_source)
-            ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
-            if ledger:
-                ledger.classification_label = "knowledge"
-                ledger.raw_source_id = raw_source.id
-                db.commit()
-            ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
-            wiki_page_id = None
-            if generate_wiki_draft:
-                page = await wiki_service.create_page_from_raw_source(raw_source.id)
-                wiki_page_id = page.page_id
-            success_count += 1
-            job["done_ids"].append(candidate.id)
-            items.append({
-                "candidate_id": candidate.id,
-                "success": True,
-                "raw_source_id": raw_source.id,
-                "wiki_page_id": wiki_page_id,
-                "attempts": attempts,
-                "retried": retried,
-                "error": None,
-                "title": raw_source.title,
-                "preview": content_preview_payload(raw_source),
-            })
-            if i < len(pending) - 1:
-                await asyncio.sleep(random.uniform(delay_min, delay_max))
-    finally:
-        await extractor.close(close_tab=not keep_diandian_tab_open)
-
-    creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
-    job["success_count"] = job.get("success_count", 0) + success_count
-    job["failed_count"] = job.get("failed_count", 0) + failed_count
-    job["items"].extend(items)
-
-    if paused:
-        remaining = _filter_pending_candidates(db, job["candidate_ids"], "xiaohongshu_diandian")
-        reason = job.get("paused_reason") or "human_verification"
-        job["status"] = "paused"
-        job["paused_reason"] = reason
-        message = (
-            "检测到小红书点点人机验证。请在已打开的点点页面完成验证，然后点「我已完成，继续」继续提取剩余条目。"
-            if reason == "human_verification"
-            else "小红书点点页面未就绪。请在点点页面重新登录/打开后，点「我已完成，继续」继续提取剩余条目。"
-        )
-        return {
-            "status": "paused",
-            "job_id": job_id,
-            "reason": reason,
-            "message": message,
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "done": len(job["done_ids"]),
-            "pending_remaining": len(remaining),
-            "items": items,
-            "creator_wiki_pages": creator_wiki_pages,
-        }
-
-    job["status"] = "completed"
-    return {"status": "completed", "job_id": job_id, "success_count": success_count, "failed_count": failed_count, "items": items, "creator_wiki_pages": creator_wiki_pages}
+    # 预检通过 → 进入共用提取协程（全程维护 job["per_item"]，支持并发轮询）。
+    return await _run_extraction_job(
+        job_id,
+        candidate_ids,
+        "xiaohongshu_diandian",
+        extractor,
+        db=db,
+        per_item_timeout=per_item_timeout,
+        switch_every=switch_every,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        generate_wiki_draft=generate_wiki_draft,
+    )
 
 
 @router.post("/api/doubao/extract-selected")
@@ -4339,194 +4579,43 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
     generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
     switch_every, delay_min, delay_max = _pacing_params(data)
 
-    # 断点续跑：带 job_id 则复用，否则新建。无论新建/续跑，pending 都由
-    # already_extracted（metadata 标记）过滤——已完成的 candidate 直接跳过，幂等。
     job_id = str(data.get("job_id") or "").strip() or uuid4().hex
     pending = _filter_pending_candidates(db, candidate_ids, "doubao")
-    job = DOUBAO_EXTRACT_JOBS.setdefault(
-        job_id,
-        {
-            "platform": "doubao",
-            "candidate_ids": [int(c) for c in candidate_ids if str(c).strip()],
-            "status": "running",
-            "paused_reason": None,
-            "done_ids": [],
-            "success_count": 0,
-            "failed_count": 0,
-            "items": [],
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        },
-    )
-    job["status"] = "running"
-    job["paused_reason"] = None
+    job = _init_extract_job(job_id, candidate_ids, "doubao", pending)
 
     extractor = DoubaoExtractor()
-    keep_doubao_tab_open = False
-    try:
-        try:
-            logged_in = await extractor.check_login()
-        except _CDPErr as exc:
-            raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
-        login_required_detail = {
-            "code": "doubao_login_required",
-            "message": "需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com",
-            "action": "open_doubao_and_login_then_retry",
-            "login_url": "https://www.doubao.com",
-        }
-        if not logged_in:
-            keep_doubao_tab_open = True
-            raise HTTPException(status_code=428, detail=login_required_detail)
-
-        raw_service = RawSourceService(db)
-        wiki_service = WikiMaintenanceService(db)
-        items: list[dict[str, Any]] = []
-        successful_raw_sources: list[RawSource] = []
-        success_count = 0
-        failed_count = 0
-        paused = False
-        for i, candidate_id in enumerate(pending):
-            # 每 switch_every 条换新对话窗口（反爬节流，推迟人机验证出现）。
-            if i > 0 and i % switch_every == 0:
-                try:
-                    await extractor.start_new_conversation()
-                except Exception:
-                    pass
-            candidate = db.get(CandidateItem, candidate_id)
-            if candidate is None:
-                failed_count += 1
-                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
-                continue
-            try:
-                result = await extractor.extract_content(
-                    candidate.raw_url or candidate.canonical_url,
-                    candidate.content_type or "auto",
-                    timeout_seconds=per_item_timeout,
-                )
-            except _CDPErr as exc:
-                failed_count += 1
-                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
-                continue
-
-            if not result.success or not str(result.transcript or result.text_content or "").strip():
-                # 人机验证：不中断、不报错码 428，保留已完成进度，置 paused 并 break，
-                # 由前端弹窗提示用户手动验证后带 job_id 重 POST 续跑。
-                if result.error == "doubao_human_verification_required":
-                    keep_doubao_tab_open = True
-                    paused = True
-                    break
-                if result.error == "doubao_login_required":
-                    # 新建批次首条登录失效 → 保留现状 428（让前端走登录引导）。
-                    # 批中途（已成功提取过至少一条）→ 走暂停续跑路径，保住已完成进度。
-                    keep_doubao_tab_open = True
-                    if success_count > 0:
-                        paused = True
-                        job["paused_reason"] = "login_required"
-                        break
-                    raise HTTPException(status_code=428, detail=login_required_detail)
-                failed_count += 1
-                metadata = safe_json(candidate.metadata_json)
-                metadata.update(
-                    {
-                        "doubao_extracted": False,
-                        "doubao_error": result.error or "empty_response",
-                        "doubao_prompt": str(getattr(result, "prompt", "") or ""),
-                        "doubao_elapsed_seconds": getattr(result, "elapsed_seconds", None),
-                    }
-                )
-                candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
-                ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
-                if ledger:
-                    ledger.classification_label = "doubao_failed"
-                db.commit()
-                items.append({"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response"})
-                # 失败条之间也节流，避免快速重试触发反爬。
-                if i < len(pending) - 1:
-                    await asyncio.sleep(random.uniform(delay_min, delay_max))
-                continue
-
-            content = str(result.transcript or result.text_content).strip()
-            metadata = safe_json(candidate.metadata_json)
-            prompt = str(getattr(result, "prompt", "") or "")
-            metadata.update(
-                {
-                    "transcript": content,
-                    "content": content,
-                    "page_text": content,
-                    "doubao_extracted": True,
-                    "doubao_error": None,
-                    "doubao_prompt": prompt,
-                    "doubao_extracted_at": datetime.now().isoformat(timespec="seconds"),
-                    "doubao_response_length": len(content),
-                    "doubao_elapsed_seconds": getattr(result, "elapsed_seconds", None),
-                    "doubao_error": None,
-                }
-            )
-            candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
-            candidate.title = result.title or candidate.title
-            db.commit()
-            raw_source = raw_service.ingest_candidate(candidate.id)
-            successful_raw_sources.append(raw_source)
-            ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
-            wiki_page_id = None
-            if generate_wiki_draft:
-                page = await wiki_service.create_page_from_raw_source(raw_source.id)
-                wiki_page_id = page.page_id
-            success_count += 1
-            job["done_ids"].append(candidate.id)
-            items.append(
-                {
-                    "candidate_id": candidate.id,
-                    "success": True,
-                    "raw_source_id": raw_source.id,
-                    "wiki_page_id": wiki_page_id,
-                    "title": raw_source.title,
-                    "preview": content_preview_payload(raw_source),
-                }
-            )
-            # 成功条之间随机延时（最后一条不必等）。
-            if i < len(pending) - 1:
-                await asyncio.sleep(random.uniform(delay_min, delay_max))
-    finally:
-        await extractor.close(close_tab=not keep_doubao_tab_open)
-
-    creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
-    job["success_count"] = job.get("success_count", 0) + success_count
-    job["failed_count"] = job.get("failed_count", 0) + failed_count
-    job["items"].extend(items)
-
-    if paused:
-        # 暂停未完成的剩余（含当前这条未成功的）由 metadata 标记决定，续跑时重新过滤。
-        remaining = _filter_pending_candidates(db, job["candidate_ids"], "doubao")
-        reason = job.get("paused_reason") or "human_verification"
-        job["status"] = "paused"
-        job["paused_reason"] = reason
-        message = (
-            "检测到豆包人机验证。请在已打开的豆包页面完成验证，然后点「我已完成，继续」继续提取剩余条目。"
-            if reason == "human_verification"
-            else "豆包登录状态失效。请在豆包页面重新登录后，点「我已完成，继续」继续提取剩余条目。"
-        )
-        return {
-            "status": "paused",
-            "job_id": job_id,
-            "reason": reason,
-            "message": message,
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "done": len(job["done_ids"]),
-            "pending_remaining": len(remaining),
-            "items": items,
-            "creator_wiki_pages": creator_wiki_pages,
-        }
-
-    job["status"] = "completed"
-    return {
-        "status": "completed",
-        "job_id": job_id,
-        "success_count": success_count,
-        "failed_count": failed_count,
-        "items": items,
-        "creator_wiki_pages": creator_wiki_pages,
+    login_required_detail = {
+        "code": "doubao_login_required",
+        "message": "需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com",
+        "action": "open_doubao_and_login_then_retry",
+        "login_url": "https://www.doubao.com",
     }
+    try:
+        logged_in = await extractor.check_login()
+    except _CDPErr as exc:
+        await extractor.close(close_tab=True)
+        job["status"] = "error"
+        raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
+    if not logged_in:
+        await extractor.close(close_tab=False)
+        job["status"] = "error"
+        raise HTTPException(status_code=428, detail=login_required_detail)
+
+    result = await _run_extraction_job(
+        job_id,
+        candidate_ids,
+        "doubao",
+        extractor,
+        db=db,
+        per_item_timeout=per_item_timeout,
+        switch_every=switch_every,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        generate_wiki_draft=generate_wiki_draft,
+    )
+    if result.get("status") == "paused" and result.get("reason") == "login_required" and not result.get("success_count"):
+        raise HTTPException(status_code=428, detail=login_required_detail)
+    return result
 
 
 # --- Collect + Doubao Extract + Write to Knowledge Base (一键全流程) ---

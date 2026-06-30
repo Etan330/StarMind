@@ -47,6 +47,43 @@ async def pace_sleep(
     return seconds
 
 
+# 提取结果低质量关键词：模型常以这些话术回绝（无法访问/需登录/无内容）。
+# 命中且全文偏短 → 判定低质，不入库。豆包、点点共用同一套口径。
+LOW_QUALITY_PATTERNS = [
+    "无法访问",
+    "无法打开",
+    "打不开",
+    "请登录",
+    "需要登录",
+    "未找到",
+    "没有找到内容",
+    "无法获取",
+    "暂时无法回答",
+    "换个问题试试",
+    "没有好的思路",
+    "无法回答这个问题",
+]
+
+
+def is_low_quality_extract(text: str) -> bool:
+    """提取结果是否低质（命中即不入库、归失败/需重试）。
+
+    规则：
+    ① 归一空白后正文 < 30 字符 → 低质（基本等于没提到东西）；
+    ② 命中 ``LOW_QUALITY_PATTERNS`` 任一关键词 且 全文 < 120 字符 → 低质
+       （短文里出现「无法访问/请登录」基本就是回绝；限制长度避免把
+        正常长文里顺带提到这些词的内容误杀）。
+    """
+    value = " ".join(str(text or "").split())
+    if not value:
+        return True
+    if len(value) < 30:
+        return True
+    if len(value) < 120 and any(pattern in value for pattern in LOW_QUALITY_PATTERNS):
+        return True
+    return False
+
+
 def next_pending(
     candidates_meta: Iterable[tuple[Any, Mapping[str, Any] | None]],
     platform: str,

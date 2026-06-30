@@ -226,10 +226,10 @@ def test_creator_extract_can_resume_after_human_verification():
     template = open("app/templates/sync_favorites.html", encoding="utf-8").read()
     app_js = open("app/static/app.js", encoding="utf-8").read()
 
-    assert "data-creator-resume" in template
-    assert "我已完成验证，继续" in template
-    assert "creatorResumeButton" in app_js
-    assert "response.status === \"paused\"" in app_js
+    assert "data-creator-resume" not in template
+    assert "我已完成验证，继续" not in template
+    assert "showExtractPauseDialog" in app_js
+    assert "payloadStatus.status === \"paused\"" in app_js
     assert "payload.job_id = currentJobId" in app_js
     assert "runCreatorExtraction" in app_js
     assert "pending_remaining" in app_js

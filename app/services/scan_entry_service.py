@@ -81,23 +81,58 @@ class ScanEntryService:
         self.db.commit()
 
     def reset_history(self, platform: str) -> None:
-        """「重新扫描历史」：清 history_saved、first_scan_done 和旧历史条目。
+        """「重新扫描历史」：清 history_saved、first_scan_done 和旧历史条目。"""
+        self.clear_history_list(platform)
 
-        关键——只清 history_saved 不清 first_scan_done 的话，determine_kind 仍返回 incremental，
-        下次扫描会被 filter_incremental 把已见条目全滤掉 → "0 new"，违背「重新扫描历史」。
-        清掉历史 ScanEntry 后，用户重新扫描时看到的是新的干净历史集合。
-        """
+    def clear_history_list(self, platform: str) -> dict[str, int]:
+        """清空当前历史收藏列表，并移除未入库的扫描候选与 ledger。"""
         connector = self._connector(platform)
-        if connector is None:
-            return
-        connector.history_saved = False
-        connector.first_scan_done = False
-        connector.history_boundary_external_id = None
+        if connector is not None:
+            connector.history_saved = False
+            connector.first_scan_done = False
+            connector.history_boundary_external_id = None
+
+        history_entries = self.db.query(ScanEntry).filter(
+            ScanEntry.platform == platform,
+            ScanEntry.collection_kind == HISTORY,
+        ).all()
+        entry_count = len(history_entries)
+        candidate_ids = {int(entry.candidate_id) for entry in history_entries if entry.candidate_id}
+        external_ids = {entry.external_item_id for entry in history_entries if entry.external_item_id}
+        raw_candidate_ids = {
+            int(candidate_id)
+            for (candidate_id,) in self.db.query(RawSource.candidate_id).filter(
+                RawSource.candidate_id.in_(candidate_ids),
+            ).all()
+            if candidate_id is not None
+        } if candidate_ids else set()
+        removable_candidate_ids = candidate_ids - raw_candidate_ids
+
+        ledger_query = self.db.query(SyncLedgerItem).filter(
+            SyncLedgerItem.platform == platform,
+            SyncLedgerItem.external_item_id.in_(external_ids),
+            SyncLedgerItem.raw_source_id == None,  # noqa: E711
+        ) if external_ids else None
+        ledger_count = ledger_query.count() if ledger_query is not None else 0
+        if ledger_query is not None:
+            ledger_query.delete(synchronize_session=False)
+
+        candidate_count = 0
+        if removable_candidate_ids:
+            candidate_count = self.db.query(CandidateItem).filter(
+                CandidateItem.id.in_(removable_candidate_ids),
+            ).delete(synchronize_session=False)
+
         self.db.query(ScanEntry).filter(
             ScanEntry.platform == platform,
             ScanEntry.collection_kind == HISTORY,
         ).delete(synchronize_session=False)
         self.db.commit()
+        return {
+            "scan_entry_count": entry_count,
+            "candidate_count": candidate_count,
+            "ledger_count": ledger_count,
+        }
 
     def _seen_external_ids(self, platform: str) -> set[str]:
         """该平台所有「已见」的 external_item_id 全集：ScanEntry ∪ SyncLedger。"""
