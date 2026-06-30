@@ -1532,7 +1532,7 @@ select:focus {
 }
 
 .wiki-layout {
-  grid-template-columns: 250px minmax(0, 1fr) 280px;
+  grid-template-columns: 250px minmax(0, 1fr) minmax(150px, 180px);
 }
 
 .history-side,
@@ -1540,6 +1540,29 @@ select:focus {
 .demo-side {
   display: grid;
   gap: 14px;
+}
+
+.wiki-info-card,
+.wiki-source-card,
+.wiki-boundary-card {
+  min-width: 0;
+  padding: 12px;
+}
+
+.wiki-info-card .meta-list {
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.wiki-info-card .btn.full,
+.wiki-source-card .source-ref-link,
+.wiki-boundary-card p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wiki-source-card .source-ref-link {
+  padding: 10px;
 }
 
 .task-card-list {

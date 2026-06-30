@@ -147,7 +147,7 @@
     {% endif %}
   </article>
   <aside class="wiki-side">
-    <section class="glass-card">
+    <section class="glass-card wiki-info-card">
       <h2>页面信息</h2>
       <dl class="meta-list">
         <dt>页面类型</dt><dd>{{ selected_page.page_type if selected_page else "—" }}</dd>
@@ -156,7 +156,7 @@
         <dt>标签</dt><dd>{% for tag in selected_tags %}<span class="status-chip primary">{{ tag }}</span> {% else %}—{% endfor %}</dd>
       </dl>
     </section>
-    <section class="glass-card">
+    <section class="glass-card wiki-source-card">
       <h2>引用来源</h2>
       <div class="compact-list">
         {% for ref in selected_refs %}
@@ -170,7 +170,7 @@
         {% endfor %}
       </div>
     </section>
-    <section class="glass-card">
+    <section class="glass-card wiki-boundary-card">
       <h2>当前边界</h2>
       <p>这里支持基于页面继续提问，但不会把追问自动写回页面。严格页面级检索、知识图谱和团队同步属于后续版本。</p>
     </section>
