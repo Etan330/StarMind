@@ -29,9 +29,14 @@ class PushSchedulerService:
         return settings
 
     async def generate_push_items(self) -> list[dict]:
-        """Select wiki pages weighted by category preferences."""
+        """Select one wiki page by category preference weights."""
         settings = self.get_or_create_settings()
         if settings.is_paused:
+            return []
+
+        now_minute = _utcnow().strftime("%Y-%m-%d %H:%M")
+        last_push = self.db.query(PushHistory).order_by(PushHistory.pushed_at.desc()).first()
+        if last_push and last_push.pushed_at.strftime("%Y-%m-%d %H:%M") == now_minute:
             return []
 
         prefs = {p.domain: p.score for p in self.db.query(UserPreference).all()}
@@ -84,15 +89,16 @@ class PushSchedulerService:
 
         # Record push history
         settings.total_push_count += 1
+        show_feedback = (settings.total_push_count % 5 == 0)
         history = PushHistory(
             raw_source_id=self._get_raw_source_id(chosen_page),
             wiki_page_id=chosen_page.id,
             category_name=chosen_cat,
+            feedback_requested=show_feedback,
         )
         self.db.add(history)
         self.db.flush()
 
-        show_feedback = (settings.total_push_count % 5 == 0)
         results = [{
             "push_id": history.id,
             "title": chosen_page.title,

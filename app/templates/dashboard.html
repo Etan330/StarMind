@@ -86,6 +86,14 @@
 .chat-input-bar button{align-self:end;min-height:42px;}
 .chat-bubble-user{align-self:flex-end;background:#215f52;color:#fff;padding:11px 15px;border-radius:16px 16px 5px 16px;max-width:82%;word-break:break-word;line-height:1.55;}
 .chat-bubble-ai{align-self:flex-start;background:rgba(244,247,246,.92);padding:13px 16px;border-radius:16px 16px 16px 5px;max-width:86%;word-break:break-word;line-height:1.65;color:#24332f;}
+.chat-bubble-ai .markdown-body{display:block;}
+.chat-bubble-ai .markdown-body>*:first-child{margin-top:0;}
+.chat-bubble-ai .markdown-body>*:last-child{margin-bottom:0;}
+.chat-bubble-ai .markdown-body p{margin:.45em 0;}
+.chat-bubble-ai .markdown-body ul,.chat-bubble-ai .markdown-body ol{margin:.5em 0;padding-left:1.35em;}
+.chat-bubble-ai .markdown-body li+li{margin-top:.25em;}
+.chat-bubble-ai .markdown-body pre{white-space:pre-wrap;overflow:auto;background:rgba(33,95,82,.06);border-radius:8px;padding:10px;}
+.chat-bubble-ai .markdown-body blockquote{margin:.6em 0;padding-left:12px;border-left:3px solid rgba(33,95,82,.22);color:#52605c;}
 .tour-overlay{position:fixed;inset:0;z-index:1000;background:rgba(11,27,24,.38);opacity:0;pointer-events:none;transition:opacity .18s ease;}
 .tour-overlay.active{opacity:1;pointer-events:auto;}
 .tour-spotlight{position:fixed;z-index:1001;border:2px solid rgba(143,212,192,.98);border-radius:14px;box-shadow:0 0 0 9999px rgba(11,27,24,.46),0 14px 38px rgba(0,0,0,.16);pointer-events:none;transition:top .2s ease,left .2s ease,width .2s ease,height .2s ease;}
@@ -98,18 +106,31 @@
 .tour-progress{font-size:.76rem;color:#7b8a86;}
 @media(max-width:900px){.chat-stage{inset:12px 54px 12px 12px;}.graph-drawer{top:12px;right:12px;bottom:12px;width:calc(100vw - 72px);}#chat-sidebar{width:118px;}.chat-messages{padding:16px;}}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="/static/echarts.min.js?v=5"></script>
 <script>
 (function(){
   var c=document.getElementById('home-container'),g=document.getElementById('home-graph'),toggle=document.getElementById('graph-drawer-toggle'),drawer=document.getElementById('graph-drawer'),eh=document.getElementById('graph-empty-hint');
   var ch=echarts.init(g),gd=null;
   var P=['#215f52','#3a9e85','#50C878','#8fd4c0','#2d7a6b','#1ABC9C','#45b89a','#6ecfb5'],dm={},ci=0;
   function dc(d){if(!dm[d])dm[d]=P[ci++%P.length];return dm[d];}
-  function opt(d,bg){return{backgroundColor:bg,series:[{type:'graph',layout:'force',roam:true,draggable:true,force:{repulsion:100,gravity:.04,edgeLength:[50,200]},data:d.nodes.map(function(n){return{id:String(n.id),name:n.label,symbolSize:Math.max(8,n.size*5),itemStyle:{color:dc(n.domain),shadowBlur:4,shadowColor:'rgba(33,95,82,.2)'},category:n.domain}}),links:d.edges.map(function(e){return{source:String(e.source),target:String(e.target),lineStyle:{width:Math.max(.5,e.weight*2),color:'rgba(33,95,82,.15)'}}}),categories:[...new Set(d.nodes.map(function(n){return n.domain}))].map(function(d){return{name:d}}),label:{show:true,position:'right',fontSize:10,color:'#555'},lineStyle:{color:'source'},emphasis:{focus:'adjacency'}}]};}
+  function openWikiPage(pageId){if(!pageId)return;window.location.assign('/ui/wiki?page_id='+encodeURIComponent(pageId));}
+  function getClickedPageId(params){
+    if(params.dataType==='node'&&params.data&&params.data.id)return params.data.id;
+    if(params.componentType==='series'&&params.seriesType==='graph'&&params.data&&params.data.id)return params.data.id;
+    if(params.name){
+      var option=ch.getOption();
+      var data=option&&option.series&&option.series[0]&&option.series[0].data||[];
+      var node=data.find(function(item){return item.name===params.name||item.id===params.name;});
+      return node&&node.id;
+    }
+    return null;
+  }
+  function opt(d,bg){return{backgroundColor:bg,series:[{type:'graph',layout:'force',roam:true,draggable:false,force:{repulsion:100,gravity:.04,edgeLength:[50,200]},data:d.nodes.map(function(n){return{id:String(n.id),name:n.label,symbolSize:Math.max(24,n.size*6),itemStyle:{color:dc(n.domain),shadowBlur:4,shadowColor:'rgba(33,95,82,.2)'},category:n.domain,cursor:'pointer'}}),links:d.edges.map(function(e){return{source:String(e.source),target:String(e.target),lineStyle:{width:Math.max(.5,e.weight*2),color:'rgba(33,95,82,.15)'}}}),categories:[...new Set(d.nodes.map(function(n){return n.domain}))].map(function(d){return{name:d}}),label:{show:true,position:'right',fontSize:10,color:'#555'},lineStyle:{color:'source'},emphasis:{focus:'adjacency'}}]};}
   fetch('/api/graph').then(function(r){return r.json()}).then(function(d){
     gd=d;if(!d.nodes.length){eh.style.display='flex';ch.setOption({backgroundColor:'transparent',series:[{type:'graph',layout:'none',data:[{x:300,y:200,symbolSize:14,itemStyle:{color:'#215f52'},name:''}],links:[]}]});return;}
     ch.setOption(opt(d,'transparent'));
   });
+  ch.on('click',function(params){openWikiPage(getClickedPageId(params));});
   function setDrawerOpen(open){
     c.classList.toggle('graph-drawer-open',open);
     toggle.setAttribute('aria-expanded',open?'true':'false');
@@ -229,7 +250,7 @@
     var res=await fetch('/api/conversations/'+id+'/messages');var msgs=await res.json();
     msgs.forEach(function(m){
       var d=document.createElement('div');d.className=m.role==='user'?'chat-bubble-user':'chat-bubble-ai';
-      d.textContent=m.content;mb.appendChild(d);
+      if(m.role==='assistant'&&m.content_html)d.innerHTML=m.content_html;else d.textContent=m.content;mb.appendChild(d);
     });
     mb.scrollTop=mb.scrollHeight;
     loadConversations();

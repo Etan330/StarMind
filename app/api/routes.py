@@ -59,7 +59,7 @@ from app.llm import (
     test_active_connection,
     test_model_connection,
 )
-from app.models import CandidateItem, Connector, KnowledgeClassification, PushSettings, RawSource, RecycleBinItem, ScanEntry, ScanLog, SyncLedgerItem, WikiPage
+from app.models import CandidateItem, ChatConversation, ChatMessage, Connector, KnowledgeGraphEdge, KnowledgeClassification, PushSettings, RawSource, RecycleBinItem, ScanEntry, ScanLog, SyncLedgerItem, WikiPage
 from app.services import (
     ClassifierService,
     RawSourceService,
@@ -469,6 +469,28 @@ def workbench_stats_payload(stats: dict[str, Any]) -> dict[str, int]:
         "raw_source_count": int(stats.get("raw_source_count") or 0),
         "recycle_bin_count": int(stats.get("recycle_bin_count") or 0),
         "intake_total": int(stats.get("intake_total") or 0),
+    }
+
+
+def conversation_payload(conversation: ChatConversation) -> dict[str, Any]:
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "created_at": iso(conversation.created_at),
+        "updated_at": iso(conversation.updated_at),
+    }
+
+
+def message_payload(message: ChatMessage) -> dict[str, Any]:
+    sources = json.loads(message.sources_json or "[]")
+    return {
+        "id": message.id,
+        "conversation_id": message.conversation_id,
+        "role": message.role,
+        "content": message.content,
+        "content_html": render_markdown(message.content) if message.role == "assistant" else "",
+        "sources": sources,
+        "created_at": iso(message.created_at),
     }
 
 
@@ -1047,7 +1069,7 @@ def task_view_model(db: Session, candidate: CandidateItem, raw_source: RawSource
     }
 
 
-def task_cards_for_history(db: Session, candidates: list[CandidateItem], classifications: dict[int, KnowledgeClassification]) -> list[dict[str, Any]]:
+def task_cards_for_candidates(db: Session, candidates: list[CandidateItem], classifications: dict[int, KnowledgeClassification]) -> list[dict[str, Any]]:
     cards: list[dict[str, Any]] = []
     for candidate in candidates:
         raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
@@ -1785,6 +1807,29 @@ def graph_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "graph.html", template_context(request, "home", db))
 
 
+@router.get("/api/graph")
+def graph_api(request: Request, db: Session = Depends(get_db)):
+    from app.services.graph_service import GraphService
+    domain_filter = request.query_params.get("domain")
+    return GraphService(db).get_graph_data(domain_filter=domain_filter)
+
+
+@router.get("/api/graph/node/{page_id}")
+def graph_node_detail(page_id: str, db: Session = Depends(get_db)):
+    from app.services.graph_service import GraphService
+    return GraphService(db).get_node_detail(page_id)
+
+
+@router.post("/api/graph/rebuild")
+async def graph_rebuild(db: Session = Depends(get_db)):
+    from app.services.wiki_service import WikiMaintenanceService
+
+    svc = WikiMaintenanceService(db)
+    pages = db.query(WikiPage).filter(WikiPage.status.in_(["active", "needs_review"])).all()
+    edges_created = await svc.rebuild_ai_edges_for_pages(pages)
+    return {"status": "ok", "edges_created": edges_created, "total_pages": len(pages)}
+
+
 @router.post("/ui/language")
 async def save_ui_language(request: Request):
     data = await request_data(request)
@@ -1862,7 +1907,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             active_profile_id=get_active_profile_id(settings, profiles),
             pages=db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(3).all(),
             sources=db.query(RawSource).order_by(RawSource.created_at.desc()).limit(3).all(),
-            task_cards=task_cards_for_history(db, recent_candidates, classifications),
+            task_cards=task_cards_for_candidates(db, recent_candidates, classifications),
             demo=get_demo_result(),
             demo_results=list_demo_results(),
             home_preview=home_preview,
@@ -2082,29 +2127,6 @@ async def confirm_review_page(page_id: str, request: Request, db: Session = Depe
     return {"status": "confirmed", "page_id": page.page_id}
 
 
-@router.get("/ui/history", response_class=HTMLResponse)
-def history_page(request: Request, db: Session = Depends(get_db)):
-    track_event(db, "history_opened", {"page": "history"})
-    candidates = db.query(CandidateItem).order_by(CandidateItem.created_at.desc()).limit(50).all()
-    logs = db.query(ScanLog).order_by(ScanLog.created_at.desc()).limit(50).all()
-    pages = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(30).all()
-    classifications = latest_classifications(db, [candidate.id for candidate in candidates])
-    return templates.TemplateResponse(
-        request,
-        "history.html",
-        template_context(
-            request,
-            "history",
-            db,
-            candidates=candidates,
-            logs=logs,
-            pages=pages,
-            classifications=classifications,
-            task_cards=task_cards_for_history(db, candidates, classifications),
-        ),
-    )
-
-
 @router.get("/ui/guide", response_class=HTMLResponse)
 def guide_page(request: Request, db: Session = Depends(get_db)):
     return templates.TemplateResponse(request, "guide.html", template_context(request, "guide", db))
@@ -2168,7 +2190,7 @@ def distill_page(request: Request, db: Session = Depends(get_db)):
 
 @router.get("/ui/workbench", response_class=HTMLResponse)
 def workbench_page(request: Request, db: Session = Depends(get_db)):
-    return RedirectResponse("/ui/pending", status_code=303)
+    return RedirectResponse("/ui/sources", status_code=303)
 
 
 @router.get("/workbench/modules")
@@ -2203,30 +2225,118 @@ async def save_workbench_layout(request: Request) -> dict[str, Any]:
     return {"ok": True, "layout": payload}
 
 
-@router.get("/ui/settings/model", response_class=HTMLResponse)
-def model_settings_page(request: Request, db: Session = Depends(get_db)):
+@router.get("/api/conversations")
+def list_conversations(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    conversations = (
+        db.query(ChatConversation)
+        .join(ChatMessage)
+        .group_by(ChatConversation.id)
+        .order_by(ChatConversation.updated_at.desc())
+        .all()
+    )
+    return [conversation_payload(conversation) for conversation in conversations]
+
+
+@router.post("/api/conversations")
+def create_conversation(db: Session = Depends(get_db)) -> dict[str, Any]:
+    conversation = ChatConversation(id=f"chat-{uuid4().hex}", title="新对话")
+    db.add(conversation)
+    db.commit()
+    db.refresh(conversation)
+    return conversation_payload(conversation)
+
+
+@router.get("/api/conversations/{conversation_id}/messages")
+def list_conversation_messages(conversation_id: str, db: Session = Depends(get_db)) -> list[dict[str, Any]]:
+    conversation = db.get(ChatConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.conversation_id == conversation_id)
+        .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
+        .all()
+    )
+    return [message_payload(message) for message in messages]
+
+
+@router.post("/api/conversations/{conversation_id}/messages")
+async def create_conversation_message(conversation_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    conversation = db.get(ChatConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    data = await request.json()
+    question = str(data.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    db.add(ChatMessage(conversation_id=conversation_id, role="user", content=question))
+    if conversation.title == "新对话":
+        conversation.title = question[:50]
+    answer = await AgentRunner(db).answer_question(question)
+    assistant_message = ChatMessage(
+        conversation_id=conversation_id,
+        role="assistant",
+        content=answer.answer,
+        sources_json=json.dumps(answer.sources, ensure_ascii=False),
+    )
+    conversation.updated_at = datetime.utcnow()
+    db.add(assistant_message)
+    db.commit()
+    db.refresh(assistant_message)
+    return message_payload(assistant_message)
+
+
+@router.post("/api/conversations/{conversation_id}/rename")
+async def rename_conversation(conversation_id: str, request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    conversation = db.get(ChatConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    data = await request.json()
+    title = str(data.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    conversation.title = title[:200]
+    db.commit()
+    db.refresh(conversation)
+    return conversation_payload(conversation)
+
+
+@router.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, db: Session = Depends(get_db)) -> dict[str, bool]:
+    conversation = db.get(ChatConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    db.delete(conversation)
+    db.commit()
+    return {"ok": True}
+
+
+def settings_page_context(request: Request, db: Session) -> dict[str, Any]:
     settings = get_model_settings()
     profiles = get_model_profiles()
-    return templates.TemplateResponse(
+    return template_context(
         request,
-        "model_settings.html",
-        template_context(
-            request,
-            "settings",
-            db,
-            settings=settings,
-            providers=get_providers(),
-            model_profiles=profiles["profiles"],
-            active_profile_id=get_active_profile_id(settings, profiles),
-            status=request.query_params.get("status"),
-            test=request.query_params.get("test"),
-            test_error=request.query_params.get("error"),
-            test_provider=request.query_params.get("provider"),
-            events=events,
-            event_counts=counts,
-            recent_events=recent_events,
-        ),
+        "settings",
+        db,
+        settings=settings,
+        providers=get_providers(),
+        model_profiles=profiles["profiles"],
+        active_profile_id=get_active_profile_id(settings, profiles),
+        status=request.query_params.get("status"),
+        test=request.query_params.get("test"),
+        test_error=request.query_params.get("error"),
+        test_provider=request.query_params.get("provider"),
     )
+
+
+@router.get("/ui/settings", response_class=HTMLResponse)
+def settings_page(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "settings.html", settings_page_context(request, db))
+
+
+@router.get("/ui/settings/model", response_class=HTMLResponse)
+def model_settings_page(request: Request, db: Session = Depends(get_db)):
+    return templates.TemplateResponse(request, "model_settings.html", settings_page_context(request, db))
 
 
 @router.get("/settings/providers")
@@ -2852,14 +2962,14 @@ async def distill_profile(request: Request, db: Session = Depends(get_db)):
     return {"status": "created", "request": payload["requests"][0], "imported": imported}
 
 
-@router.get("/ui/candidates", response_class=HTMLResponse)
-def candidates_page(request: Request, db: Session = Depends(get_db)):
-    return pending_page(request, db)
-
-
 @router.get("/ui/recycle", response_class=HTMLResponse)
 def recycle_page(request: Request, db: Session = Depends(get_db)):
-    recycle_items = db.query(RecycleBinItem).order_by(RecycleBinItem.archived_at.desc()).all()
+    recycle_items = (
+        db.query(RecycleBinItem)
+        .filter(RecycleBinItem.status.in_(RECYCLE_STATUSES))
+        .order_by(RecycleBinItem.archived_at.desc())
+        .all()
+    )
     return templates.TemplateResponse(
         request,
         "recycle.html",
@@ -2868,35 +2978,11 @@ def recycle_page(request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/ui/pending", response_class=HTMLResponse)
-def pending_page(request: Request, db: Session = Depends(get_db)):
-    pending_candidates = (
-        db.query(CandidateItem)
-        .filter(CandidateItem.status.in_(REVIEWABLE_STATUSES))
-        .order_by(CandidateItem.created_at.desc())
-        .all()
-    )
-    raw_sources = db.query(RawSource).order_by(RawSource.created_at.desc()).all()
-    recycle_items = db.query(RecycleBinItem).filter(RecycleBinItem.status.in_(RECYCLE_STATUSES)).order_by(RecycleBinItem.archived_at.desc()).all()
-    selected = pending_candidates[0] if pending_candidates else None
-    selected_source = raw_sources[0] if raw_sources else None
-    classification_map = latest_classifications(db, [candidate.id for candidate in pending_candidates])
-    return templates.TemplateResponse(
-        request,
-        "pending.html",
-        template_context(
-            request,
-            "pending",
-            db,
-            candidates=pending_candidates,
-            pending_candidates=pending_candidates,
-            raw_sources=raw_sources,
-            selected_candidate=selected,
-            selected_source=selected_source,
-            classification_map=classification_map,
-            created=request.query_params.get("created"),
-            recycle_items=recycle_items,
-        ),
-    )
+def legacy_pending_page(request: Request):
+    created = request.query_params.get("created") or ""
+    if created.startswith("recycle-cleared"):
+        return RedirectResponse("/ui/recycle?cleared=1", status_code=303)
+    return RedirectResponse("/ui/sources", status_code=303)
 
 
 @router.get("/ui/sources", response_class=HTMLResponse)
@@ -2972,6 +3058,40 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/api/sources/{source_id}/delete")
+async def delete_source(source_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        RecycleService(db).archive_raw_source(source_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if wants_html(request):
+        return RedirectResponse("/ui/sources?deleted=1", status_code=303)
+    return {"status": "deleted", "raw_source_id": source_id}
+
+
+@router.post("/api/sources/batch-delete")
+async def batch_delete_sources(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    raw_ids = data.get("ids", [])
+    if isinstance(raw_ids, str):
+        source_ids = [raw_ids]
+    else:
+        source_ids = [str(source_id) for source_id in raw_ids if source_id]
+    service = RecycleService(db)
+    deleted_count = 0
+    for source_id in source_ids:
+        if not str(source_id).isdigit():
+            continue
+        try:
+            service.archive_raw_source(int(source_id))
+            deleted_count += 1
+        except ValueError:
+            continue
+    if wants_html(request):
+        return RedirectResponse(f"/ui/sources?deleted={deleted_count}", status_code=303)
+    return {"status": "deleted", "count": deleted_count}
+
+
 @router.get("/ui/wiki", response_class=HTMLResponse)
 async def wiki_page(request: Request, db: Session = Depends(get_db)):
     from app.models import WikiCategory
@@ -2985,8 +3105,9 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
     category_id = request.query_params.get("category")
     active_category = db.get(WikiCategory, int(category_id)) if category_id else None
 
-    all_pages = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).all()
-    query = db.query(WikiPage).order_by(WikiPage.last_updated_at.desc())
+    visible_statuses = ["active", "needs_review"]
+    all_pages = db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses)).order_by(WikiPage.last_updated_at.desc()).all()
+    query = db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses)).order_by(WikiPage.last_updated_at.desc())
 
     if active_category:
         query = query.filter(WikiPage.category_id == active_category.id)
@@ -3005,11 +3126,11 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
     selected_tags = page_tags(selected_page.tags_json if selected_page else "[]")
     source_map = {source.id: source for source in db.query(RawSource).all()}
     section_counts = {
-        "knowledge": db.query(WikiPage).filter(WikiPage.page_type == "knowledge").count(),
-        "methodology": db.query(WikiPage).filter(WikiPage.page_type == "methodology").count(),
-        "sop": db.query(WikiPage).filter(WikiPage.page_type == "sop").count(),
-        "creator": db.query(WikiPage).filter(WikiPage.page_type == "creator").count(),
-        "skills": db.query(WikiPage).filter(WikiPage.page_type == "skill").count(),
+        "knowledge": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "knowledge").count(),
+        "methodology": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "methodology").count(),
+        "sop": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "sop").count(),
+        "creator": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "creator").count(),
+        "skills": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "skill").count(),
         "index": len(all_pages),
     }
 
@@ -3017,13 +3138,20 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
     wiki_categories = []
     cat_rows = (
         db.query(WikiCategory, func.count(WikiPage.id))
-        .outerjoin(WikiPage, WikiPage.category_id == WikiCategory.id)
+        .outerjoin(WikiPage, (WikiPage.category_id == WikiCategory.id) & (WikiPage.status.in_(visible_statuses)))
         .group_by(WikiCategory.id)
         .order_by(WikiCategory.display_order)
         .all()
     )
-    for cat, cnt in cat_rows:
-        wiki_categories.append(SimpleNamespace(id=cat.id, name=cat.name, slug=cat.slug, count=cnt))
+    for category, count in cat_rows:
+        wiki_categories.append(
+            SimpleNamespace(
+                id=category.id,
+                name=category.name,
+                slug=category.slug,
+                count=count,
+            )
+        )
 
     selected_markdown = read_wiki_markdown(selected_page)
     selected_creator_key = creator_key_from_page(selected_page)
@@ -3033,7 +3161,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
             source for source in source_map.values()
             if safe_json(source.metadata_json).get("creator_key") == selected_creator_key
         ]
-    wiki_question = request.query_params.get("q") or ""
+    wiki_question = (request.query_params.get("q") or "").strip()
     wiki_answer = None
     wiki_answer_html = ""
     if wiki_question and selected_page:
@@ -3048,6 +3176,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
             {"source": "suggested_question", "has_sources": bool(wiki_answer.sources)},
             page_id=selected_page.page_id,
         )
+
     return templates.TemplateResponse(
         request,
         "wiki.html",
@@ -3055,334 +3184,37 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
             request,
             "wiki",
             db,
-            pages=pages,
-            all_pages=all_pages,
-            selected_page=selected_page,
-            selected_markdown=selected_markdown,
-            selected_markdown_html=render_markdown(selected_markdown),
-            selected_refs=selected_refs,
-            selected_tags=selected_tags,
-            source_map=source_map,
-            selected_creator_key=selected_creator_key,
-            selected_creator_sources=selected_creator_sources,
-            wiki_sections=WIKI_SECTIONS,
-            section_counts=section_counts,
+            created=request.query_params.get("created"),
             active_section=active_section,
             active_category=active_category,
-            wiki_categories=wiki_categories,
+            pages=pages,
+            all_pages=all_pages,
             total_page_count=len(all_pages),
-            agent_legion=get_agent_legion()["agents"],
-            activation_rules=get_activation_rules()["rules"],
-            created=request.query_params.get("created"),
+            section_counts=section_counts,
+            wiki_categories=wiki_categories,
+            selected_page=selected_page,
+            selected_refs=selected_refs,
+            selected_tags=selected_tags,
+            selected_markdown_html=render_markdown(selected_markdown),
             wiki_question=wiki_question,
             wiki_answer=wiki_answer,
             wiki_answer_html=wiki_answer_html,
+            source_map=source_map,
+            selected_creator_key=selected_creator_key,
+            selected_creator_sources=selected_creator_sources,
         ),
     )
 
 
-@router.get("/ui/activation", response_class=HTMLResponse)
-def activation_page(request: Request, db: Session = Depends(get_db)):
-    profiles = get_model_profiles()
-    return templates.TemplateResponse(
-        request,
-        "activation.html",
-        template_context(
-            request,
-            "activation",
-            db,
-            rules=get_activation_rules()["rules"],
-            model_profiles=profiles["profiles"],
-            pages=db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(5).all(),
-            sources=db.query(RawSource).order_by(RawSource.created_at.desc()).limit(5).all(),
-            saved=request.query_params.get("saved"),
-        ),
-    )
-
-
-@router.post("/activation/rules")
-async def save_activation_rule(request: Request):
-    data = await request_data(request)
-    payload = get_activation_rules()
-    rule_id = str(data.get("rule_id") or "").strip()
-    rule = next((item for item in payload["rules"] if item.get("id") == rule_id), None) if rule_id else None
-    rule = {
-        "id": rule_id or f"activation-{uuid4().hex}",
-        "name": str(data.get("name") or "未命名激活规则").strip(),
-        "trigger": str(data.get("trigger") or "按需").strip(),
-        "cadence": str(data.get("cadence") or "按需").strip(),
-        "run_time": str(data.get("run_time") or "").strip(),
-        "focus": str(data.get("focus") or "").strip(),
-        "model_profile_id": str(data.get("model_profile_id") or "").strip(),
-        "delivery": str(data.get("delivery") or "首页提醒").strip(),
-        "limit": int(data.get("limit") or 3),
-        "status": "已启用",
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    if rule_id:
-        payload["rules"] = [rule if item.get("id") == rule_id else item for item in payload["rules"]]
-        if not any(item.get("id") == rule_id for item in payload["rules"]):
-            payload["rules"].insert(0, rule)
-    else:
-        payload["rules"].insert(0, rule)
-    write_json(ACTIVATION_RULES_PATH, payload)
-    if wants_html(request):
-        return RedirectResponse("/ui/activation?saved=1", status_code=303)
-    return {"status": "created", "rule": rule}
-
-
-@router.post("/activation/rules/{rule_id}/run")
-async def run_activation_rule(rule_id: str, request: Request):
-    payload = get_activation_rules()
-    rule = next((item for item in payload["rules"] if item.get("id") == rule_id), None)
-    if rule is None:
-        raise HTTPException(status_code=404, detail="activation rule not found")
-    rule["last_run_at"] = datetime.now().isoformat(timespec="seconds")
-    rule["status"] = "已启用"
-    write_json(ACTIVATION_RULES_PATH, payload)
-    if wants_html(request):
-        return RedirectResponse("/ui/activation?saved=run", status_code=303)
-    return {"status": "ran", "rule": rule}
-
-
-@router.get("/ui/wiki/new", response_class=HTMLResponse)
-def new_wiki_page(request: Request, db: Session = Depends(get_db)):
-    return templates.TemplateResponse(
-        request,
-        "wiki_new.html",
-        template_context(request, "wiki", db, created=request.query_params.get("created")),
-    )
-
-
-@router.post("/wiki/pages")
-async def create_wiki_page(request: Request, db: Session = Depends(get_db)):
-    data = await request_data(request)
-    title = str(data.get("title") or "未命名页面").strip() or "未命名页面"
-    page_type = str(data.get("page_type") or "knowledge").strip()
-    if page_type not in {"knowledge", "methodology", "sop", "skill"}:
-        page_type = "knowledge"
-    content = str(data.get("content") or "").strip()
-    page_id = f"page-{uuid4().hex}"
-    markdown_path = LOCAL_DATA_DIR / "wiki" / f"{page_id}.md"
-    markdown_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(f"# {title}\n\n{content}\n", encoding="utf-8")
-    page = WikiPage(
-        page_id=page_id,
-        page_type=page_type,
-        title=title,
-        markdown_path=str(markdown_path),
-        source_refs_json="[]",
-        tags_json=json.dumps([page_type], ensure_ascii=False),
-        updated_by="user",
-    )
-    db.add(page)
-    db.commit()
-    if wants_html(request):
-        section_id = "skills" if page_type == "skill" else page_type
-        return RedirectResponse(f"/ui/wiki?section={section_id}&page_id={page_id}&created=page", status_code=303)
-    return {"status": "created", "page_id": page_id}
-
-
-@router.get("/knowledge/agents")
-def knowledge_agents() -> dict[str, Any]:
-    return get_agent_legion()
-
-
-@router.post("/knowledge/agents")
-async def create_knowledge_agent(request: Request):
-    data = await request_data(request)
-    name = str(data.get("name") or "").strip()
-    focus = str(data.get("focus") or "").strip()
-    cadence = str(data.get("cadence") or "每周").strip()
-    if not name or not focus:
-        raise HTTPException(status_code=400, detail="name and focus are required")
-    payload = get_agent_legion()
-    agent = {
-        "id": f"agent-{uuid4().hex}",
-        "name": name,
-        "focus": focus,
-        "cadence": cadence,
-    }
-    payload["agents"].insert(0, agent)
-    write_json(AGENT_LEGION_PATH, payload)
-    if wants_html(request):
-        return RedirectResponse("/ui/wiki?created=agent", status_code=303)
-    return {"status": "created", "agent": agent}
-
-
-@router.get("/ui/query", response_class=HTMLResponse)
-def query_page(request: Request, db: Session = Depends(get_db)):
-    return RedirectResponse("/#home-chat", status_code=303)
-
-
-@router.get("/ui/settings", response_class=HTMLResponse)
-def settings_page(request: Request, db: Session = Depends(get_db)):
-    track_event(db, "page_viewed", {"page": "settings"})
-    settings = get_model_settings()
-    profiles = get_model_profiles()
-    tracking = TrackingService(db)
-    return templates.TemplateResponse(
-        request,
-        "settings.html",
-        template_context(
-            request,
-            "settings",
-            db,
-            settings=settings,
-            providers=get_providers(),
-            model_profiles=profiles["profiles"],
-            active_profile_id=get_active_profile_id(settings, profiles),
-            status=request.query_params.get("status"),
-            test=request.query_params.get("test"),
-            test_error=request.query_params.get("error"),
-            test_provider=request.query_params.get("provider"),
-            event_counts=tracking.counts(),
-            recent_events=tracking.recent(10),
-        ),
-    )
-
-
-@router.get("/settings/events/export")
-def export_product_events(db: Session = Depends(get_db)) -> JSONResponse:
-    events = [
-        {
-            "id": event.id,
-            "event_name": event.event_name,
-            "properties": safe_json(event.properties_json),
-            "candidate_id": event.candidate_id,
-            "raw_source_id": event.raw_source_id,
-            "page_id": event.page_id,
-            "created_at": iso(event.created_at),
-        }
-        for event in TrackingService(db).recent(500)
-    ]
-    return JSONResponse({"events": events, "temporary_adapter": True})
-
-
-# --- Delete RawSource (user-initiated only) ---
-
-
-@router.post("/api/sources/{raw_source_id}/delete")
-async def delete_raw_source(raw_source_id: int, request: Request, db: Session = Depends(get_db)):
-    """User-initiated delete: moves RawSource to recycle bin, removes from knowledge base."""
-    source = db.get(RawSource, raw_source_id)
-    if not source:
-        raise HTTPException(status_code=404, detail="RawSource not found")
-
-    # Remove associated wiki pages
-    pages = pages_for_raw_source(db, raw_source_id)
-    for page in pages:
-        page.status = "deleted"
-
-    # Add to recycle bin
-    existing = db.query(RecycleBinItem).filter(RecycleBinItem.canonical_url == source.canonical_url).first()
-    if not existing:
-        db.add(RecycleBinItem(
-            candidate_id=source.candidate_id,
-            canonical_url=source.canonical_url,
-            external_item_id=source.external_item_id,
-            title=source.title,
-            platform=source.platform,
-            reason="user_deleted",
-        ))
-
-    # Delete the raw source record
-    db.delete(source)
-    db.commit()
-
-    track_event(db, "raw_source_deleted", {"platform": source.platform}, raw_source_id=raw_source_id)
-
-    if wants_html(request):
-        return RedirectResponse("/ui/sources?deleted=1", status_code=303)
-    return {"status": "deleted", "raw_source_id": raw_source_id}
-
-
-@router.post("/api/sources/batch-delete")
-async def batch_delete_raw_sources(request: Request, db: Session = Depends(get_db)):
-    """Delete multiple RawSource items."""
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        data = await request.json()
-        ids = data.get("ids") or []
-    else:
-        form = await request.form()
-        ids = form.getlist("ids")
-    if isinstance(ids, str):
-        ids = [ids]
-    if not ids:
-        raise HTTPException(status_code=400, detail="ids required")
-
-    deleted = 0
-    for rid in ids:
-        source = db.get(RawSource, int(rid))
-        if not source:
-            continue
-        pages = pages_for_raw_source(db, source.id)
-        for page in pages:
-            page.status = "deleted"
-        existing = db.query(RecycleBinItem).filter(RecycleBinItem.canonical_url == source.canonical_url).first()
-        if not existing:
-            db.add(RecycleBinItem(
-                candidate_id=source.candidate_id,
-                canonical_url=source.canonical_url,
-                external_item_id=source.external_item_id,
-                title=source.title,
-                platform=source.platform,
-                reason="user_deleted",
-            ))
-        db.delete(source)
-        deleted += 1
-    db.commit()
-
-    if wants_html(request):
-        return RedirectResponse(f"/ui/sources?deleted={deleted}", status_code=303)
-    return {"status": "deleted", "count": deleted}
-
-
-@router.get("/candidates")
-def list_candidates(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    return [candidate_to_dict(candidate) for candidate in db.query(CandidateItem).order_by(CandidateItem.created_at.desc()).all()]
-
-
-@router.get("/candidates/{candidate_id}")
-def get_candidate(candidate_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    candidate = db.get(CandidateItem, candidate_id)
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    return candidate_to_dict(candidate)
-
-
-@router.post("/candidates/{candidate_id}/confirm")
-async def confirm_candidate(candidate_id: int, request: Request, db: Session = Depends(get_db)):
-    candidate = db.get(CandidateItem, candidate_id)
-    if candidate is None:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    audit = ClassifierService(db).ensure_manual_skip_audit(candidate)
-    raw_source = RawSourceService(db).ingest_candidate(candidate.id)
-    track_event(
-        db,
-        "task_processing_started",
-        {"step": "raw_source_created", "classification_label": audit.label},
-        candidate_id=candidate.id,
-        raw_source_id=raw_source.id,
-    )
-    track_event(db, "task_created", {"task_type": candidate.source_type, "object": "raw_source"}, candidate_id=candidate.id, raw_source_id=raw_source.id)
-    track_event(db, "v3_processing_started", {"current_step": "source_saved"}, candidate_id=candidate.id, raw_source_id=raw_source.id)
-    if wants_html(request):
-        return RedirectResponse(f"/ui/task/candidate/{candidate.id}?created=raw-source", status_code=303)
-    return {"status": "confirmed", "candidate_id": candidate_id, "raw_source_id": raw_source.id, "classification_audit_id": audit.id}
-
-
-@router.post("/agent/process-candidate/{candidate_id}")
-async def process_candidate(candidate_id: int, request: Request, db: Session = Depends(get_db)):
+@router.post("/api/wiki/{page_id}/delete")
+async def delete_wiki_page(page_id: str, request: Request, db: Session = Depends(get_db)):
     try:
-        raw_source = RawSourceService(db).ingest_candidate(candidate_id)
-        page = await WikiMaintenanceService(db).create_page_from_raw_source(raw_source.id)
+        RecycleService(db).archive_wiki_page(page_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if wants_html(request):
-        return RedirectResponse(f"/ui/review/{page.page_id}?saved=processed", status_code=303)
-    return {"status": "processed", "raw_source_id": raw_source.id, "wiki_page_id": page.page_id}
+        return RedirectResponse("/ui/wiki?deleted=1", status_code=303)
+    return {"status": "deleted", "page_id": page_id}
 
 
 @router.post("/api/creator/{creator_key:path}/create-wiki")
@@ -4791,153 +4623,65 @@ async def collect_and_extract(platform: str, request: Request, db: Session = Dep
 
 @router.post("/api/wiki/batch-delete")
 async def batch_delete_wiki_pages(request: Request, db: Session = Depends(get_db)):
-    content_type = request.headers.get("content-type", "")
-    if "application/json" in content_type:
-        data = await request.json()
-        page_ids = data.get("page_ids") or []
-    else:
-        form = await request.form()
-        page_ids = form.getlist("page_ids")
-    if isinstance(page_ids, str):
-        page_ids = [page_ids]
-    if not page_ids:
-        raise HTTPException(status_code=400, detail="page_ids required")
-
-    deleted = 0
-    for pid in page_ids:
-        page = db.query(WikiPage).filter(WikiPage.page_id == str(pid)).first()
-        if not page:
-            continue
-        page.status = "deleted"
-        existing = db.query(RecycleBinItem).filter(
-            RecycleBinItem.page_id == page.page_id,
-            RecycleBinItem.item_type == "wiki_page",
-        ).first()
-        if not existing:
-            db.add(RecycleBinItem(
-                item_type="wiki_page",
-                page_id=page.page_id,
-                canonical_url="",
-                external_item_id="",
-                title=page.title,
-                platform="wiki",
-                reason="user_deleted",
-            ))
-        deleted += 1
-    db.commit()
-
-    if wants_html(request):
-        return RedirectResponse(f"/ui/wiki?deleted={deleted}", status_code=303)
-    return {"status": "deleted", "count": deleted}
-
-
-# --- History clear ---
-
-
-@router.post("/api/history/clear")
-async def clear_history(request: Request, db: Session = Depends(get_db)):
-    """Clear all candidates and scan logs (history)."""
-    from app.models import ProductEvent
-    candidate_count = db.query(CandidateItem).count()
-    db.query(ScanLog).delete()
-    db.query(KnowledgeClassification).delete()
-    db.query(SyncLedgerItem).delete()
-    db.query(CandidateItem).delete()
-    db.query(ProductEvent).delete()
-    db.commit()
-    if wants_html(request):
-        return RedirectResponse(f"/ui/history?cleared={candidate_count}", status_code=303)
-    return {"status": "cleared", "count": candidate_count}
-
-
-# --- Lint Agent ---
-
-
-@router.post("/api/lint/run")
-async def lint_run(db: Session = Depends(get_db)):
-    from app.agent.lint_agent import LintAgent
-    report = await LintAgent(db).run_full_check()
-    return report
-
-
-@router.get("/api/lint/report")
-async def lint_report(db: Session = Depends(get_db)):
-    from app.agent.lint_agent import LintAgent
-    report = await LintAgent(db).run_full_check()
-    return report
-
-
-# --- Auto Sync Toggle ---
-
-
-@router.post("/api/sync/toggle-auto")
-async def toggle_auto_sync(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
-    connector_id = int(data.get("connector_id") or 0)
-    enabled = truthy(data.get("enabled"), True)
-    connector = db.get(Connector, connector_id)
-    if not connector:
-        raise HTTPException(status_code=404, detail="Connector not found")
-    connector.auto_sync_enabled = enabled
+    raw_page_ids = data.get("page_ids", [])
+    if isinstance(raw_page_ids, str):
+        page_ids = [raw_page_ids]
+    else:
+        page_ids = [str(page_id) for page_id in raw_page_ids if page_id]
+    service = RecycleService(db)
+    deleted_count = 0
+    for page_id in page_ids:
+        try:
+            service.archive_wiki_page(page_id)
+            deleted_count += 1
+        except ValueError:
+            continue
+    if wants_html(request):
+        return RedirectResponse(f"/ui/wiki?deleted={deleted_count}", status_code=303)
+    return {"status": "deleted", "count": deleted_count}
+
+
+@router.post("/recycle/{recycle_item_id}/restore")
+async def restore_recycled_item(recycle_item_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        result = RecycleService(db).restore(recycle_item_id)
+    except ValueError as exc:
+        if wants_html(request):
+            return RedirectResponse("/ui/recycle?error=restore", status_code=303)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if wants_html(request):
+        return RedirectResponse("/ui/recycle?restored=1", status_code=303)
+    if isinstance(result, WikiPage):
+        return {"status": "restored", "page_id": result.page_id}
+    if isinstance(result, RawSource):
+        return {"status": "restored", "raw_source_id": result.id}
+    if isinstance(result, CandidateItem):
+        return {"status": "restored", "candidate_id": result.id}
+    return {"status": "restored"}
+
+
+@router.post("/recycle/{recycle_item_id}/delete")
+def delete_recycled_item(recycle_item_id: int, request: Request, db: Session = Depends(get_db)):
+    try:
+        RecycleService(db).permanent_delete(recycle_item_id)
+    except ValueError as exc:
+        if wants_html(request):
+            return RedirectResponse("/ui/recycle?error=delete", status_code=303)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if wants_html(request):
+        return RedirectResponse("/ui/recycle?deleted=1", status_code=303)
+    return {"status": "deleted"}
+
+
+@router.post("/recycle/clear-all")
+def clear_recycle_bin(request: Request, db: Session = Depends(get_db)):
+    db.query(RecycleBinItem).delete(synchronize_session=False)
     db.commit()
-    return {"connector_id": connector_id, "auto_sync_enabled": enabled}
-
-
-# ─── Auto-distill API ───────────────────────────────────────────────────────
-
-
-@router.post("/api/distill/trigger")
-async def trigger_distill(db: Session = Depends(get_db)):
-    """Return count of pending items for progress UI."""
-    from app.services.auto_distill_service import AutoDistillService
-    status = AutoDistillService(db).get_distill_status()
-    return {"pending": status["pending"]}
-
-
-@router.post("/api/distill/step")
-async def distill_step(db: Session = Depends(get_db)):
-    """Distill ONE pending item. Called repeatedly by frontend for progress."""
-    from app.models import UserPreference, WikiCategory
-    from app.services.auto_distill_service import AutoDistillService
-    svc = AutoDistillService(db)
-    existing_cats = {c.name for c in db.query(WikiCategory).all()}
-    pages = await svc.distill_pending(limit=1)
-    if not pages:
-        return {"done": True, "page": None, "new_category": None}
-    p = pages[0]
-    cat = db.get(WikiCategory, p.category_id) if p.category_id else None
-    cat_name = cat.name if cat else "未分类"
-    is_new = cat_name not in existing_cats
-    remaining = svc.get_distill_status()["pending"]
-    return {
-        "done": False,
-        "page": {"id": p.id, "title": p.title, "category": cat_name},
-        "new_category": cat_name if is_new else None,
-        "remaining": remaining,
-    }
-
-
-@router.get("/api/distill/status")
-def distill_status(db: Session = Depends(get_db)):
-    from app.services.auto_distill_service import AutoDistillService
-    return AutoDistillService(db).get_distill_status()
-
-
-# ─── Wiki categories API ────────────────────────────────────────────────────
-
-
-@router.get("/api/wiki/categories")
-def wiki_categories_api(db: Session = Depends(get_db)):
-    from app.models import WikiCategory, WikiPage
-    from sqlalchemy import func
-    cats = (
-        db.query(WikiCategory, func.count(WikiPage.id))
-        .outerjoin(WikiPage, WikiPage.category_id == WikiCategory.id)
-        .group_by(WikiCategory.id)
-        .order_by(WikiCategory.display_order)
-        .all()
-    )
-    return [{"id": c.id, "name": c.name, "slug": c.slug, "count": cnt} for c, cnt in cats]
+    if wants_html(request):
+        return RedirectResponse("/ui/recycle?cleared=1", status_code=303)
+    return {"status": "cleared"}
 
 
 @router.post("/api/wiki/categories/{category_id}/rename")
@@ -4953,6 +4697,37 @@ async def rename_wiki_category(category_id: int, request: Request, db: Session =
     cat.name = new_name
     db.commit()
     return {"id": cat.id, "name": cat.name}
+
+
+@router.post("/api/wiki/categories/{category_id}/delete")
+def delete_wiki_category(category_id: int, db: Session = Depends(get_db)):
+    import json as _json
+    from app.models import RecycleBinItem, WikiCategory, WikiPage
+    cat = db.get(WikiCategory, category_id)
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    # Collect page_ids that belong to this category for restore later
+    page_ids = [p.page_id for p in db.query(WikiPage.page_id).filter(WikiPage.category_id == cat.id).all()]
+    # Unlink pages from this category
+    db.query(WikiPage).filter(WikiPage.category_id == cat.id).update(
+        {"category_id": None}, synchronize_session=False
+    )
+    # Snapshot the category for restore
+    snap = _json.dumps({"name": cat.name, "slug": cat.slug, "display_order": cat.display_order, "page_ids": page_ids})
+    recycle_item = RecycleBinItem(
+        item_type="wiki_category",
+        title=cat.name,
+        page_id=None,
+        canonical_url="",
+        external_item_id=str(cat.id),
+        platform="wiki_category",
+        raw_source_snapshot_json=snap,
+        status="deleted",
+    )
+    db.add(recycle_item)
+    db.delete(cat)
+    db.commit()
+    return {"ok": True}
 
 
 # ─── Push scheduler API ─────────────────────────────────────────────────────
@@ -5024,33 +4799,8 @@ async def push_test_api(db: Session = Depends(get_db)):
 
 @router.get("/api/push/pending-feedback")
 def pending_feedback_api(db: Session = Depends(get_db)):
-    """Return push items awaiting Like/Unlike feedback (every 5th push without feedback yet)."""
-    from app.models import PushHistory
-    # Find pushes where total_push_count was a multiple of 5 and no feedback given
-    pending = (
-        db.query(PushHistory)
-        .filter(PushHistory.feedback == None)  # noqa: E711
-        .order_by(PushHistory.pushed_at.desc())
-        .limit(20)
-        .all()
-    )
-    # Only show ones at 5th intervals: check if their sequence position % 5 == 0
-    # Simpler: just show the most recent one without feedback if total_push_count % 5 == 0
-    from app.models import PushSettings
-    settings = db.query(PushSettings).first()
-    if not settings or settings.total_push_count % 5 != 0:
-        return []
-    # Get the latest push without feedback
-    latest = db.query(PushHistory).filter(PushHistory.feedback == None).order_by(PushHistory.pushed_at.desc()).first()  # noqa: E711
-    if not latest:
-        return []
-    from app.models import WikiPage
-    page = db.get(WikiPage, latest.wiki_page_id) if latest.wiki_page_id else None
-    return [{
-        "push_id": latest.id,
-        "title": page.title if page else "",
-        "category": latest.category_name or "",
-    }]
+    """Legacy endpoint kept inert so cached old JS cannot show refresh-time feedback."""
+    return []
 
 
 @router.post("/api/push/preference-feedback")

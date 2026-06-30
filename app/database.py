@@ -86,6 +86,26 @@ def _run_migrations() -> None:
     _add_col("push_settings", "total_push_count", "INTEGER NOT NULL DEFAULT 0")
     _add_col("push_history", "wiki_page_id", "INTEGER")
     _add_col("push_history", "category_name", "VARCHAR(120)")
+    _add_col("push_history", "feedback_requested", "BOOLEAN NOT NULL DEFAULT 0")
     _add_col("recycle_bin_items", "item_type", "VARCHAR(40) NOT NULL DEFAULT 'raw_source'")
     _add_col("recycle_bin_items", "page_id", "VARCHAR(200)")
+    _add_col("recycle_bin_items", "raw_source_snapshot_json", "TEXT")
+    _add_col("recycle_bin_items", "source_label", "VARCHAR(200)")
+    _migrate_knowledge_graph_edges(engine)
 
+
+def _migrate_knowledge_graph_edges(engine) -> None:
+    """Migrate knowledge_graph_edges from raw_source-based to wiki_page-based."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    if not inspector.has_table("knowledge_graph_edges"):
+        return
+    cols = {c["name"] for c in inspector.get_columns("knowledge_graph_edges")}
+    # If already migrated to page-based schema, skip
+    if "source_page_id" in cols:
+        return
+    # Drop old table and recreate (old data referenced raw_sources which are stale)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS knowledge_graph_edges"))
+    Base.metadata.tables["knowledge_graph_edges"].create(bind=engine, checkfirst=True)

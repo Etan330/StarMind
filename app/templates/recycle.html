@@ -3,38 +3,47 @@
 {% set title = "回收站" %}
 
 {% block content %}
-{{ ui.page_header("回收站", "被删除或过滤掉的内容在这里，30 天内可恢复。") }}
+{{ ui.page_header("回收站", "被删除的内容在这里，可恢复到原有位置或彻底删除。") }}
 
 {% if request.query_params.get("cleared") %}
   <div class="notice ok centered-notice">回收站已清空。</div>
 {% endif %}
+{% if request.query_params.get("restored") %}
+  <div class="notice ok centered-notice">已恢复到原有位置。</div>
+{% endif %}
+{% if request.query_params.get("deleted") %}
+  <div class="notice ok centered-notice">已彻底删除。</div>
+{% endif %}
+{% if request.query_params.get("error") %}
+  <div class="notice err centered-notice">恢复失败，该条目数据可能已损坏。</div>
+{% endif %}
+<div class="notice ok centered-notice" data-recycle-status hidden></div>
 
 <section class="glass-card v1-section">
   {% if recycle_items %}
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-      <span style="color:#666;">共 {{ recycle_items | length }} 条</span>
-      <form method="post" action="/api/recycle/clear-all" onsubmit="return confirm('确定清空回收站？此操作不可恢复。')">
-        <button class="btn secondary small" type="submit" style="color:#E85D75;border-color:#E85D75;">🗑 一键清空</button>
+      <span data-recycle-count data-count="{{ recycle_items | length }}" style="color:#666;">共 {{ recycle_items | length }} 条</span>
+      <form method="post" action="/recycle/clear-all" onsubmit="return confirm('确定清空回收站？此操作不可恢复。')">
+        <button class="btn secondary small" type="submit" style="color:#E85D75;border-color:#E85D75;">一键清空</button>
       </form>
     </div>
     <div class="compact-list">
       {% for item in recycle_items %}
-        <article class="source-line" style="display:flex;align-items:center;justify-content:space-between;">
+        <article class="source-line" data-recycle-item style="display:flex;align-items:center;justify-content:space-between;">
           <div>
             <strong>{{ item.title }}</strong>
             <small style="display:block;color:#888;">
-              {% if item.item_type == "wiki_page" %}知识库页面{% else %}{{ item.platform }}{% endif %}
-              · {{ item.archived_at.strftime("%Y/%m/%d") }} · {{ item.reason }}
+              来自：<span style="font-weight:500;color:#555;">{{ item.source_label or "—" }}</span>
+              · {{ item.archived_at.strftime("%Y/%m/%d") }}
             </small>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <form method="post" action="/recycle/{{ item.id }}/restore" style="margin:0;">
-              {% if item.item_type == "wiki_page" %}
-              <input type="hidden" name="target" value="wiki">
-              {% else %}
-              <input type="hidden" name="target" value="review">
-              {% endif %}
+            <form data-recycle-restore-form data-restore-url="/recycle/{{ item.id }}/restore" style="margin:0;">
               <button class="btn secondary small" type="submit">恢复</button>
+            </form>
+            <form method="post" action="/recycle/{{ item.id }}/delete" style="margin:0;"
+                  onsubmit="return confirm('彻底删除「{{ item.title }}」？此操作不可恢复。')">
+              <button class="btn secondary small" type="submit" style="color:#E85D75;border-color:#E85D75;">彻底删除</button>
             </form>
           </div>
         </article>
@@ -42,9 +51,56 @@
     </div>
   {% else %}
     <div style="text-align:center;padding:40px;color:#888;">
-      <p style="font-size:1.2rem;">🗑 回收站为空</p>
-      <p>被删除或过滤掉的内容会出现在这里。</p>
+      <p style="font-size:1.2rem;">回收站为空</p>
+      <p>被删除的内容会出现在这里。</p>
     </div>
   {% endif %}
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.querySelectorAll("[data-recycle-restore-form]").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault()
+      const button = form.querySelector("button")
+      const row = form.closest("[data-recycle-item]")
+      const status = document.querySelector("[data-recycle-status]")
+      const originalText = button ? button.textContent : ""
+      if (button) {
+        button.disabled = true
+        button.textContent = "恢复中..."
+      }
+      try {
+        const response = await fetch(form.dataset.restoreUrl, {
+          method: "POST",
+          headers: { "Accept": "application/json", "X-Requested-With": "fetch" },
+        })
+        if (!response.ok) throw new Error("restore failed")
+        row?.remove()
+        if (status) {
+          status.hidden = false
+          status.textContent = "已恢复到原有位置。"
+        }
+        const count = document.querySelector("[data-recycle-count]")
+        if (count) {
+          const nextCount = Math.max(0, Number(count.dataset.count || "1") - 1)
+          count.dataset.count = String(nextCount)
+          count.textContent = `共 ${nextCount} 条`
+        }
+      } catch (error) {
+        if (status) {
+          status.hidden = false
+          status.classList.remove("ok")
+          status.classList.add("err")
+          status.textContent = "恢复失败，该条目数据可能已损坏。"
+        }
+        if (button) {
+          button.disabled = false
+          button.textContent = originalText
+        }
+      }
+    })
+  })
+</script>
 {% endblock %}

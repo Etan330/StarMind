@@ -39,7 +39,7 @@
     `,
     pending_items: `
       <p>只有少量边界内容需要你确认，确认后才会进入知识库。</p>
-      <a class="btn primary full" href="/ui/pending">去处理</a>
+      <a class="btn primary full" href="/ui/sources">查看来源</a>
     `,
     recent_sources: `
       <p>这些收藏已经进入原始资料库，可以继续沉淀成页面或 SOP。</p>

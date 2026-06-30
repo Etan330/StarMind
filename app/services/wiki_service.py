@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import LOCAL_DATA_DIR
 from app.llm import get_provider_runtime
-from app.models import RawSource, WikiLog, WikiPage
+from app.models import KnowledgeGraphEdge, RawSource, WikiLog, WikiPage
 
 
 class WikiMaintenanceService:
@@ -63,7 +63,134 @@ class WikiMaintenanceService:
         self._write_log("create_page", page, raw_source, f"Created {page_type} draft from Raw Source {raw_source.id}.")
         self.db.commit()
         self.db.refresh(page)
+        await self._build_wiki_edges(page, raw_source)
         return page
+
+    async def _build_wiki_edges(self, new_page: WikiPage, raw_source: RawSource | None = None) -> None:
+        """Ask LLM to find relationships between new_page and existing wiki pages, then create KnowledgeGraphEdge."""
+        other_pages = [p for p in self.db.query(WikiPage).filter(WikiPage.status.in_(["active", "needs_review"])).all() if p.page_id != new_page.page_id]
+        if not other_pages:
+            return
+
+        prompt, page_index = self._edge_prompt(new_page, other_pages)
+
+        edges_created = False
+        try:
+            provider, model, _config = get_provider_runtime()
+            body = await provider.chat(
+                [
+                    {"role": "system", "content": "你是知识关联分析专家。只返回 JSON 数组。"},
+                    {"role": "user", "content": prompt},
+                ],
+                model=model,
+                temperature=0.2,
+            )
+            relations = self._parse_edge_response(body, page_index)
+            for rel in relations:
+                self._create_edge(new_page.page_id, rel["page_id"], rel["relation"], rel.get("reason", ""), rel.get("confidence", 0.7), rel.get("concepts", []))
+            edges_created = bool(relations)
+        except Exception as e:
+            import logging
+            logging.getLogger("starmind.wiki").warning(f"LLM edge building failed: {e}")
+
+        if not edges_created:
+            return
+
+    async def rebuild_ai_edges_for_pages(self, pages: list[WikiPage] | None = None) -> int:
+        pages = pages or self.db.query(WikiPage).filter(WikiPage.status.in_(["active", "needs_review"])).all()
+        pages = [p for p in pages if p.status in {"active", "needs_review"}]
+        before = self.db.query(KnowledgeGraphEdge).count()
+        for page in pages:
+            await self._build_wiki_edges(page, None)
+        after = self.db.query(KnowledgeGraphEdge).count()
+        return after - before
+
+    def _edge_prompt(self, new_page: WikiPage, other_pages: list[WikiPage]) -> tuple[str, list[dict[str, str]]]:
+        page_index = []
+        for p in other_pages:
+            page_index.append({
+                "page_id": p.page_id,
+                "title": p.title,
+                "excerpt": self._read_text(p.markdown_path)[:800],
+            })
+
+        markdown_text = self._read_text(new_page.markdown_path)[:1200]
+        page_list_text = "\n".join(
+            f"- [{item['page_id']}] {item['title']}\n  摘要片段：{item['excerpt']}"
+            for item in page_index
+        )
+
+        prompt = (
+            "【知识关联分析】\n"
+            "你正在为 StarMind 知识库建立 Obsidian 风格的双向知识链接。\n"
+            "只连接强相关的知识：必须存在明确的概念继承、方法复用、同一问题域、因果/对照关系，不能因为来源平台、泛泛标签或标题相似就连接。\n"
+            f"新知识页面：{new_page.title}\n"
+            f"新知识正文：{markdown_text}\n\n"
+            f"已有知识页面列表：\n{page_list_text}\n\n"
+            "请判断新页面与哪些已有页面有真实知识关联，返回 JSON 数组。每项必须包含：\n"
+            "page_id、relation、reason、confidence、concepts。\n"
+            "relation 可选值：topic_overlap（同一问题域）、extends（延伸扩展）、method_same（方法论相同）、supports（互相支撑）、contradicts（观点对立）。\n"
+            "confidence 是 0 到 1 的数字，只返回 confidence >= 0.75 的强相关链接。\n"
+            "concepts 是共同概念数组，reason 用一句话说明为什么应该链接。\n"
+            "如果没有强相关则返回空数组 []。只返回 JSON，不要其他文字。"
+        )
+        return prompt, page_index
+
+    def _parse_edge_response(self, body: str, page_index: list[dict]) -> list[dict]:
+        text = body.strip()
+        start = text.find("[")
+        end = text.rfind("]")
+        if start == -1 or end == -1:
+            return []
+        try:
+            items = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+        valid_ids = {item["page_id"] for item in page_index}
+        result = []
+        for item in items:
+            pid = item.get("page_id", "")
+            confidence = self._normalize_confidence(item.get("confidence"))
+            if pid in valid_ids and confidence >= 0.75:
+                concepts = item.get("concepts") if isinstance(item.get("concepts"), list) else []
+                result.append({
+                    "page_id": pid,
+                    "relation": item.get("relation", "topic_overlap"),
+                    "reason": item.get("reason", ""),
+                    "confidence": confidence,
+                    "concepts": [str(c) for c in concepts if str(c).strip()],
+                })
+        return result
+
+    def _normalize_confidence(self, value) -> float:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(1.0, confidence))
+
+    def _create_edge(self, source_page_id: str, target_page_id: str, relation: str, reason: str, confidence: float = 0.7, concepts: list[str] | None = None) -> None:
+        if source_page_id == target_page_id:
+            return
+        existing = self.db.query(KnowledgeGraphEdge).filter(
+            KnowledgeGraphEdge.relation == relation,
+            (
+                (KnowledgeGraphEdge.source_page_id == source_page_id) & (KnowledgeGraphEdge.target_page_id == target_page_id)
+            ) | (
+                (KnowledgeGraphEdge.source_page_id == target_page_id) & (KnowledgeGraphEdge.target_page_id == source_page_id)
+            ),
+        ).first()
+        if existing:
+            return
+        shared_concepts = concepts or ([reason] if reason else [])
+        self.db.add(KnowledgeGraphEdge(
+            source_page_id=source_page_id,
+            target_page_id=target_page_id,
+            relation=relation,
+            weight=confidence,
+            shared_concepts_json=json.dumps(shared_concepts, ensure_ascii=False),
+        ))
+        self.db.commit()
 
     async def create_creator_page(self, creator_key: str, force: bool = False) -> WikiPage:
         sources = self._creator_sources(creator_key)

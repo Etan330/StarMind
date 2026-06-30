@@ -291,7 +291,7 @@
       await new Promise(r => setTimeout(r, 800));
       overlay.remove();
       // Show result with preference setup for new categories
-      if (results.length) showDistillResult(results, [...newCats]);
+      if (results.length) await showDistillResult(results, [...newCats]);
       else alert('没有新内容被沉淀');
     } catch (e) { alert('沉淀失败: ' + e.message); }
     finally { btn.disabled = false; btn.textContent = '⚗️ 沉淀到知识库'; }
@@ -326,7 +326,7 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  function showDistillResult(results, newCats) {
+  async function showDistillResult(results, newCats) {
     const overlay = document.createElement('div');
     overlay.className = 'distill-overlay';
     // Group by category
@@ -337,14 +337,30 @@
       catHtml += `<div class="distill-cat"><strong>📁 ${cat}</strong><span>${pages.length} 条</span></div>`;
       pages.forEach(p => { catHtml += `<div class="distill-item">${p.title}</div>`; });
     }
+
     let prefHtml = '';
     if (newCats.length) {
-      prefHtml = '<div class="distill-pref-section"><h3>新分类偏好设置</h3><p class="distill-hint">首次出现的分类，请设置推送偏好（0-100%）</p>';
-      newCats.forEach(cat => {
-        prefHtml += `<div class="distill-pref-row"><span>${cat}</span><input type="range" min="0" max="100" value="50" class="pref-slider" data-cat="${cat}"><span class="pref-val">50</span></div>`;
+      // Load ALL category preferences so user can review everything
+      let allPrefs = [];
+      try {
+        const prefRes = await fetch('/api/push/preferences');
+        allPrefs = await prefRes.json();
+      } catch (e) {
+        // fallback: just show new cats
+        allPrefs = newCats.map(cat => ({ category: cat, score: 50 }));
+      }
+      const newCatSet = new Set(newCats);
+      prefHtml = `<div class="distill-pref-section">
+        <h3>偏好设置</h3>
+        <p class="distill-hint">新增了 ${newCats.length} 个分类，请调整所有分类的推送偏好（0=不推送，100=优先推送）</p>`;
+      allPrefs.forEach(item => {
+        const isNew = newCatSet.has(item.category);
+        const badge = isNew ? '<span class="new-cat-badge">新</span>' : '';
+        prefHtml += `<div class="distill-pref-row${isNew ? ' is-new-cat' : ''}"><span>${item.category}${badge}</span><input type="range" min="0" max="100" value="${item.score}" class="pref-slider" data-cat="${item.category}"><span class="pref-val">${item.score}</span></div>`;
       });
       prefHtml += '</div>';
     }
+
     overlay.innerHTML = `
       <div class="distill-modal">
         <h2>✅ 沉淀完成</h2>
@@ -352,7 +368,7 @@
         <div class="distill-cats">${catHtml}</div>
         ${prefHtml}
         <div class="distill-actions">
-          ${newCats.length ? '<button class="btn primary" onclick="saveNewPrefs(this)">保存偏好</button>' : ''}
+          ${newCats.length ? '<button class="btn primary" onclick="saveNewPrefs(this)">保存偏好设置</button>' : ''}
           <button class="btn secondary" onclick="this.closest(\'.distill-overlay\').remove()">关闭</button>
         </div>
       </div>`;
@@ -366,12 +382,13 @@
   }
 
   async function saveNewPrefs(btn) {
+    btn.disabled = true;
+    btn.textContent = '保存中...';
     const overlay = btn.closest('.distill-overlay');
     const prefs = {};
     overlay.querySelectorAll('.pref-slider').forEach(s => { prefs[s.dataset.cat] = parseInt(s.value); });
     await fetch('/api/push/preferences', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({preferences:prefs})});
     overlay.remove();
-    alert('偏好已保存，将用于后续知识推送');
   }
 </script>
 
@@ -393,6 +410,8 @@
 .distill-pref-row .pref-slider::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:#215f52;cursor:pointer;border:none;}
 .pipeline-status{display:flex;gap:16px;padding:10px 16px;background:#f0f7f5;border-radius:8px;margin-bottom:12px;font-size:.85rem;color:#215f52;}
 .distill-pref-row .pref-val{min-width:28px;text-align:right;font-size:0.82rem;color:#666;}
+.new-cat-badge{display:inline-block;margin-left:6px;padding:1px 5px;background:#215f52;color:#fff;border-radius:4px;font-size:0.7rem;vertical-align:middle;}
+.is-new-cat>span:first-child{font-weight:600;}
 .distill-actions{display:flex;gap:8px;margin-top:16px;}
 .progress-modal{text-align:center;}
 .progress-bar-wrap{width:100%;height:8px;background:#eee;border-radius:4px;margin:16px 0 8px;overflow:hidden;}

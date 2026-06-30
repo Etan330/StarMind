@@ -5,146 +5,109 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models import KnowledgeGraphEdge, RawSource
+from app.models import KnowledgeGraphEdge, WikiPage
 
 
 class GraphService:
     def __init__(self, db: Session) -> None:
         self.db = db
 
-    def build_edges_for_source(self, raw_source_id: int, concepts: list[str], domain: str | None = None) -> list[KnowledgeGraphEdge]:
-        """Match concepts against existing sources and create edges."""
-        if not concepts:
-            return []
-
-        all_sources = self.db.query(RawSource).filter(RawSource.id != raw_source_id).all()
-        new_edges: list[KnowledgeGraphEdge] = []
-
-        for other in all_sources:
-            meta = json.loads(other.metadata_json or "{}")
-            other_concepts = meta.get("related_concepts", [])
-            other_domain = meta.get("domain", "")
-
-            shared = set(concepts) & set(other_concepts)
-            if shared:
-                relation = "topic_overlap"
-                weight = min(0.9, 0.3 * len(shared))
-            elif domain and other_domain == domain:
-                relation = "domain_same"
-                weight = 0.6
-                shared = set()
-            else:
-                continue
-
-            # Check if edge already exists
-            existing = self.db.query(KnowledgeGraphEdge).filter(
-                KnowledgeGraphEdge.source_id == raw_source_id,
-                KnowledgeGraphEdge.target_id == other.id,
-                KnowledgeGraphEdge.relation == relation,
-            ).first()
-            if existing:
-                continue
-
-            edge = KnowledgeGraphEdge(
-                source_id=raw_source_id,
-                target_id=other.id,
-                relation=relation,
-                weight=weight,
-                shared_concepts_json=json.dumps(list(shared), ensure_ascii=False),
-            )
-            self.db.add(edge)
-            new_edges.append(edge)
-
-        if new_edges:
-            self.db.commit()
-        return new_edges
-
     def get_graph_data(self, domain_filter: str | None = None) -> dict[str, Any]:
-        sources = self.db.query(RawSource).all()
+        pages = self.db.query(WikiPage).filter(WikiPage.status.in_(["active", "needs_review"])).all()
         edges = self.db.query(KnowledgeGraphEdge).all()
 
-        # Build node map
-        source_map = {s.id: s for s in sources}
+        page_map = {p.page_id: p for p in pages}
+        page_tags = {p.page_id: self._safe_tags(p.tags_json) for p in pages}
         node_ids = set()
         filtered_edges = []
 
         for e in edges:
-            if domain_filter:
-                src_meta = json.loads(source_map[e.source_id].metadata_json or "{}") if e.source_id in source_map else {}
-                if src_meta.get("domain") != domain_filter:
-                    continue
+            if e.source_page_id not in page_map or e.target_page_id not in page_map:
+                continue
+            if domain_filter and domain_filter not in page_tags[e.source_page_id]:
+                continue
             filtered_edges.append(e)
-            node_ids.add(e.source_id)
-            node_ids.add(e.target_id)
+            node_ids.add(e.source_page_id)
+            node_ids.add(e.target_page_id)
 
-        # Include orphans if no filter
+        edge_list = self._dedupe_edge_dicts([self._edge_to_dict(e) for e in filtered_edges])
+
         if not domain_filter:
-            node_ids.update(s.id for s in sources)
+            node_ids.update(p.page_id for p in pages)
+        else:
+            node_ids.update(edge["source"] for edge in edge_list)
+            node_ids.update(edge["target"] for edge in edge_list)
+            node_ids.update(p.page_id for p in pages if domain_filter in page_tags[p.page_id])
 
-        # Count edges per node for sizing
-        edge_count: dict[int, int] = {}
-        for e in filtered_edges:
-            edge_count[e.source_id] = edge_count.get(e.source_id, 0) + 1
-            edge_count[e.target_id] = edge_count.get(e.target_id, 0) + 1
+        edge_count: dict[str, int] = {}
+        for edge in edge_list:
+            edge_count[edge["source"]] = edge_count.get(edge["source"], 0) + 1
+            edge_count[edge["target"]] = edge_count.get(edge["target"], 0) + 1
 
         nodes = []
-        for nid in node_ids:
-            src = source_map.get(nid)
-            if not src:
+        for pid in node_ids:
+            page = page_map.get(pid)
+            if not page:
                 continue
-            meta = json.loads(src.metadata_json or "{}")
+            tags = page_tags.get(pid, [])
             nodes.append({
-                "id": nid,
-                "label": src.title[:40],
-                "domain": meta.get("domain", "未分类"),
-                "topics": meta.get("related_concepts", []),
-                "size": max(1, edge_count.get(nid, 0)),
-                "type": src.source_type,
+                "id": pid,
+                "label": page.title[:40],
+                "domain": tags[0] if tags else "未分类",
+                "topics": tags,
+                "size": max(1, edge_count.get(pid, 0)),
+                "type": page.page_type,
             })
-
-        edge_list = [
-            {
-                "source": e.source_id,
-                "target": e.target_id,
-                "relation": e.relation,
-                "weight": e.weight,
-                "shared_concepts": json.loads(e.shared_concepts_json or "[]"),
-            }
-            for e in filtered_edges
-        ]
 
         return {"nodes": nodes, "edges": edge_list}
 
-    def get_node_detail(self, raw_source_id: int) -> dict[str, Any]:
-        src = self.db.get(RawSource, raw_source_id)
-        if not src:
+    def _edge_to_dict(self, edge: KnowledgeGraphEdge) -> dict[str, Any]:
+        return {
+            "source": edge.source_page_id,
+            "target": edge.target_page_id,
+            "relation": edge.relation,
+            "weight": edge.weight,
+            "shared_concepts": self._safe_tags(edge.shared_concepts_json),
+        }
+
+    def _dedupe_edge_dicts(self, edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for edge in edges:
+            source = str(edge["source"])
+            target = str(edge["target"])
+            key = (*sorted([source, target]), str(edge["relation"]))
+            existing = selected.get(key)
+            if existing is None or float(edge.get("weight") or 0) > float(existing.get("weight") or 0):
+                selected[key] = edge
+        return list(selected.values())
+
+    def _safe_tags(self, raw_json: str | None) -> list[str]:
+        try:
+            value = json.loads(raw_json or "[]")
+        except json.JSONDecodeError:
+            return []
+        return value if isinstance(value, list) else []
+
+    def get_node_detail(self, page_id: str) -> dict[str, Any]:
+        page = self.db.query(WikiPage).filter(WikiPage.page_id == page_id).first()
+        if not page:
             return {"error": "not found"}
 
         edges = self.db.query(KnowledgeGraphEdge).filter(
-            (KnowledgeGraphEdge.source_id == raw_source_id) | (KnowledgeGraphEdge.target_id == raw_source_id)
+            (KnowledgeGraphEdge.source_page_id == page_id) | (KnowledgeGraphEdge.target_page_id == page_id)
         ).all()
 
-        connected_ids = set()
-        for e in edges:
-            connected_ids.add(e.source_id if e.source_id != raw_source_id else e.target_id)
-
-        connected = self.db.query(RawSource).filter(RawSource.id.in_(connected_ids)).all() if connected_ids else []
+        connected_ids = {
+            e.source_page_id if e.source_page_id != page_id else e.target_page_id
+            for e in edges
+        }
+        connected_pages = self.db.query(WikiPage).filter(WikiPage.page_id.in_(connected_ids)).all() if connected_ids else []
 
         return {
-            "id": src.id,
-            "title": src.title,
-            "platform": src.platform,
-            "source_url": src.source_url,
-            "metadata": json.loads(src.metadata_json or "{}"),
-            "connected": [{"id": c.id, "title": c.title, "platform": c.platform} for c in connected],
+            "id": page_id,
+            "title": page.title,
+            "type": page.page_type,
+            "tags": json.loads(page.tags_json or "[]"),
+            "connected": [{"id": p.page_id, "title": p.title, "type": p.page_type} for p in connected_pages],
             "edge_count": len(edges),
         }
-
-    def detect_orphans(self) -> list[int]:
-        """Find RawSource IDs with no graph edges."""
-        all_ids = {s.id for s in self.db.query(RawSource.id).all()}
-        connected = set()
-        for e in self.db.query(KnowledgeGraphEdge).all():
-            connected.add(e.source_id)
-            connected.add(e.target_id)
-        return sorted(all_ids - connected)

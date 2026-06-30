@@ -888,8 +888,6 @@ select:focus {
 .task-v2-grid,
 .review-v2-layout,
 .demo-layout,
-.history-v2-layout,
-.history-layout,
 .wiki-layout,
 .settings-grid,
 .settings-support-grid,
@@ -1522,11 +1520,6 @@ select:focus {
   gap: 8px;
 }
 
-.history-v2-layout,
-.settings-support-grid {
-  grid-template-columns: minmax(0, 1fr) 330px;
-}
-
 .settings-support-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -1535,7 +1528,6 @@ select:focus {
   grid-template-columns: 250px minmax(0, 1fr) minmax(150px, 180px);
 }
 
-.history-side,
 .wiki-side,
 .demo-side {
   display: grid;
@@ -1940,28 +1932,10 @@ th {
   overflow-wrap: anywhere;
 }
 
-.task-history-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  padding: 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface-soft);
-}
-
-.task-history-card span,
-.task-history-card p,
 .log-line span,
 .log-line small,
 .soft-notice {
   color: var(--color-secondary);
-}
-
-.task-history-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .soft-notice {
@@ -2037,8 +2011,6 @@ th {
   .task-v2-grid,
   .review-v2-layout,
   .demo-layout,
-  .history-v2-layout,
-  .history-layout,
   .wiki-layout,
   .settings-grid,
   .settings-support-grid,

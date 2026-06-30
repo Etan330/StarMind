@@ -149,6 +149,10 @@ class RecycleBinItem(Base):
     archived_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: utcnow() + timedelta(days=30), nullable=False)
     status: Mapped[str] = mapped_column(String(80), nullable=False, default="archived")
+    # Snapshot of raw_source fields for restoration when candidate no longer exists
+    raw_source_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Human-readable tag showing where this item came from (e.g. "知识库 › 分类名" or "原始资料")
+    source_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
 
 
 class WikiCategory(Base):
@@ -274,6 +278,7 @@ class PushHistory(Base):
     wiki_page_id: Mapped[int | None] = mapped_column(ForeignKey("wiki_pages.id"), nullable=True)
     category_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     pushed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    feedback_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     feedback: Mapped[str | None] = mapped_column(String(20), nullable=True)
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -305,12 +310,12 @@ class ChatMessage(Base):
 class KnowledgeGraphEdge(Base):
     __tablename__ = "knowledge_graph_edges"
     __table_args__ = (
-        Index("ux_graph_edge", "source_id", "target_id", "relation", unique=True),
+        Index("ux_graph_edge", "source_page_id", "target_page_id", "relation", unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    source_id: Mapped[int] = mapped_column(ForeignKey("raw_sources.id"), nullable=False)
-    target_id: Mapped[int] = mapped_column(ForeignKey("raw_sources.id"), nullable=False)
+    source_page_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    target_page_id: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
     relation: Mapped[str] = mapped_column(String(80), nullable=False)
     weight: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
     shared_concepts_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)

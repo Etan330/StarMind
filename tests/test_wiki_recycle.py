@@ -83,7 +83,7 @@ def test_wiki_batch_delete_does_not_hard_delete_page():
     assert page.status == "deleted"
 
 
-def test_restore_wiki_page_sets_status_active():
+def test_restore_wiki_page_sets_status_active_and_removes_recycle_record():
     db = make_session()
     _add_wiki_page(db, page_id="page-c", title="待恢复页面", status="deleted")
     recycle_item = RecycleBinItem(
@@ -97,6 +97,7 @@ def test_restore_wiki_page_sets_status_active():
     )
     db.add(recycle_item)
     db.commit()
+    recycle_item_id = recycle_item.id
 
     def override_get_db():
         yield db
@@ -104,7 +105,7 @@ def test_restore_wiki_page_sets_status_active():
     app.dependency_overrides[get_db] = override_get_db
     try:
         client = TestClient(app)
-        response = client.post(f"/recycle/{recycle_item.id}/restore", data={"target": "wiki"})
+        response = client.post(f"/recycle/{recycle_item_id}/restore", data={"target": "wiki"})
     finally:
         app.dependency_overrides.clear()
 
@@ -113,9 +114,34 @@ def test_restore_wiki_page_sets_status_active():
     page = db.query(WikiPage).filter(WikiPage.page_id == "page-c").first()
     assert page is not None
     assert page.status == "active"
+    assert db.get(RecycleBinItem, recycle_item_id) is None
 
-    db.refresh(recycle_item)
-    assert recycle_item.status == "restored"
+
+def test_wiki_page_hides_deleted_pages_after_delete():
+    db = make_session()
+    _add_wiki_page(db, page_id="page-hidden", title="已删除页面", status="active")
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        delete_response = client.post(
+            "/api/wiki/page-hidden/delete",
+            headers={"accept": "text/html"},
+            follow_redirects=False,
+        )
+        page_response = client.get("/ui/wiki")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert delete_response.status_code == 303
+    page = db.query(WikiPage).filter(WikiPage.page_id == "page-hidden").first()
+    assert page is not None
+    assert page.status == "deleted"
+    assert db.query(RecycleBinItem).filter(RecycleBinItem.page_id == "page-hidden").count() == 1
+    assert "已删除页面" not in page_response.text
 
 
 def test_recycle_page_shows_wiki_items():
@@ -174,3 +200,63 @@ def test_recycle_bin_item_has_item_type_and_page_id_columns():
     db.refresh(item)
     assert item.item_type == "wiki_page"
     assert item.page_id == "page-e"
+
+
+def test_recycle_page_restore_form_uses_ajax_in_place_restore():
+    recycle_html = (
+        __import__("pathlib").Path(__file__).resolve().parents[1]
+        / "app" / "templates" / "recycle.html"
+    ).read_text(encoding="utf-8")
+    assert 'data-recycle-restore-form' in recycle_html
+    assert 'data-restore-url="/recycle/{{ item.id }}/restore"' in recycle_html
+    assert 'action="/recycle/{{ item.id }}/restore"' not in recycle_html
+
+
+def test_recycle_page_delete_form_posts_to_page_route():
+    recycle_html = (
+        __import__("pathlib").Path(__file__).resolve().parents[1]
+        / "app" / "templates" / "recycle.html"
+    ).read_text(encoding="utf-8")
+    assert 'action="/recycle/{{ item.id }}/delete"' in recycle_html
+    assert 'action="/api/recycle/{{ item.id }}/delete"' not in recycle_html
+
+
+def test_recycle_permanent_delete_redirects_back_to_recycle_page():
+    db = make_session()
+    recycle_item = RecycleBinItem(
+        item_type="wiki_page",
+        page_id="page-f",
+        canonical_url="",
+        external_item_id="",
+        title="待彻底删除",
+        platform="wiki",
+        reason="user_deleted",
+    )
+    db.add(recycle_item)
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app, follow_redirects=False)
+        response = client.post(
+            f"/recycle/{recycle_item.id}/delete",
+            headers={"accept": "text/html"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/recycle?deleted=1"
+    assert db.get(RecycleBinItem, recycle_item.id) is None
+
+
+def test_legacy_pending_recycle_redirect_goes_back_to_recycle_page():
+    client = TestClient(app, follow_redirects=False)
+
+    response = client.get("/ui/pending?created=recycle-cleared-1")
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/ui/recycle?cleared=1"
