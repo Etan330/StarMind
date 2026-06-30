@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,6 +9,9 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.models import ProductEvent
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def make_session():
@@ -226,16 +230,65 @@ def test_sync_favorites_page_renders_live_platform_tabbar():
         # 顶部平台标签栏 + 内联面板宿主
         assert "data-platform-tabs" in text
         assert "data-platform-panel-host" in text
-        # 三个可执行平台各有标签
+        # 顶部只保留已开通同步收藏路径的平台入口
         assert 'data-platform-tab="douyin"' in text
         assert 'data-platform-tab="xiaohongshu"' in text
-        assert 'data-platform-tab="bilibili"' in text
-        # 未接入平台不上标签（TikTok 只在下方降级列表）
+        assert 'data-platform-tab="bilibili"' not in text
+        # 未开通平台不上标签（B站/TikTok 只在下方列表）
         assert 'data-platform-tab="tiktok"' not in text
         # 默认平台 = 抖音（排序后首位）
         assert 'data-default-platform="douyin"' in text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_source_setup_history_controls_expose_saved_state_hooks():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        panel = client.get("/ui/source-setup/douyin/panel")
+
+        assert panel.status_code == 200
+        text = panel.text
+        start = text.index('data-collection-kind="history"')
+        panel_start = text.rfind('<div class="source-collection-panel', 0, start)
+        panel_end = text.find('</div>\n    </div>', start)
+        assert panel_start >= 0
+        assert panel_end > panel_start
+        html = text[panel_start:panel_end]
+        assert "data-filter-limit" not in html
+        assert "data-filter-scan" not in html
+        assert "data-filter-classify" not in html
+        assert "data-filter-save-history" not in html
+        assert "data-filter-rescan-history" not in html
+        assert "data-filter-clear-history" in html
+        assert "清空当前收藏列表" in html
+        assert "仅提取我勾选的内容" in html
+        assert "data-filter-resume" not in html
+        assert "我已完成验证，继续" not in html
+        assert "data-filter-ingested" in html
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_setup_extract_polling_layout_hooks_are_available():
+    app_js = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "app" / "static" / "css" / "v3-design-system.css").read_text(encoding="utf-8")
+
+    assert "source-filter-controls--saved" in app_js
+    assert "source-filter-controls--saved" in css
+    assert "source-filter-controls--scan" in app_js
+    assert "source-filter-controls--scan" in css
+    assert "pollExtractJob" in app_js
+    assert "showExtractPauseDialog" in app_js
+    assert "extract-overlay" in css
+    assert "extract-item-list" in css
+
 
 
 def test_source_setup_panel_endpoint_returns_fragment_only():

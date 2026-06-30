@@ -2,7 +2,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from app.connectors.xiaohongshu_diandian_extractor import DIANDIAN_URL, XiaohongshuDiandianExtractor, is_unhelpful_diandian_response
+from app.connectors.extract_pacing import is_low_quality_extract
+from app.connectors.xiaohongshu_diandian_extractor import DIANDIAN_URL, XiaohongshuDiandianExtractor
 
 
 class FakeProxy:
@@ -71,15 +72,16 @@ def test_check_ready_false_when_input_missing():
 
 def test_extract_content_sends_prompt_with_share_text_and_returns_response():
     share_text = "【Anthropic博客的Agent Eval实践心得 | 小红书 - 你的生活兴趣社区】 https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?source=webshare&xhsshare=pc_web&xsec_source=pc_share"
+    reply = "点点返回的小红书正文内容，包含方法步骤、图片文字识别结果以及作者总结的关键经验与结论清单。"
     proxy = FakeProxy(states=[
         {"count": 0, "text": "", "generating": False},
         {"success": True, "click_x": 12, "click_y": 34},
         {"login_required": False, "has_input": True},
         {"sent": True, "input_text": "", "count": 1, "text": share_text},
         {"count": 1, "text": share_text, "page_text": share_text, "generating": True},
-        {"count": 2, "text": "点点返回的小红书正文内容，包含方法步骤和图片文字。", "generating": False},
-        {"count": 2, "text": "点点返回的小红书正文内容，包含方法步骤和图片文字。", "generating": False},
-        {"count": 2, "text": "点点返回的小红书正文内容，包含方法步骤和图片文字。", "generating": False},
+        {"count": 2, "text": reply, "generating": False},
+        {"count": 2, "text": reply, "generating": False},
+        {"count": 2, "text": reply, "generating": False},
     ])
     extractor = XiaohongshuDiandianExtractor(proxy=proxy)
 
@@ -149,15 +151,15 @@ def test_extract_content_fails_after_two_unhelpful_responses():
     result = asyncio.run(extractor.extract_content(share_text=share_text, url="https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8", timeout_seconds=30))
 
     assert result.success is False
-    assert result.error == "xiaohongshu_diandian_unhelpful_response"
+    assert result.error == "low_quality_response"
     assert result.attempts == 2
     assert result.retried is True
     assert len(proxy.clicked) == 0
 
 
-def test_is_unhelpful_diandian_response_detects_retryable_short_answer():
-    assert is_unhelpful_diandian_response("这个问题我暂时还没有好的思路，换个问题试试吧") is True
-    assert is_unhelpful_diandian_response("点点返回的小红书正文内容，包含方法步骤、图片文字和作者结论。") is False
+def test_is_low_quality_extract_detects_retryable_short_answer():
+    assert is_low_quality_extract("这个问题我暂时还没有好的思路，换个问题试试吧") is True
+    assert is_low_quality_extract("点点返回的小红书正文内容，包含方法步骤、图片文字和作者结论。") is False
 
 
 def test_send_prompt_fails_when_send_is_not_confirmed():

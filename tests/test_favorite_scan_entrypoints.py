@@ -10,7 +10,7 @@ from app.connectors.base import ConnectorItem
 from app.connectors.douyin import DouyinBrowserCollector
 from app.database import Base, get_db
 from app.main import app
-from app.models import Connector, ScanEntry
+from app.models import CandidateItem, Connector, RawSource, ScanEntry, SyncLedgerItem
 
 
 def make_session():
@@ -503,13 +503,16 @@ def test_source_setup_renders_dual_collection_tabs_and_filter_toolbar():
         # 筛选器（发布时间筛选已隐藏，但有用性/类别保留）
         assert "data-filter-usefulness" in text
         assert "data-filter-category" in text
-        # 历史保存状态机按钮
-        assert "data-filter-save-history" in text
-        assert "data-filter-rescan-history" in text
+        # 历史 Tab 不再有保存/重扫状态机，只保留清空列表和补提取能力
+        assert "data-filter-save-history" not in text
+        assert "data-filter-rescan-history" not in text
+        assert "data-filter-clear-history" in text
+        assert "清空当前收藏列表" in text
         # 已入库筛选（仅历史 Tab）
         assert "data-filter-ingested" in text
-        # 历史下拉的「所有」选项
-        assert '<option value="all">所有</option>' in text
+        # 新增 Tab 带采集数量下拉，含「新增」与「全部」选项
+        assert '<option value="new" selected>新增</option>' in text
+        assert '<option value="all">全部</option>' in text
         # 发布时间筛选下拉已隐藏：整块包在 HTML 注释里（模板保留代码以后放出），
         # 但注释开始一定在 data-filter-time 之前，确认它不是活动控件。
         assert "<select data-filter-time>" in text
@@ -519,7 +522,7 @@ def test_source_setup_renders_dual_collection_tabs_and_filter_toolbar():
         app.dependency_overrides.clear()
 
 
-def test_source_setup_incremental_panel_has_no_limit_dropdown_and_renamed_scan_button():
+def test_source_setup_incremental_panel_has_limit_dropdown_and_renamed_scan_button():
     db = make_session()
 
     def override_get_db():
@@ -534,7 +537,7 @@ def test_source_setup_incremental_panel_has_no_limit_dropdown_and_renamed_scan_b
         import re
 
         text = response.text
-        # 新增面板：去掉采集数量下拉、扫描按钮改名「采集新增收藏」
+        # 新增面板：保留采集数量下拉、扫描按钮改名「采集新增收藏」
         incremental_panel = re.search(
             r'data-collection-kind="incremental".*?(?=data-collection-kind="|</section>)',
             text,
@@ -542,19 +545,22 @@ def test_source_setup_incremental_panel_has_no_limit_dropdown_and_renamed_scan_b
         )
         assert incremental_panel is not None
         panel_html = incremental_panel.group(0)
-        assert "data-filter-limit" not in panel_html
+        assert "data-filter-limit" in panel_html
+        assert '<option value="new" selected>新增</option>' in panel_html
         assert "采集新增收藏" in panel_html
         # 已入库筛选只在历史，新增面板不应有
         assert "data-filter-ingested" not in panel_html
 
-        # 历史面板：保留采集数量下拉
+        # 历史面板：不再提供扫描/分类/保存控件，只用于筛选和补提取
         history_panel = re.search(
-            r'data-collection-kind="history".*?(?=data-collection-kind="incremental")',
+            r'data-collection-kind="history".*?(?=</section>)',
             text,
             flags=re.S,
         )
         assert history_panel is not None
-        assert "data-filter-limit" in history_panel.group(0)
+        assert "data-filter-limit" not in history_panel.group(0)
+        assert "data-filter-scan" not in history_panel.group(0)
+        assert "data-filter-classify" not in history_panel.group(0)
     finally:
         app.dependency_overrides.clear()
 
@@ -963,6 +969,56 @@ def test_scan_titles_persists_scan_entries_and_returns_collection_kind(monkeypat
         app.dependency_overrides.clear()
 
 
+def test_scan_titles_history_request_can_extend_existing_history_scan(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    items = [
+        ConnectorItem(
+            raw_url=f"https://www.xiaohongshu.com/explore/{index:024x}",
+            title=f"历史笔记{index}",
+            platform="xiaohongshu",
+            content_type="note",
+            metadata={"source": "test"},
+        )
+        for index in range(20)
+    ]
+    calls = []
+
+    async def fake_extract(url=None, limit=None):
+        calls.append(limit)
+        return items[:limit]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        first = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 10, "homepage_url": favorites_url, "collection_kind": "history"},
+        )
+        assert first.status_code == 200
+        assert first.json()["collection_kind"] == "history"
+        assert first.json()["total"] == 10
+
+        second = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 20, "homepage_url": favorites_url, "collection_kind": "history"},
+        )
+        body = second.json()
+        assert second.status_code == 200
+        assert calls == [10, 20]
+        assert body["collection_kind"] == "history"
+        assert body["total"] == 20
+        assert db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu", ScanEntry.collection_kind == "history").count() == 20
+    finally:
+        app.dependency_overrides.clear()
+
+
+
 def test_scan_titles_second_scan_is_incremental_and_dedups(monkeypatch):
     db = make_session()
 
@@ -1001,21 +1057,36 @@ def test_scan_titles_second_scan_is_incremental_and_dedups(monkeypatch):
         )
         assert first.json()["collection_kind"] == "history"
 
-        # 第二次：返回 A+B，但 A 已见 → 只剩 B，kind=incremental
-        state["items"] = [item_a, item_b]
+        # 第二次：真实收藏页从最新到最旧返回 B+A；遇到 A 这个已见边界后停止，只保留 B。
+        # 采集即并入历史：增量扫描仍走「遇已见即停」去重，但落库 collection_kind 恒 history。
+        state["items"] = [item_b, item_a]
         second = client.post(
             "/api/sync/scan-titles",
-            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url, "collection_kind": "incremental"},
         )
         body = second.json()
-        assert body["collection_kind"] == "incremental"
+        assert body["collection_kind"] == "history"
+        assert body["scan_run_id"]
         assert body["total"] == 1
         assert body["items"][0]["title"] == "新增笔记B"
-        assert body["items"][0]["collection_kind"] == "incremental"
+        assert body["items"][0]["collection_kind"] == "history"
+        assert body["boundary_hit"] is True
 
-        # DB 现在两条
-        entries = {e.external_item_id for e in db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").all()}
-        assert len(entries) == 2
+        # 第三次：B 也已见，扫描到 B 就停止，不再展示 B 或更旧的历史 A。
+        third = client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url, "collection_kind": "incremental"},
+        )
+        third_body = third.json()
+        assert third_body["collection_kind"] == "history"
+        assert third_body["total"] == 0
+        assert third_body["items"] == []
+        assert third_body["boundary_hit"] is True
+
+        # DB 现在两条，且都落 history（不再有 incremental 行）。
+        entries = db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").all()
+        assert {e.external_item_id for e in entries} and len(entries) == 2
+        assert all(e.collection_kind == "history" for e in entries)
     finally:
         app.dependency_overrides.clear()
 
@@ -1109,7 +1180,7 @@ def test_save_history_endpoint_sets_flag_and_returns_count(monkeypatch):
         app.dependency_overrides.clear()
 
 
-def test_reset_history_endpoint_clears_flag_and_first_scan_done_and_keeps_rows(monkeypatch):
+def test_reset_history_endpoint_clears_flag_first_scan_done_and_history_rows(monkeypatch):
     db = make_session()
 
     def override_get_db():
@@ -1146,14 +1217,100 @@ def test_reset_history_endpoint_clears_flag_and_first_scan_done_and_keeps_rows(m
         assert body["status"] == "reset"
         assert body["history_saved"] is False
 
-        # flag + first_scan_done 都被清；ScanEntry 行保留
+        # flag + first_scan_done 都被清；历史 ScanEntry 行清空，重新扫描从干净历史集合开始
         db.expire_all()
         connector = db.query(Connector).filter(Connector.platform == "xiaohongshu").first()
         assert connector is not None
         assert connector.history_saved is False
         assert connector.first_scan_done is False
-        after_rows = db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").count()
-        assert after_rows == before_rows
+        assert db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu", ScanEntry.collection_kind == "history").count() == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_clear_history_list_removes_current_list_and_uningested_scan_candidates(monkeypatch):
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    async def fake_extract(url=None, limit=None):
+        return [
+            ConnectorItem(
+                raw_url="https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12",
+                title="未入库收藏",
+                platform="xiaohongshu",
+                content_type="note",
+                metadata={"source": "test"},
+            ),
+            ConnectorItem(
+                raw_url="https://www.xiaohongshu.com/explore/65fabc1234567890abcdef34",
+                title="已入库收藏",
+                platform="xiaohongshu",
+                content_type="note",
+                metadata={"source": "test"},
+            ),
+        ]
+
+    monkeypatch.setattr("app.connectors.xiaohongshu_collector.extract_favorites", fake_extract)
+    app.dependency_overrides[get_db] = override_get_db
+    favorites_url = "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33?tab=fav&subTab=note"
+    try:
+        client = TestClient(app)
+        client.post(
+            "/api/sync/scan-titles",
+            json={"platform": "xiaohongshu", "limit": 5, "homepage_url": favorites_url},
+        )
+        client.post(
+            "/api/sync/prepare-selected",
+            json={
+                "platform": "xiaohongshu",
+                "selected_items": [{"url": "https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12"}],
+                "skipped_items": [],
+            },
+        )
+        client.post(
+            "/api/sync/prepare-selected",
+            json={
+                "platform": "xiaohongshu",
+                "selected_items": [{"url": "https://www.xiaohongshu.com/explore/65fabc1234567890abcdef34"}],
+                "skipped_items": [],
+            },
+        )
+        ingested_candidate = db.query(CandidateItem).filter(CandidateItem.external_item_id == "65fabc1234567890abcdef34").one()
+        ingested_ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == ingested_candidate.id).one()
+        raw_source = RawSource(
+            candidate_id=ingested_candidate.id,
+            platform="xiaohongshu",
+            source_url=ingested_candidate.raw_url,
+            canonical_url=ingested_candidate.canonical_url,
+            external_item_id=ingested_candidate.external_item_id,
+            source_type="favorite",
+            title=ingested_candidate.title,
+        )
+        db.add(raw_source)
+        db.flush()
+        ingested_ledger.raw_source_id = raw_source.id
+        db.commit()
+
+        resp = client.post("/api/sync/clear-history", json={"platform": "xiaohongshu"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "cleared"
+        assert body["scan_entry_count"] == 2
+        assert body["candidate_count"] == 1
+        assert body["ledger_count"] == 1
+        assert db.query(ScanEntry).filter(ScanEntry.platform == "xiaohongshu").count() == 0
+        assert db.query(CandidateItem).filter(CandidateItem.external_item_id == "65fabc1234567890abcdef12").count() == 0
+        assert db.query(SyncLedgerItem).filter(SyncLedgerItem.external_item_id == "65fabc1234567890abcdef12").count() == 0
+        assert db.query(CandidateItem).filter(CandidateItem.external_item_id == "65fabc1234567890abcdef34").count() == 1
+        assert db.query(SyncLedgerItem).filter(SyncLedgerItem.external_item_id == "65fabc1234567890abcdef34").count() == 1
+        assert db.query(RawSource).count() == 1
+        connector = db.query(Connector).filter(Connector.platform == "xiaohongshu").first()
+        assert connector is not None
+        assert connector.history_saved is False
+        assert connector.first_scan_done is False
     finally:
         app.dependency_overrides.clear()
 

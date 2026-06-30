@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem
+from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem, WikiPage
 
 
 class FakeDiandianResult:
@@ -93,6 +93,54 @@ def create_candidate(db, metadata=None, raw_url=None, title="Anthropic博客的A
     return candidate
 
 
+def test_diandian_extract_selected_creator_candidate_auto_updates_creator_wiki(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", FakeDiandianExtractor)
+    FakeDiandianExtractor.calls = []
+    FakeDiandianExtractor.results = []
+    FakeDiandianExtractor.close_calls = []
+
+    class Provider:
+        provider_name = "mock"
+
+        async def chat(self, messages, model, temperature=0.2):
+            return "## 人设\n小红书博主人设分析\n\n## 最新与高赞差异\n高赞更偏案例"
+
+    monkeypatch.setattr(
+        "app.services.wiki_service.get_provider_runtime",
+        lambda provider_id=None, model=None: (Provider(), "mock-model", {"api_style": "mock"}),
+    )
+    db = make_session()
+    candidate = create_candidate(
+        db,
+        metadata={"creator_key": "xiaohongshu:creator-1", "creator_name": "孙沐晏", "creator_bucket": "latest"},
+        title="小红书博主作品",
+    )
+    candidate.source_type = "distill_profile"
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post("/api/xiaohongshu/diandian/extract-selected", json={"candidate_ids": [candidate.id]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["items"][0]["wiki_page_id"]
+        assert body["creator_wiki_pages"] == [{"creator_key": "xiaohongshu:creator-1", "wiki_page_id": body["items"][0]["wiki_page_id"], "creator_name": "孙沐晏"}]
+        assert db.query(RawSource).count() == 1
+        page = db.query(WikiPage).one()
+        assert page.page_type == "creator"
+        assert "小红书博主人设分析" in open(page.markdown_path, encoding="utf-8").read()
+    finally:
+        app.dependency_overrides.clear()
+
+
+
 def test_xiaohongshu_diandian_extract_selected_creates_raw_source(tmp_path, monkeypatch):
     share_url = "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?source=webshare&xhsshare=pc_web&xsec_source=pc_share"
     share_text = "【Anthropic博客的Agent Eval实践心得 | 小红书 - 你的生活兴趣社区】 " + share_url
@@ -127,6 +175,8 @@ def test_xiaohongshu_diandian_extract_selected_creates_raw_source(tmp_path, monk
         assert body["status"] == "completed"
         assert body["success_count"] == 1
         assert body["failed_count"] == 0
+        assert body["items"][0]["title"] == "Anthropic博客的Agent Eval实践心得"
+        assert "点点返回的小红书笔记正文" in body["items"][0]["preview"]["content"]
         raw_source = db.query(RawSource).one()
         transcript = open(raw_source.transcript_path, encoding="utf-8").read()
         metadata = json.loads(db.get(CandidateItem, candidate.id).metadata_json)
@@ -141,6 +191,39 @@ def test_xiaohongshu_diandian_extract_selected_creates_raw_source(tmp_path, monk
         scan_entry = db.query(ScanEntry).filter(ScanEntry.external_item_id == candidate.external_item_id).one()
         assert scan_entry.extracted is True
         assert scan_entry.raw_source_id == raw_source.id
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -168,6 +251,39 @@ def test_xiaohongshu_diandian_uses_share_text_not_profile_raw_url(tmp_path, monk
         app.dependency_overrides.clear()
 
 
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_xiaohongshu_diandian_fallback_builds_discovery_share_text(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
     monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", FakeDiandianExtractor)
@@ -189,6 +305,39 @@ def test_xiaohongshu_diandian_fallback_builds_discovery_share_text(tmp_path, mon
         assert "xhsshare=pc_web" in call["share_text"]
         assert "xsec_source=pc_share" in call["share_text"]
         assert "user/profile" not in call["share_text"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -234,13 +383,46 @@ def test_xiaohongshu_diandian_extract_selected_processes_four_items_with_retry_m
         app.dependency_overrides.clear()
 
 
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_xiaohongshu_diandian_extract_selected_failure_does_not_block_later_items(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
     monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", FakeDiandianExtractor)
     FakeDiandianExtractor.calls = []
     FakeDiandianExtractor.close_calls = []
     FakeDiandianExtractor.results = [
-        FakeDiandianResult(success=False, error="xiaohongshu_diandian_unhelpful_response", attempts=2, retried=True),
+        FakeDiandianResult(success=False, error="low_quality_response", attempts=2, retried=True),
         FakeDiandianResult(url="https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bd2"),
     ]
     db = make_session()
@@ -262,10 +444,43 @@ def test_xiaohongshu_diandian_extract_selected_failure_does_not_block_later_item
         assert db.query(RawSource).count() == 1
         assert body["items"][0]["attempts"] == 2
         assert body["items"][0]["retried"] is True
-        assert body["items"][0]["error"] == "xiaohongshu_diandian_unhelpful_response"
+        assert body["items"][0]["error"] == "low_quality_response"
         assert body["items"][1]["success"] is True
         metadata = json.loads(db.get(CandidateItem, first.id).metadata_json)
-        assert metadata["xiaohongshu_diandian_error"] == "xiaohongshu_diandian_unhelpful_response"
+        assert metadata["xiaohongshu_diandian_error"] == "low_quality_response"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -283,6 +498,39 @@ def test_xiaohongshu_diandian_not_ready_returns_error(monkeypatch):
         response = TestClient(app).post("/api/xiaohongshu/diandian/extract-selected", json={"candidate_ids": [candidate.id]})
         assert response.status_code == 428
         assert response.json()["detail"]["code"] == "xiaohongshu_diandian_not_ready"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -380,6 +628,39 @@ def test_diandian_extract_selected_switches_conversation_every_n_items(tmp_path,
         app.dependency_overrides.clear()
 
 
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_diandian_extract_selected_pauses_and_resumes_on_human_verification(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
 
@@ -440,5 +721,38 @@ def test_diandian_extract_selected_pauses_and_resumes_on_human_verification(tmp_
         for candidate in (first, second, third):
             meta = json.loads(db.get(CandidateItem, candidate.id).metadata_json)
             assert meta["xiaohongshu_diandian_extracted"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_xiaohongshu_candidate_for_diandian():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8?xsec_token=abc",
+                "title": "单条小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "xiaohongshu"
+        metadata = json.loads(candidate.metadata_json)
+        assert metadata["source"] == "passive_link"
+        assert metadata["xiaohongshu_share_url"].startswith("https://www.xiaohongshu.com/discovery/item/6a338bc10000000021014bc8")
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()

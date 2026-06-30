@@ -71,37 +71,34 @@
     {% endif %}
 
     <div class="source-collection-tabs" role="tablist">
-      <button class="source-collection-tab is-active" type="button" role="tab" data-collection-tab="history" aria-selected="true">历史收藏</button>
-      <button class="source-collection-tab" type="button" role="tab" data-collection-tab="incremental" aria-selected="false">新增收藏</button>
+      <button class="source-collection-tab is-active" type="button" role="tab" data-collection-tab="incremental" aria-selected="true">新增收藏</button>
+      <button class="source-collection-tab" type="button" role="tab" data-collection-tab="history" aria-selected="false">历史收藏</button>
     </div>
-    <p class="source-collection-hint" data-collection-hint="history">第一次使用前积累的收藏。首次扫描会全部归为历史并记录分界点，之后新收的归入“新增收藏”。</p>
-    <p class="source-collection-hint" data-collection-hint="incremental" hidden>首次扫描之后新收藏的内容。已见过的条目会自动去重，不再重复展示。</p>
+    <p class="source-collection-hint" data-collection-hint="incremental">本次新采集的收藏。刷新后这里会清空，内容仍会并入历史。</p>
+    <p class="source-collection-hint" data-collection-hint="history" hidden>已并入历史的收藏。可筛选未入库条目并补提取。</p>
 
-    {% for kind in ["history", "incremental"] %}
-    <div class="source-collection-panel{{ '' if kind == 'history' else ' is-hidden' }}" data-source-filter data-platform="{{ preset.platform }}" data-collection-kind="{{ kind }}" data-homepage-url="{{ connection.homepage_url or '' }}"{{ ' hidden' if kind != 'history' else '' }}>
-      <div class="source-filter-controls">
-        {% if kind == "history" %}
+    {% for kind in ["incremental", "history"] %}
+    <div class="source-collection-panel{{ '' if kind == 'incremental' else ' is-hidden' }}" data-source-filter data-platform="{{ preset.platform }}" data-collection-kind="{{ kind }}" data-homepage-url="{{ connection.homepage_url or '' }}"{{ ' hidden' if kind != 'incremental' else '' }}>
+      <div class="source-filter-controls source-filter-controls--scan" data-filter-controls>
+        {% if kind == "incremental" %}
         <label>采集数量
           <select data-filter-limit>
+            <option value="new" selected>新增</option>
             <option value="5">5 条</option>
-            <option value="10" selected>10 条</option>
+            <option value="10">10 条</option>
             <option value="20">20 条</option>
             <option value="50">50 条</option>
             <option value="100">100 条</option>
-            <option value="all">所有</option>
+            <option value="all">全部</option>
           </select>
         </label>
-        <button class="btn primary" type="button" data-filter-scan>扫描标题</button>
-        {% else %}
         <button class="btn primary" type="button" data-filter-scan>采集新增收藏</button>
-        {% endif %}
         <button class="btn secondary" type="button" data-filter-classify disabled>AI 分类</button>
+        {% endif %}
         {% if kind == "history" %}
-        <button class="btn secondary" type="button" data-filter-save-history hidden>保存历史收藏</button>
-        <button class="btn secondary" type="button" data-filter-rescan-history hidden>重新扫描历史</button>
+        <button class="btn secondary" type="button" data-filter-clear-history>清空当前收藏列表</button>
         {% endif %}
         <button class="btn primary" type="button" data-filter-extract disabled>仅提取我勾选的内容</button>
-        <button class="btn primary" type="button" data-filter-resume hidden>我已完成验证，继续</button>
       </div>
 
       <div class="source-filter-toolbar" data-filter-toolbar hidden>

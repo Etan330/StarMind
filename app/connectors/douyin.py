@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 import httpx
 
@@ -78,8 +78,35 @@ class DouyinBrowserCollector:
             await asyncio.sleep(2)
         return BrowserState(opened=True, current_url=url, message="已在浏览器后台打开抖音我的页，并尝试进入收藏页。")
 
+    @staticmethod
+    def _dedupe_key(raw_url: str) -> str:
+        parsed = urlparse(str(raw_url or "").strip())
+        query = dict(parse_qsl(parsed.query))
+        if query.get("modal_id"):
+            return f"item:{query['modal_id']}"
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2 and parts[0] in {"video", "note", "share"}:
+            if parts[0] == "share" and len(parts) >= 3 and parts[1] in {"video", "note"}:
+                return f"item:{parts[2]}"
+            return f"item:{parts[1]}"
+        return parsed.path or raw_url
+
+    @staticmethod
+    def _prefer_item(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        existing_href = str(existing.get("href") or "")
+        incoming_href = str(incoming.get("href") or "")
+        existing_title = str(existing.get("title") or "").strip()
+        incoming_title = str(incoming.get("title") or "").strip()
+        if "/video/" in incoming_href and "/video/" not in existing_href:
+            return incoming
+        if "/note/" in incoming_href and "/note/" not in existing_href:
+            return incoming
+        if incoming_title and (not existing_title or len(incoming_title) > len(existing_title)):
+            return incoming
+        return existing
+
     async def _scroll_and_collect(self, target: str, script: str, limit: int | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        """边滚边 eval，按 url.pathname（复刻 JS 的 dedup key）跨快照累积去重。
+        """边滚边 eval，按视频/图文真实 id 跨快照累积去重。
         同时保留最后一次快照的 meta（count 外的字段），供登录/收藏页 guard 判定。"""
         effective_cap = limit if limit is not None else ALL_CAP
         by_key: dict[str, dict[str, Any]] = {}
@@ -95,12 +122,11 @@ class DouyinBrowserCollector:
                 if not href:
                     continue
                 try:
-                    key = urlparse(href).path or href
+                    key = self._dedupe_key(href)
                 except Exception:
                     key = href
-                if key in by_key:
-                    continue
-                by_key[key] = item
+                existing = by_key.get(key)
+                by_key[key] = item if existing is None else self._prefer_item(existing, item)
 
         # 首窗先抓一次，再进入滚动循环
         await snapshot()

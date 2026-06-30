@@ -6,10 +6,10 @@
 <div class="home-container chat-first" id="home-container">
   <main class="chat-stage" id="home-panel">
     <div class="home-entries">
-      <button onclick="document.getElementById('modal-sync').showModal()" class="entry-chip">📂 同步收藏</button>
-      <button onclick="document.getElementById('modal-link').showModal()" class="entry-chip">🔗 粘贴链接</button>
-      <button onclick="document.getElementById('modal-creator').showModal()" class="entry-chip">👤 输入博主</button>
-      <button onclick="document.getElementById('modal-idea').showModal()" class="entry-chip">💡 写想法</button>
+      <a href="/ui/sync?mode=sync" class="entry-chip">同步收藏</a>
+      <a href="/ui/sync?mode=link" class="entry-chip">粘贴链接</a>
+      <a href="/ui/sync?mode=creator" class="entry-chip">输入博主</a>
+      <a href="/ui/sync?mode=idea" class="entry-chip">写想法</a>
     </div>
     <div class="home-chat">
       <div class="chat-body">
@@ -43,42 +43,6 @@
   </aside>
 </div>
 
-<dialog id="modal-sync" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
-  <h3 style="margin:0 0 12px;">📂 同步收藏夹</h3>
-  <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0;">
-    <a href="/ui/source-setup/douyin" class="btn secondary" style="text-align:center;">抖音</a>
-    <a href="/ui/source-setup/bilibili" class="btn secondary" style="text-align:center;">B站</a>
-    <a href="/ui/source-setup/xiaohongshu" class="btn secondary" style="text-align:center;">小红书</a>
-  </div>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;">取消</button>
-</dialog>
-<dialog id="modal-link" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
-  <h3 style="margin:0 0 12px;">🔗 粘贴链接</h3>
-  <form method="post" action="/passive/link">
-    <input name="url" type="url" placeholder="粘贴链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <input type="hidden" name="process_now" value="true"><input type="hidden" name="transcribe" value="false">
-    <button type="submit" class="btn primary" style="width:100%;">导入</button>
-  </form>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
-</dialog>
-<dialog id="modal-creator" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
-  <h3 style="margin:0 0 12px;">👤 输入博主</h3>
-  <form method="post" action="/distill/profile">
-    <input name="profile_url" type="url" placeholder="博主主页链接" required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <input name="target_name" type="text" placeholder="博主名称" style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;">
-    <button type="submit" class="btn primary" style="width:100%;">开始蒸馏</button>
-  </form>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
-</dialog>
-<dialog id="modal-idea" style="border:none;border-radius:12px;padding:24px;max-width:400px;width:90%;">
-  <h3 style="margin:0 0 12px;">💡 记录想法</h3>
-  <form method="post" action="/manual/idea">
-    <textarea name="content" rows="3" placeholder="写下想法..." required style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;margin-bottom:12px;box-sizing:border-box;"></textarea>
-    <input type="hidden" name="process_now" value="true">
-    <button type="submit" class="btn primary" style="width:100%;">保存</button>
-  </form>
-  <button onclick="this.closest('dialog').close()" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:8px;background:none;cursor:pointer;margin-top:8px;">取消</button>
-</dialog>
 {% endblock %}
 
 {% block scripts %}

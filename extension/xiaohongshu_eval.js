@@ -123,6 +123,9 @@
 
   const chooseBetter = (current, incoming) => {
     if (!current) return incoming;
+    const currentIsProfileNote = /\/user\/profile\/[^/]+\/[a-f0-9]{12,}/i.test(current.url);
+    const incomingIsProfileNote = /\/user\/profile\/[^/]+\/[a-f0-9]{12,}/i.test(incoming.url);
+    if (incomingIsProfileNote && !currentIsProfileNote) return incoming;
     if (incoming.score !== current.score) return incoming.score > current.score ? incoming : current;
     if (incoming.title && !current.title) return incoming;
     if (incoming.share_text && !current.share_text) return incoming;
