@@ -296,32 +296,43 @@
     })
   })
 
-  function initSourceShell(shell) {
-    if (!shell || shell.dataset.bound === "1") return
-    shell.dataset.bound = "1"
+  function activateCollectionTab(shell, kind) {
+    if (!shell) return
     const tabs = Array.from(shell.querySelectorAll("[data-collection-tab]"))
     const panels = Array.from(shell.querySelectorAll("[data-source-filter]"))
     const hints = Array.from(shell.querySelectorAll("[data-collection-hint]"))
     tabs.forEach((tab) => {
-      tab.addEventListener("click", () => {
-        const kind = tab.dataset.collectionTab
-        tabs.forEach((other) => {
-          const active = other === tab
-          other.classList.toggle("is-active", active)
-          other.setAttribute("aria-selected", active ? "true" : "false")
-        })
-        panels.forEach((panel) => {
-          const match = panel.dataset.collectionKind === kind
-          panel.hidden = !match
-          panel.classList.toggle("is-hidden", !match)
-        })
-        hints.forEach((hint) => {
-          hint.hidden = hint.dataset.collectionHint !== kind
-        })
-      })
+      const active = tab.dataset.collectionTab === kind
+      tab.classList.toggle("is-active", active)
+      tab.setAttribute("aria-selected", active ? "true" : "false")
+    })
+    panels.forEach((panel) => {
+      const match = panel.dataset.collectionKind === kind
+      panel.hidden = !match
+      panel.classList.toggle("is-hidden", !match)
+    })
+    hints.forEach((hint) => {
+      hint.hidden = hint.dataset.collectionHint !== kind
     })
   }
+
+  function initSourceShell(shell) {
+    if (!shell || shell.dataset.bound === "1") return
+    shell.dataset.bound = "1"
+    shell.querySelectorAll("[data-collection-tab]").forEach((tab) => {
+      tab.addEventListener("click", () => activateCollectionTab(shell, tab.dataset.collectionTab))
+    })
+  }
+
+  async function refreshSiblingHistoryPanel(root) {
+    const shell = root?.closest("[data-source-shell]")
+    const historyPanel = shell?.querySelector('[data-source-filter][data-collection-kind="history"]')
+    if (!historyPanel || historyPanel === root) return
+    historyPanel.dispatchEvent(new CustomEvent("starmind:refresh-history"))
+  }
+
   document.querySelectorAll("[data-source-shell]").forEach(initSourceShell)
+
 
   const setBusy = (button, busy, text) => {
     if (!button) return
@@ -374,24 +385,45 @@
     needs_login: "danger",
   }
 
+  function showExtractCompletionNotice(payload = {}) {
+    const success = payload.success_count || 0
+    const failed = payload.failed_count || 0
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      new Notification("StarMind 提取完成", {
+        body: `成功入库 ${success} 条，失败 ${failed} 条。`,
+        tag: `extract-${payload.job_id || Date.now()}`,
+      })
+    }
+  }
+
   function createExtractOverlay(title) {
     const overlay = document.createElement("div")
     overlay.className = "extract-overlay"
+    overlay.dataset.dismissed = "0"
     overlay.innerHTML = `
       <section class="extract-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
         <header class="extract-modal-head">
-          <h2>${escapeHtml(title)}</h2>
-          <p data-extract-message>准备中...</p>
+          <div>
+            <h2>${escapeHtml(title)}</h2>
+            <p data-extract-message>准备中...</p>
+          </div>
+          <button class="extract-close" type="button" data-extract-dismiss aria-label="关闭进度窗口">×</button>
         </header>
         <div class="extract-progress-track"><span data-extract-progress style="width:5%"></span></div>
         <div class="extract-item-list" data-extract-items></div>
       </section>`
     document.body.appendChild(overlay)
+    overlay.querySelector("[data-extract-dismiss]")?.addEventListener("click", (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      overlay.dataset.dismissed = "1"
+      overlay.remove()
+    })
     return overlay
   }
 
   function renderExtractOverlay(overlay, payload = {}) {
-    if (!overlay) return
+    if (!overlay || overlay.dataset.dismissed === "1") return
     const items = payload.items || []
     const total = payload.total || items.length || 1
     const done = items.filter((item) => ["ingested", "failed", "needs_login"].includes(item.status)).length
@@ -457,7 +489,10 @@
       lastPayload = await response.json()
       renderExtractOverlay(overlay, lastPayload)
       onStatus?.(lastPayload)
-      if (["completed", "paused", "error"].includes(lastPayload.status)) return lastPayload
+      if (["completed", "paused", "error"].includes(lastPayload.status)) {
+        if (lastPayload.status === "completed" && overlay?.dataset.dismissed === "1") showExtractCompletionNotice(lastPayload)
+        return lastPayload
+      }
       await new Promise((resolve) => window.setTimeout(resolve, 1500))
     }
     return lastPayload
@@ -614,7 +649,7 @@
       lastGroups = groups || []
       if (!results) return
       results.hidden = false
-      if (filterToolbar) filterToolbar.hidden = lastGroups.length === 0
+      if (filterToolbar) filterToolbar.hidden = !(isHistory || lastGroups.length > 0)
       populateCategoryFilter()
       applyFilters()
     }
@@ -649,9 +684,10 @@
                 const chip = extracted ? '<span class="status-chip success filter-extracted-chip">已入库</span>' : ""
                 const checked = extracted ? "" : (group.usefulness === "useful" ? "checked" : "")
                 const disabled = extracted ? "disabled" : ""
+                const candidateAttr = item.candidate_id ? ` data-candidate-id="${escapeHtml(item.candidate_id)}"` : ""
                 return `
                 <label class="filter-item${extracted ? " extracted" : ""}">
-                  <input type="checkbox" data-item-check data-item-index="${idx}" ${checked} ${disabled}>
+                  <input type="checkbox" data-item-check data-item-index="${idx}"${candidateAttr} ${checked} ${disabled}>
                   <span>
                     <strong>${escapeHtml(item.title || item.url)}</strong>${chip}
                     <small>${escapeHtml(item.author || item.platform || "未知作者")} · ${escapeHtml(item.reason || "")}${publishBits}</small>
@@ -712,7 +748,7 @@
         if (filterToolbar) filterToolbar.hidden = true
         if (summary) {
           summary.hidden = false
-          summary.textContent = "暂无新增收藏。点击「采集新增收藏」抓取本次新增内容。"
+          summary.textContent = "暂无新增收藏。点击「采集收藏」抓取本次新增内容。"
         }
         setStatus("新增收藏会在采集后展示；刷新页面后这里会清空，内容仍在历史中。", "")
         if (classifyButton) classifyButton.disabled = true
@@ -740,7 +776,7 @@
           if (filterToolbar) filterToolbar.hidden = true
           if (summary) {
             summary.hidden = false
-            summary.textContent = "暂无新增收藏。点击「采集新增收藏」抓取历史之后新收的内容。"
+            summary.textContent = "暂无新增收藏。点击「采集收藏」抓取历史之后新收的内容。"
           }
           setStatus("暂无新增收藏。已见过的条目会自动去重，不再重复展示。", "")
           classifyButton.disabled = true
@@ -783,6 +819,11 @@
 
     loadFromServer().then((loaded) => {
       if (!loaded) restoreState()
+    })
+
+    root.addEventListener("starmind:refresh-history", async () => {
+      if (!isHistory) return
+      await loadFromServer()
     })
 
     // 「保存历史收藏」：翻 history_saved flag（保存全部已分类条目，忽略勾选），转只读模式。
@@ -846,17 +887,19 @@
       try {
         const currentHomepageUrl = homepageInput?.value?.trim() || root.dataset.homepageUrl || ""
         const selectedLimit = limitSelect?.value || "new"
-        const scanLimit = selectedLimit === "new" ? "all" : selectedLimit
-        const body = await apiPost("/api/sync/scan-titles", { platform, limit: scanLimit, homepage_url: currentHomepageUrl, collection_kind: collectionKind })
+        const scanLimit = "all"
+        const body = await apiPost("/api/sync/scan-titles", { platform, limit: scanLimit, scan_mode: selectedLimit, homepage_url: currentHomepageUrl, collection_kind: collectionKind })
         scannedItems = body.items || []
         classifiedItems = []
         selectedCandidateIds = []
         if (body.all_duplicates) {
-          setStatus(body.message || "收藏夹内容均已入库，请先在平台新增收藏后再扫描。", "bad")
-          if (summary) { summary.hidden = false; summary.textContent = `扫描了 ${body.total_scanned} 条，全部已入库。`; }
+          setStatus(body.message || "没有新增收藏。历史收藏中已有这些内容。", "ok")
+          if (summary) { summary.hidden = false; summary.textContent = body.message || "没有新增收藏。"; }
         } else if (summary) {
           summary.hidden = false
-          summary.textContent = `已扫描 ${body.total || scannedItems.length} 条收藏标题。下一步点击 AI 分类。`
+          const skipped = body.skipped_existing_count || 0
+          const savedHint = body.saved_to_history ? "已保存到历史收藏。" : ""
+          summary.textContent = `发现 ${body.new_count ?? body.total ?? scannedItems.length} 条新增收藏，已跳过 ${skipped} 条历史中已有内容。${savedHint}下一步点击 AI 分类。`
         }
         renderScannedPreview(scannedItems)
         lastGroups = []
@@ -880,11 +923,13 @@
         classifiedItems = groups.flatMap((group) => group.items || [])
         if (summary) {
           summary.hidden = false
-          summary.textContent = `有用 ${body.summary?.useful_count || 0} 条，没用 ${body.summary?.useless_count || 0} 条。默认只勾选“有用”，你可以调整。`
+          const historyHint = body.saved_to_history !== false ? "已保存到历史收藏，可在历史收藏继续筛选或补提取。" : ""
+          summary.textContent = `有用 ${body.summary?.useful_count || 0} 条，没用 ${body.summary?.useless_count || 0} 条。${historyHint}默认只勾选“有用”，你可以调整。`
         }
         renderGroups(groups)
         extractButton.disabled = classifiedItems.length === 0
-        setStatus("AI 分类完成，请确认要保留的分类或条目。", "ok")
+        await refreshSiblingHistoryPanel(root)
+        setStatus("AI 分类完成，已同步更新到历史收藏。请勾选要提取的分类或条目。", "ok")
         saveState("classified")
         // 历史 Tab：分类后露出「保存历史收藏」，让用户把全部已分类条目保存为只读。
         if (classifiedItems.length) revealSaveButton()
@@ -897,7 +942,11 @@
 
     extractButton?.addEventListener("click", async () => {
       const checked = Array.from(root.querySelectorAll("[data-item-check]:checked"))
-      const selected = checked.map((input) => classifiedItems[Number(input.dataset.itemIndex)]).filter(Boolean)
+      const selected = checked.map((input) => {
+        const item = classifiedItems[Number(input.dataset.itemIndex)]
+        if (!item) return null
+        return input.dataset.candidateId ? { ...item, candidate_id: input.dataset.candidateId } : item
+      }).filter(Boolean)
       const selectedSet = new Set(selected.map((item) => item.url))
       const skipped = classifiedItems.filter((item) => !selectedSet.has(item.url))
       if (!selected.length) {
@@ -926,7 +975,7 @@
 
     async function runExtraction(isXiaohongshu, existingOverlay = null) {
       const extractEndpoint = isXiaohongshu ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
-      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240, async_job: true }
       if (currentJobId) payload.job_id = currentJobId
       const overlay = existingOverlay || createExtractOverlay(`${isXiaohongshu ? "点点" : "豆包"}正在提取`)
       renderExtractOverlay(overlay, { total: selectedCandidateIds.length, items: selectedCandidateIds.map((candidateId) => ({ candidate_id: candidateId, status: "pending" })) })
@@ -1004,7 +1053,7 @@
     }
     const runExtraction = async (existingOverlay = null) => {
       if (!extractEndpoint || !selectedCandidateIds.length) return
-      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240, async_job: true }
       if (currentJobId) payload.job_id = currentJobId
       const overlay = existingOverlay || createExtractOverlay("链接内容正在提取")
       renderExtractOverlay(overlay, { total: selectedCandidateIds.length, items: selectedCandidateIds.map((candidateId) => ({ candidate_id: candidateId, status: "pending" })) })
@@ -1087,7 +1136,7 @@
     const status = panel.querySelector("[data-creator-status]")
     const results = panel.querySelector("[data-creator-results]")
 
-    const creatorStateKey = "creatorDistillState:v4"
+    const creatorProgressKey = "creatorDistillProgress:v1"
     let currentPlatform = "douyin"
     let scannedItems = []
     let selectedItemIds = []
@@ -1121,13 +1170,9 @@
 
     const saveCreatorState = () => {
       try {
-        window.localStorage?.setItem(creatorStateKey, JSON.stringify({
+        window.localStorage?.setItem(creatorProgressKey, JSON.stringify({
           version: 1,
           platform: currentPlatform,
-          creatorUrl: creatorInput?.value || "",
-          creator: currentCreator,
-          items: scannedItems,
-          selectedItemIds,
           selectedCandidateIds,
           currentJobId,
           updatedAt: new Date().toISOString(),
@@ -1147,32 +1192,6 @@
           <span>${liked ? `获赞 ${escapeHtml(liked)}` : "获赞数未抓到"}</span>
         </section>
       `
-    }
-
-    const restoreCreatorState = () => {
-      try {
-        const raw = window.localStorage?.getItem(creatorStateKey)
-        if (!raw) return
-        const state = JSON.parse(raw)
-        if (!state || state.version !== 1 || !Array.isArray(state.items)) return
-        currentPlatform = state.platform || "douyin"
-        scannedItems = (state.items || []).map(normalizeCreatorWorkItem)
-        selectedItemIds = state.selectedItemIds || []
-        selectedCandidateIds = state.selectedCandidateIds || []
-        currentJobId = state.currentJobId || null
-        currentCreator = state.creator || null
-        if (creatorInput) creatorInput.value = state.creatorUrl || ""
-        tabs.forEach((tab) => {
-          const active = tab.dataset.creatorPlatformTab === currentPlatform
-          tab.classList.toggle("is-active", active)
-          tab.setAttribute("aria-selected", active ? "true" : "false")
-        })
-        if (scannedItems.length) {
-          renderResults()
-          if (extractButton) extractButton.disabled = false
-          setStatusText(`已恢复上次扫描：找到 ${scannedItems.length} 个作品，请继续勾选或提取。`, "ok")
-        }
-      } catch (_error) {}
     }
 
     // 平台切换
@@ -1328,7 +1347,7 @@
     const runCreatorExtraction = async (existingOverlay = null) => {
       if (!selectedCandidateIds.length) return null
       const extractEndpoint = currentPlatform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
-      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240, async_job: true }
       if (currentJobId) payload.job_id = currentJobId
       const overlay = existingOverlay || createExtractOverlay("作品内容正在提取")
       renderExtractOverlay(overlay, { total: selectedCandidateIds.length, items: selectedCandidateIds.map((candidateId) => ({ candidate_id: candidateId, status: "pending" })) })
@@ -1394,7 +1413,6 @@
       }
     })
 
-    restoreCreatorState()
   }
   document.querySelectorAll("[data-creator-distill-panel]").forEach(initCreatorDistillPanel)
 

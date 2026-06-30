@@ -1022,9 +1022,34 @@ select:focus {
   border-color: rgba(199, 72, 57, 0.35);
 }
 
+.extract-modal-head {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
 .extract-modal-head h2 {
   margin: 0 0 6px;
   font-size: 18px;
+}
+
+.extract-close {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border);
+  border-radius: 50%;
+  background: var(--color-surface-soft);
+  color: var(--color-secondary);
+  cursor: pointer;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.extract-close:hover {
+  background: var(--color-surface);
+  color: var(--color-primary);
 }
 
 .extract-modal-head p {
@@ -1292,6 +1317,10 @@ select:focus {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface-soft);
+}
+
+.source-filter-toolbar[hidden] {
+  display: none !important;
 }
 
 .source-filter-toolbar label {

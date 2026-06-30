@@ -16,6 +16,7 @@ NOTE_ID_RE = re.compile(r"[a-f0-9]{12,}", re.IGNORECASE)
 # 滚动累积护栏：收藏页是虚拟化网格，滚过的卡片从 DOM 卸载，必须边滚边 eval、跨快照按 note_id 累积。
 MAX_SCROLLS = 60          # 硬护栏，保证 limit=None（"所有"）也会终止
 STALL_ROUNDS = 3          # 连续 N 次唯一计数不增长则停（单次抖动不误停）
+LIMIT_STALL_ROUNDS = 8    # 用户指定数量时，给瀑布流懒加载更长的增长窗口
 ALL_CAP = 1000            # limit is None（"所有"）时的唯一条目上限
 
 
@@ -40,10 +41,19 @@ class XiaohongshuFavoritesCollector:
     const style = window.getComputedStyle(el);
     if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 80) seen.add(el);
   }
+  const delta = Math.max(900, Math.floor(window.innerHeight * 0.9));
   for (const el of seen) {
     if (!el) continue;
-    try { el.scrollBy ? el.scrollBy(0, Math.max(900, Math.floor(window.innerHeight * 0.9))) : (el.scrollTop += Math.max(900, Math.floor(window.innerHeight * 0.9))); } catch (_) {}
+    try {
+      el.scrollBy ? el.scrollBy(0, delta) : (el.scrollTop += delta);
+      el.dispatchEvent(new Event('scroll', { bubbles: true }));
+      el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: delta }));
+    } catch (_) {}
   }
+  try {
+    document.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: delta, clientX: Math.floor(window.innerWidth / 2), clientY: Math.floor(window.innerHeight * 0.75) }));
+    window.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: delta, clientX: Math.floor(window.innerWidth / 2), clientY: Math.floor(window.innerHeight * 0.75) }));
+  } catch (_) {}
   return JSON.stringify({ scrolled: true, count: seen.size });
 })()
 """)
@@ -78,6 +88,7 @@ class XiaohongshuFavoritesCollector:
         # 首窗先抓一次，再进入滚动循环
         absorb(await self._proxy.eval_script(tab, script))
         stalls = 0
+        stall_limit = LIMIT_STALL_ROUNDS if limit is not None else STALL_ROUNDS
         for _ in range(MAX_SCROLLS):
             if usable_count >= effective_cap:
                 break
@@ -86,7 +97,7 @@ class XiaohongshuFavoritesCollector:
             absorb(await self._proxy.eval_script(tab, script))
             if len(by_key) <= before:
                 stalls += 1
-                if stalls >= STALL_ROUNDS:
+                if stalls >= stall_limit:
                     break
             else:
                 stalls = 0

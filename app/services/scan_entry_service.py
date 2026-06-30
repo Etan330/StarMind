@@ -59,9 +59,17 @@ class ScanEntryService:
 
     def determine_kind(self, platform: str) -> str:
         connector = self._connector(platform)
-        if connector is None or not bool(getattr(connector, "first_scan_done", False)):
-            return HISTORY
-        return INCREMENTAL
+        if bool(getattr(connector, "first_scan_done", False)):
+            return INCREMENTAL
+        has_history = (
+            self.db.query(ScanEntry.id)
+            .filter(ScanEntry.platform == platform, ScanEntry.collection_kind == HISTORY)
+            .first()
+            is not None
+        )
+        if has_history:
+            return INCREMENTAL
+        return HISTORY
 
     # ---- 历史「采集一次保存」状态 ----
 
@@ -164,6 +172,19 @@ class ScanEntryService:
                 return kept, True
             kept.append(item)
         return kept, False
+
+    def filter_unseen(self, platform: str, items: list[ConnectorItem]) -> tuple[list[ConnectorItem], int]:
+        """全量扫描：扫完整收藏页，但只返回历史库中没见过的条目。"""
+        seen = self._seen_external_ids(platform)
+        kept: list[ConnectorItem] = []
+        skipped = 0
+        for item in items:
+            normalized = normalize_url(item.raw_url, platform)
+            if normalized.external_item_id in seen:
+                skipped += 1
+                continue
+            kept.append(item)
+        return kept, skipped
 
     # ---- upsert ----
 

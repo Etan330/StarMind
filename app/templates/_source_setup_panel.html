@@ -84,15 +84,10 @@
         <label>采集数量
           <select data-filter-limit>
             <option value="new" selected>新增</option>
-            <option value="5">5 条</option>
-            <option value="10">10 条</option>
-            <option value="20">20 条</option>
-            <option value="50">50 条</option>
-            <option value="100">100 条</option>
             <option value="all">全部</option>
           </select>
         </label>
-        <button class="btn primary" type="button" data-filter-scan>采集新增收藏</button>
+        <button class="btn primary" type="button" data-filter-scan>采集收藏</button>
         <button class="btn secondary" type="button" data-filter-classify disabled>AI 分类</button>
         {% endif %}
         {% if kind == "history" %}
@@ -101,7 +96,7 @@
         <button class="btn primary" type="button" data-filter-extract disabled>仅提取我勾选的内容</button>
       </div>
 
-      <div class="source-filter-toolbar" data-filter-toolbar hidden>
+      <div class="source-filter-toolbar" data-filter-toolbar{% if kind == "incremental" %} data-classification-only{% endif %} hidden>
         <label>有用性
           <select data-filter-usefulness>
             <option value="">全部</option>
