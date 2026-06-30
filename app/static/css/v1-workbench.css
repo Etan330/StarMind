@@ -811,8 +811,6 @@ textarea:focus {
 .task-input-card,
 .task-step-card,
 .task-next-card,
-.history-layout > .glass-card,
-.history-side .glass-card,
 .guide-grid .glass-card {
   padding: 18px;
 }
@@ -874,8 +872,7 @@ textarea:focus {
   border-top: 1px solid var(--border-soft);
 }
 
-.review-side,
-.history-side {
+.review-side {
   display: grid;
   gap: 14px;
   align-content: start;
@@ -888,12 +885,6 @@ textarea:focus {
 .quality-list li.warn {
   border-color: #f0d49c;
   background: #fff4de;
-}
-
-.history-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
-  gap: 18px;
 }
 
 .log-line {
@@ -1056,7 +1047,6 @@ textarea:focus {
 .task-v2-grid,
 .review-v2-layout,
 .review-editor-shell,
-.history-v2-layout,
 .demo-layout {
   display: grid;
   gap: 18px;
@@ -1078,8 +1068,6 @@ textarea:focus {
 .review-summary-card,
 .demo-reader,
 .demo-side .glass-card,
-.history-task-center,
-.task-history-card,
 .task-v2-grid .glass-card {
   padding: 18px;
 }
@@ -1281,34 +1269,6 @@ textarea:focus {
   color: var(--text-secondary);
 }
 
-.history-v2-layout {
-  grid-template-columns: minmax(0, 1fr) 360px;
-}
-
-.task-history-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 14px;
-  align-items: center;
-  background: #fafaf7;
-  border: 1px solid var(--border-soft);
-  border-radius: 8px;
-}
-
-.task-history-card span,
-.task-history-card p {
-  display: block;
-  margin: 4px 0 0;
-  color: var(--text-secondary);
-}
-
-.task-history-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .demo-layout {
   grid-template-columns: minmax(0, 1fr) 360px;
 }
@@ -1354,8 +1314,6 @@ textarea:focus {
   .review-layout,
   .review-v2-layout,
   .review-editor-shell,
-  .history-layout,
-  .history-v2-layout,
   .guide-grid,
   .settings-support-grid,
   .dashboard-v2-hero,
@@ -1410,17 +1368,14 @@ textarea:focus {
     grid-template-columns: 1fr !important;
   }
 
-  .task-history-card,
   .wiki-inline-query {
     grid-template-columns: 1fr;
   }
 
-  .task-history-actions,
   .dashboard-status-row {
     justify-content: stretch;
   }
 
-  .task-history-actions .btn,
   .dashboard-status-row .btn,
   .dashboard-status-row .status-pill {
     width: 100%;

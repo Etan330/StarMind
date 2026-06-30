@@ -31,7 +31,6 @@
           <a class="{{ 'active' if active == 'sources' else '' }}" href="/ui/sources">原始资料</a>
           <a class="{{ 'active' if active == 'wiki' else '' }}" href="/ui/wiki">知识库</a>
           <a class="{{ 'active' if active == 'push' else '' }}" href="/ui/push-settings">推送</a>
-          <a class="{{ 'active' if active == 'history' else '' }}" href="/ui/history">历史</a>
           <a class="{{ 'active' if active == 'recycle' else '' }}" href="/ui/recycle">回收站</a>
           <a class="{{ 'active' if active == 'settings' else '' }}" href="/ui/settings">设置</a>
         </nav>
@@ -56,7 +55,7 @@
       <a class="{{ 'active' if active == 'push' else '' }}" href="/ui/push-settings">推送</a>
       <a class="{{ 'active' if active == 'settings' else '' }}" href="/ui/settings">设置</a>
     </nav>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=push-feedback-v4"></script>
     {% block scripts %}{% endblock %}
     <script src="/static/time-picker.js?v=3"></script>
   </body>

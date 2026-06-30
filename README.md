@@ -25,22 +25,34 @@ This MVP implements the local Agent foundation:
 
 ## 本地运行
 
-### 如何启动
+### 新用户一键启动
 
-如果你在 `/Users/etan330/Desktop/agent` 目录下：
+新电脑拿到项目后，先进入项目目录，然后运行：
 
 ```bash
-cd starmind
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+./start.sh
 ```
 
-如果你已经在 `starmind` 项目目录里：
+`start.sh` 会自动完成这些事情：
+
+- 如果项目里还没有 `.venv`，自动创建 Python 虚拟环境。
+- 安装或更新 `requirements.txt` 里的运行依赖。
+- 启动本地服务：`http://127.0.0.1:8000`。
+
+第一次启动需要联网下载依赖，后续再次运行同一个命令即可。项目要求 Python 3.9+；如果系统默认 `python3` 不可用，可以这样指定：
 
 ```bash
+PYTHON=/path/to/python ./start.sh
+```
+
+### 手动启动
+
+如果你不想使用一键脚本，也可以手动执行：
+
+```bash
+python3 -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -156,8 +168,11 @@ Sync Ledger records all scanned links, including items that later become non-kno
 
 ## Tests
 
+测试依赖不在默认运行依赖里。开发者需要先安装 `requirements-dev.txt`：
+
 ```bash
-cd starmind
+source .venv/bin/activate
+pip install -r requirements-dev.txt
 pytest
 ```
 

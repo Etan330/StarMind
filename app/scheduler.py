@@ -50,34 +50,8 @@ async def auto_distill_job() -> None:
 
 
 async def push_check_job() -> None:
-    """Check every minute if it's time to push."""
-    from datetime import datetime
-    db = SessionLocal()
-    try:
-        from app.models import PushSettings
-        settings = db.query(PushSettings).first()
-        if not settings or settings.is_paused or not settings.push_time:
-            return
-        now = datetime.now()
-        current_day = now.isoweekday()  # 1=Mon, 7=Sun
-        current_time = now.strftime("%H:%M")
-        # Check if today is a push day
-        push_days = [int(d) for d in (settings.push_days or "").split(",") if d.isdigit()]
-        if current_day not in push_days:
-            return
-        # Check if current time matches any push time
-        push_times = [t.strip() for t in (settings.push_time or "").split(",") if t.strip()]
-        if current_time not in push_times:
-            return
-        # Generate and store push
-        from app.services.push_scheduler_service import PushSchedulerService
-        items = await PushSchedulerService(db).generate_push_items()
-        if items:
-            logger.info(f"Push triggered at {current_time}: {len(items)} items")
-    except Exception as e:
-        logger.warning(f"Push check failed: {e}")
-    finally:
-        db.close()
+    """Desktop push delivery is browser-owned; keep this job inert."""
+    logger.debug("server-side desktop notifications are browser-owned")
 
 
 def _schedule_retry(connector_id: int, attempt: int) -> None:

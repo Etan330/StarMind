@@ -184,6 +184,7 @@ class ClassifierService:
             if existing is None:
                 self.db.add(
                     RecycleBinItem(
+                        item_type="candidate",
                         candidate_id=candidate.id,
                         canonical_url=candidate.canonical_url,
                         external_item_id=candidate.external_item_id,

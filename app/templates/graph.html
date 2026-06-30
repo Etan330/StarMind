@@ -8,13 +8,14 @@
       <select id="domain-filter" onchange="loadGraph()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;">
         <option value="">全部领域</option>
       </select>
+      <button id="rebuild-btn" onclick="rebuildGraph()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;margin-left:8px;cursor:pointer;">重建图谱</button>
       <button onclick="toggleFullscreen()" style="padding:6px 12px;border:1px solid #ddd;border-radius:6px;margin-left:8px;cursor:pointer;">全屏</button>
     </div>
   </div>
   <div id="graph-container" style="width:100%;height:calc(100vh - 160px);border:1px solid #eee;border-radius:12px;background:#fafafa;"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="/static/echarts.min.js?v=5"></script>
 <script>
 const chart = echarts.init(document.getElementById('graph-container'));
 const DOMAIN_COLORS = {};
@@ -39,9 +40,10 @@ async function loadGraph() {
   select.innerHTML = '<option value="">全部领域</option>' + domains.map(d => `<option value="${d}" ${d===current?'selected':''}>${d}</option>`).join('');
 
   const nodes = data.nodes.map(n => ({
-    id: String(n.id), name: n.label, symbolSize: Math.max(12, n.size * 8),
+    id: String(n.id), name: n.label, symbolSize: Math.max(24, n.size * 10),
     itemStyle: {color: getDomainColor(n.domain)},
     category: n.domain,
+    cursor: 'pointer',
   }));
   const edges = data.edges.map(e => ({source: String(e.source), target: String(e.target), lineStyle: {width: Math.max(1, e.weight * 4)}}));
   const categories = domains.map(d => ({name: d}));
@@ -50,7 +52,7 @@ async function loadGraph() {
     tooltip: {trigger: 'item', formatter: p => p.data.name || ''},
     legend: {data: domains, top: 10, textStyle: {fontSize: 11}},
     series: [{
-      type: 'graph', layout: 'force', roam: true, draggable: true,
+      type: 'graph', layout: 'force', roam: true, draggable: false,
       force: {repulsion: 120, gravity: 0.05, edgeLength: [60, 200]},
       data: nodes, links: edges, categories: categories,
       label: {show: true, position: 'right', fontSize: 10},
@@ -60,10 +62,42 @@ async function loadGraph() {
   }, true);
 }
 
+function openWikiPage(pageId) {
+  if (!pageId) return;
+  window.location.assign(`/ui/wiki?page_id=${encodeURIComponent(pageId)}`);
+}
+
+function getClickedPageId(params) {
+  if (params.dataType === 'node' && params.data?.id) return params.data.id;
+  if (params.componentType === 'series' && params.seriesType === 'graph' && params.data?.id) return params.data.id;
+  if (params.name) {
+    const option = chart.getOption();
+    const node = option.series?.[0]?.data?.find(item => item.name === params.name || item.id === params.name);
+    return node?.id;
+  }
+  return null;
+}
+
+chart.on('click', params => {
+  openWikiPage(getClickedPageId(params));
+});
+
 function toggleFullscreen() {
   const el = document.getElementById('graph-container');
   if (!document.fullscreenElement) { el.requestFullscreen(); }
   else { document.exitFullscreen(); }
+}
+
+async function rebuildGraph() {
+  const btn = document.getElementById('rebuild-btn');
+  btn.disabled = true;
+  btn.textContent = '重建中…';
+  const resp = await fetch('/api/graph/rebuild', {method: 'POST'});
+  const result = await resp.json();
+  btn.disabled = false;
+  btn.textContent = '重建图谱';
+  alert(`图谱重建完成，新增 ${result.edges_created} 条连接（共扫描 ${result.total_pages} 个知识页面）`);
+  loadGraph();
 }
 
 window.addEventListener('resize', () => chart.resize());

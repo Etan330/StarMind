@@ -44,7 +44,7 @@
       </a>
       {% for cat in wiki_categories %}
         <a class="tree-item {{ 'active' if active_category and active_category.id == cat.id else '' }}" href="/ui/wiki?category={{ cat.id }}">
-          <span class="cat-name">📁 {{ cat.name }} <button class="cat-rename-btn" title="重命名" onclick="event.preventDefault();event.stopPropagation();renameCat({{ cat.id }}, '{{ cat.name }}')">✏️</button></span>
+          <span class="cat-name">📁 {{ cat.name }} <button class="cat-rename-btn" title="重命名" onclick="event.preventDefault();event.stopPropagation();renameCat({{ cat.id }}, '{{ cat.name }}')">✏️</button><button class="cat-rename-btn" title="删除分类" onclick="event.preventDefault();event.stopPropagation();deleteCat({{ cat.id }}, '{{ cat.name }}')">🗑️</button></span>
           <b>{{ cat.count }}</b>
         </a>
       {% endfor %}
@@ -132,6 +132,12 @@
         <dt>更新时间</dt><dd>{{ selected_page.last_updated_at.strftime("%Y/%m/%d %H:%M") if selected_page else "—" }}</dd>
         <dt>标签</dt><dd>{% for tag in selected_tags %}<span class="status-chip primary">{{ tag }}</span> {% else %}—{% endfor %}</dd>
       </dl>
+      {% if selected_page %}
+        <form method="post" action="/api/wiki/{{ selected_page.page_id }}/delete" style="margin-top:12px;"
+              onsubmit="return confirm('删除「{{ selected_page.title }}」？将进入回收站，可恢复。')">
+          <button class="btn secondary full" type="submit" style="color:#E85D75;border-color:#E85D75;">🗑 删除此页</button>
+        </form>
+      {% endif %}
     </section>
     <section class="glass-card wiki-source-card">
       <h2>引用来源</h2>
@@ -187,6 +193,13 @@ async function renameCat(id, currentName) {
   });
   if (res.ok) location.reload();
   else alert('重命名失败');
+}
+
+async function deleteCat(id, name) {
+  if (!confirm('确定删除分类「' + name + '」吗？\n该分类下的页面将移至「未分类」，可从回收站恢复。')) return;
+  const res = await fetch('/api/wiki/categories/' + id + '/delete', {method: 'POST'});
+  if (res.ok) location.reload();
+  else alert('删除失败');
 }
 
 // Preferences panel
