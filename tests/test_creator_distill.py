@@ -180,13 +180,12 @@ def test_creator_work_title_removes_leading_like_count_prefix():
     assert not item["title"].startswith("17.0万")
 
 
-def test_creator_frontend_cleans_cached_work_titles_before_rendering():
-    """localStorage/API 中残留旧标题时，前端渲染前也要兜底清洗点赞量前缀"""
+def test_creator_frontend_cleans_scanned_work_titles_before_rendering():
+    """API 新扫描结果渲染前要兜底清洗点赞量前缀"""
     app_js = open("app/static/app.js", encoding="utf-8").read()
 
     assert "cleanCreatorWorkTitle" in app_js
     assert "normalizeCreatorWorkItem" in app_js
-    assert "scannedItems = (state.items || []).map(normalizeCreatorWorkItem)" in app_js
     assert "scannedItems = (response.items || []).map(normalizeCreatorWorkItem)" in app_js
     assert "cleanCreatorWorkTitle(item.title)" in app_js
 
@@ -207,13 +206,13 @@ def test_creator_work_title_keeps_legitimate_numeric_prefix():
     assert item["title"] == "2024 年最值得看的设计趋势"
 
 
-def test_creator_panel_persists_last_scan_state_and_shows_profile_card():
-    """离开后返回输入博主页，应能从 localStorage 恢复上次扫描结果，并展示博主基础信息"""
+def test_creator_panel_does_not_restore_last_scan_state_but_keeps_profile_card():
+    """输入博主页不应从 localStorage 恢复上次扫描结果，但新扫描结果仍展示博主基础信息"""
     app_js = open("app/static/app.js", encoding="utf-8").read()
 
-    assert "creatorDistillState:v4" in app_js
+    assert "restoreCreatorState" not in app_js
+    assert "已恢复上次扫描" not in app_js
     assert "saveCreatorState" in app_js
-    assert "restoreCreatorState" in app_js
     assert "renderCreatorProfile" in app_js
     assert "粉丝" in app_js
     assert "获赞" in app_js

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -92,11 +93,22 @@ class DouyinBrowserCollector:
         return parsed.path or raw_url
 
     @staticmethod
+    def _is_canonical_item_url(raw_url: str) -> bool:
+        parsed = urlparse(str(raw_url or "").strip())
+        return bool(re.match(r"^/(video|note)/[^/]+/?$", parsed.path or ""))
+
+    @staticmethod
     def _prefer_item(existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
         existing_href = str(existing.get("href") or "")
         incoming_href = str(incoming.get("href") or "")
         existing_title = str(existing.get("title") or "").strip()
         incoming_title = str(incoming.get("title") or "").strip()
+        existing_is_canonical = DouyinBrowserCollector._is_canonical_item_url(existing_href)
+        incoming_is_canonical = DouyinBrowserCollector._is_canonical_item_url(incoming_href)
+        if incoming_is_canonical and not existing_is_canonical:
+            return incoming
+        if existing_is_canonical and not incoming_is_canonical:
+            return existing
         if "/video/" in incoming_href and "/video/" not in existing_href:
             return incoming
         if "/note/" in incoming_href and "/note/" not in existing_href:
@@ -118,6 +130,9 @@ class DouyinBrowserCollector:
             result = json.loads(raw.get("value", "{}")) if isinstance(raw.get("value"), str) else {}
             last_meta = {k: v for k, v in result.items() if k != "items"}
             for item in result.get("items", []):
+                surface = str(item.get("surface") or "").strip()
+                if surface and surface != "favorite_grid":
+                    continue
                 href = str(item.get("href") or "").strip()
                 if not href:
                     continue
@@ -154,19 +169,27 @@ class DouyinBrowserCollector:
         effective_limit = limit if limit is not None else ALL_CAP
 
         # Extract links via eval
-        script = '''
+        script = r'''
 (() => {
   const validUrl = (raw) => {
     try {
       const url = new URL(raw, location.href);
-      if (!/(^|\\.)douyin\\.com$|(^|\\.)iesdouyin\\.com$/.test(url.hostname)) return null;
-      if (!/(\\/video\\/|\\/note\\/|\\/share\\/video\\/|\\/share\\/note\\/)/.test(url.pathname)) return null;
-      return url;
+      if (!/(^|\.)douyin\.com$|(^|\.)iesdouyin\.com$/.test(url.hostname)) return null;
+      if (/baiduspider/i.test(url.searchParams.get("source") || "")) return null;
+      const direct = url.pathname.match(/^\/(video|note)\/([^/]+)\/?$/);
+      if (direct) return url;
+      const shared = url.pathname.match(/^\/share\/(video|note)\/([^/]+)\/?$/);
+      if (shared) {
+        url.pathname = `/${shared[1]}/${shared[2]}`;
+        url.search = "";
+        return url;
+      }
+      return null;
     } catch (_) { return null; }
   };
-  const badLine = /^(\\d[\\d.]*\\s*(万|亿|w|k)?|首页|推荐|关注|朋友|我的|登录|注册|搜索|收藏)$/i;
+  const badLine = /^(\d[\d.]*\s*(万|亿|w|k)?|首页|推荐|关注|朋友|我的|登录|注册|搜索|收藏)$/i;
   // 尽力从卡片附近抓发布时间：先 <time> 的 datetime/innerText，再正则匹配常见文案；抓不到留空。
-  const datePattern = /(\\d{4}[-/年.]\\d{1,2}[-/月.]\\d{1,2}|\\d{1,2}[-/月.]\\d{1,2}日?|\\d+\\s*(天|小时|分钟|周|个月|月|年)前|昨天|前天|今天)/;
+  const datePattern = /(\d{4}[-/年.]\d{1,2}[-/月.]\d{1,2}|\d{1,2}[-/月.]\d{1,2}日?|\d+\s*(天|小时|分钟|周|个月|月|年)前|昨天|前天|今天)/;
   const findPublishTime = (anchor) => {
     let node = anchor;
     for (let depth = 0; depth < 4 && node; depth++) {
@@ -182,25 +205,42 @@ class DouyinBrowserCollector:
     }
     return "";
   };
-  const anchors = Array.from(document.querySelectorAll("a[href]"));
+  const currentHostIsDouyin = /(^|\.)douyin\.com$|(^|\.)iesdouyin\.com$/.test(location.hostname);
+  const bodyText = (document.body?.innerText || "").slice(0, 3000);
+  const locationLooksLikeFavorite = location.pathname.includes("/user/") && /(showTab=favorite_collection|favorite|collection)/i.test(location.href);
+  const navLooksLikeFavorite = /收藏|喜欢|favorite|collection/i.test(bodyText);
+  const looksLikeCollectionPage = currentHostIsDouyin && (locationLooksLikeFavorite || navLooksLikeFavorite);
+  const anchors = looksLikeCollectionPage ? Array.from(document.querySelectorAll("a[href]")) : [];
   const seen = new Set();
   const items = [];
+  const favoriteNav = Array.from(document.querySelectorAll('a, button, [role="tab"], [role="button"], span, div'))
+    .find(el => (el.innerText || '').trim() === '收藏');
+  const favoriteRegion = favoriteNav?.parentElement?.parentElement || favoriteNav?.parentElement || null;
+  const isFooterRecommendation = (anchor) => !!anchor.closest('footer, .user-page-footer, [class*="footer"], [class*="Footer"]');
+  const isFavoriteCard = (anchor) => {
+    if (isFooterRecommendation(anchor)) return false;
+    let node = anchor;
+    for (let depth = 0; depth < 8 && node; depth += 1, node = node.parentElement) {
+      const tag = (node.tagName || '').toUpperCase();
+      if (tag === 'LI') return true;
+      if (favoriteRegion && node === favoriteRegion) return true;
+    }
+    return false;
+  };
   for (const a of anchors) {
     const url = validUrl(a.getAttribute("href"));
-    if (!url) continue;
+    if (!url || !isFavoriteCard(a)) continue;
     const key = url.pathname;
     if (seen.has(key)) continue;
     seen.add(key);
     const text = (a.innerText || "").trim();
-    const lines = text.split("\\n").map(l => l.trim()).filter(l => l.length >= 4 && !badLine.test(l));
+    const lines = text.split("\n").map(l => l.trim()).filter(l => l.length >= 4 && !badLine.test(l));
     const title = lines[0] || "";
-    const kind = /\\/note\\//.test(url.pathname) ? "note" : "video";
-    if (title) items.push({href: url.href, title: title.slice(0, 180), kind, publishTime: findPublishTime(a)});
+    const kind = /\/note\//.test(url.pathname) ? "note" : "video";
+    if (title) items.push({href: url.href, title: title.slice(0, 180), kind, publishTime: findPublishTime(a), surface: "favorite_grid"});
   }
-  const bodyText = (document.body?.innerText || "").slice(0, 3000);
-  const looksLikeCollectionPage = /收藏|喜欢|favorite|collection/i.test(bodyText) || /user\\/self/.test(location.href);
   const isLoggedIn = !/登录.*注册/.test(bodyText.slice(0, 300));
-  return JSON.stringify({count: items.length, items: items, looksLikeCollectionPage, isLoggedIn, url: location.href});
+  return JSON.stringify({count: items.length, items: items, looksLikeCollectionPage, isLoggedIn, url: location.href, currentHostIsDouyin});
 })()
 '''
         items, result = await self._scroll_and_collect(target, script, limit)
@@ -211,9 +251,14 @@ class DouyinBrowserCollector:
             await self._close_tab()
             raise DouyinPageNotReady("抖音未登录。请在浏览器中登录抖音后重试。")
 
-        if require_collection_page and not result.get("looksLikeCollectionPage"):
+        result_url = str(result.get("url") or "")
+        result_host = urlparse(result_url).hostname or ""
+        result_is_douyin = result_host.endswith("douyin.com") or result_host.endswith("iesdouyin.com")
+        if require_collection_page and (not result.get("looksLikeCollectionPage") or not result_is_douyin):
             await self._close_tab()
             raise DouyinPageNotReady("当前页面不像收藏夹页面。请确认浏览器已登录并进入收藏页。")
+
+        items = [item for item in items if "baiduspider" not in str(item.get("href") or "").lower()]
 
         if not items:
             await self._close_tab()

@@ -214,6 +214,32 @@ def test_v3_favorites_entry_redirects_to_sync_page():
         app.dependency_overrides.clear()
 
 
+def test_extraction_frontend_starts_backend_job_before_polling():
+    script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "async_job: true" in script
+    assert "const extracted = await apiPost(extractEndpoint, payload)" in script
+    assert "const finalStatus = await pollExtractJob(currentJobId, { overlay })" in script
+
+
+def test_extraction_progress_window_can_be_dismissed_and_still_notifies():
+    script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "data-extract-dismiss" in script
+    assert "event.stopPropagation()" in script
+    assert 'overlay.dataset.dismissed = "1"' in script
+    assert "overlay.remove()" in script
+    assert "showExtractCompletionNotice(lastPayload)" in script
+
+
+def test_history_resume_sends_checkbox_candidate_id_to_prepare_selected():
+    script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "const item = classifiedItems[Number(input.dataset.itemIndex)]" in script
+    assert "input.dataset.candidateId ? { ...item, candidate_id: input.dataset.candidateId } : item" in script
+    assert "apiPost(\"/api/sync/prepare-selected\", { platform, selected_items: selected, skipped_items: skipped })" in script
+
+
 def test_sync_favorites_page_renders_live_platform_tabbar():
     db = make_session()
 
@@ -240,6 +266,75 @@ def test_sync_favorites_page_renders_live_platform_tabbar():
         assert 'data-default-platform="douyin"' in text
     finally:
         app.dependency_overrides.clear()
+
+
+def test_source_setup_incremental_limit_only_offers_new_and_all():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        panel = client.get("/ui/source-setup/douyin/panel")
+
+        assert panel.status_code == 200
+        text = panel.text
+        start = text.index('data-collection-kind="incremental"')
+        panel_start = text.rfind('<div class="source-collection-panel', 0, start)
+        panel_end = text.find('</div>\n    </div>', start)
+        html = text[panel_start:panel_end]
+        assert '<option value="new" selected>新增</option>' in html
+        assert '<option value="all">全部</option>' in html
+        assert '5 条' not in html
+        assert '10 条' not in html
+        assert '20 条' not in html
+        assert '50 条' not in html
+        assert '100 条' not in html
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_source_setup_incremental_filters_hidden_until_classification():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        panel = client.get("/ui/source-setup/douyin/panel")
+
+        assert panel.status_code == 200
+        text = panel.text
+        start = text.index('data-collection-kind="incremental"')
+        panel_start = text.rfind('<div class="source-collection-panel', 0, start)
+        panel_end = text.find('</div>\n    </div>', start)
+        html = text[panel_start:panel_end]
+        assert 'data-filter-toolbar data-classification-only' in html
+        assert 'data-filter-toolbar data-classification-only hidden' in html
+        css = (ROOT / "app" / "static" / "css" / "v3-design-system.css").read_text(encoding="utf-8")
+        assert ".source-filter-toolbar[hidden]" in css
+        assert "display: none !important" in css
+        assert '>采集收藏</button>' in html
+        assert '采集新增收藏' not in html
+    finally:
+        app.dependency_overrides.clear()
+
+
+
+def test_source_setup_frontend_reports_history_sync_after_classification():
+    script = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "scan_mode: selectedLimit" in script
+    assert "saved_to_history" in script
+    assert "已保存到历史收藏" in script
+    assert "请勾选要提取的分类或条目" in script
+    assert "filterToolbar.hidden = !(isHistory || lastGroups.length > 0)" in script
+    assert "refreshSiblingHistoryPanel" in script
+
 
 
 def test_source_setup_history_controls_expose_saved_state_hooks():

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.connectors.bilibili import BilibiliFavoritesCollector
+from app.connectors.douyin import DouyinBrowserCollector
 from app.connectors.xiaohongshu import XiaohongshuFavoritesCollector
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,6 +69,44 @@ def run_extractor(script_path: str, dom_js: str):
     program = JS_DOM_HARNESS + "\n" + dom_js + "\nconst output = " + script + ";\nconsole.log(output);\n"
     result = subprocess.run(["node", "-e", program], check=True, text=True, capture_output=True)
     return json.loads(result.stdout)
+
+
+def test_douyin_collector_rejects_search_result_when_favorite_has_plain_video_url():
+    existing = {"href": "https://www.douyin.com/video/7380000112233", "title": "真实收藏"}
+    incoming = {"href": "https://www.douyin.com/search/%E8%8B%B1%E8%AF%AD?modal_id=7380000112233", "title": "China daily口语练习中 #英语 #英语口语"}
+
+    assert DouyinBrowserCollector._prefer_item(existing, incoming) == existing
+
+
+def test_douyin_collector_rejects_footer_recommendation_links(monkeypatch):
+    import app.connectors.douyin as douyin
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(douyin.asyncio, "sleep", _no_sleep)
+
+    favorite = {
+        "href": "https://www.douyin.com/video/7651941787468188955",
+        "title": "真实收藏",
+        "kind": "video",
+        "publishTime": "",
+        "surface": "favorite_grid",
+    }
+    footer_recommendation = {
+        "href": "https://www.douyin.com/video/7656825362768695026",
+        "title": "页脚推荐，不是收藏",
+        "kind": "video",
+        "publishTime": "",
+        "surface": "footer_recommendation",
+    }
+    collector = douyin.DouyinBrowserCollector()
+    collector._target_id = "tab-x"
+    monkeypatch.setattr(collector, "_request", FakeDouyinRequest([[favorite, footer_recommendation]]))
+
+    items = asyncio.run(collector.extract_visible_video_links(limit=None, require_collection_page=True))
+
+    assert [item.raw_url for item in items] == ["https://www.douyin.com/video/7651941787468188955"]
 
 
 def test_bilibili_extractor_prefers_real_title_over_stats_for_same_bvid():
@@ -492,6 +531,79 @@ class ScrollAwareXhsProxy(FakeProxy):
         return json.dumps(snap)
 
 
+class ScrollEventSensitiveXhsProxy(FakeProxy):
+    def __init__(self, windows):
+        super().__init__([], payloads=windows)
+        self._unlocked_windows = 1
+
+    async def scroll(self, tab, distance=800):
+        return None
+
+    async def eval_script(self, tab, script):
+        if "__starmindScrollXhsFeeds" in script:
+            if "dispatchEvent(new Event('scroll'" in script and "dispatchEvent(new WheelEvent('wheel'" in script:
+                self._unlocked_windows = min(self._unlocked_windows + 1, len(self._payloads))
+            return json.dumps({"scrolled": True})
+        snap = []
+        for window in self._payloads[:self._unlocked_windows]:
+            snap.extend(window)
+        return json.dumps(snap)
+
+
+class DelayedXhsProxy(ScrollAwareXhsProxy):
+    def __init__(self, windows):
+        super().__init__(windows)
+        self._scrolls = 0
+
+    async def eval_script(self, tab, script):
+        if "__starmindScrollXhsFeeds" in script:
+            self._scrolls += 1
+            if self._scrolls % 4 == 0:
+                self._unlocked_windows = min(self._unlocked_windows + 1, len(self._payloads))
+            return json.dumps({"scrolled": True})
+        snap = []
+        for window in self._payloads[:self._unlocked_windows]:
+            snap.extend(window)
+        return json.dumps(snap)
+
+
+def test_xiaohongshu_collector_dispatches_scroll_events_for_virtual_feed(monkeypatch):
+    import app.connectors.xiaohongshu as xhs
+
+    monkeypatch.setattr(xhs, "MAX_SCROLLS", 60)
+
+    def note(index):
+        nid = f"{index:024x}"
+        return {"url": f"https://www.xiaohongshu.com/explore/{nid}", "title": f"收藏标题{index}", "note_id": nid}
+
+    windows = [[note(i) for i in range(start, start + 10)] for start in range(0, 50, 10)]
+    collector = XiaohongshuFavoritesCollector(proxy=ScrollEventSensitiveXhsProxy(windows))
+
+    items = asyncio.run(collector.extract_favorites("https://www.xiaohongshu.com/user/profile/abc?tab=fav", limit=50))
+
+    assert len(items) == 50
+    assert items[-1].title == "收藏标题49"
+
+
+def test_xiaohongshu_collector_keeps_scrolling_through_delayed_loads(monkeypatch):
+    import app.connectors.xiaohongshu as xhs
+
+    monkeypatch.setattr(xhs, "MAX_SCROLLS", 60)
+    monkeypatch.setattr(xhs, "STALL_ROUNDS", 3)
+
+    def note(index):
+        nid = f"{index:024x}"
+        return {"url": f"https://www.xiaohongshu.com/explore/{nid}", "title": f"收藏标题{index}", "note_id": nid}
+
+    windows = [[note(i) for i in range(start, start + 10)] for start in range(0, 50, 10)]
+    collector = XiaohongshuFavoritesCollector(proxy=DelayedXhsProxy(windows))
+
+    items = asyncio.run(collector.extract_favorites("https://www.xiaohongshu.com/user/profile/abc?tab=fav", limit=50))
+
+    assert len(items) == 50
+    assert items[-1].title == "收藏标题49"
+
+
 def test_xiaohongshu_collector_scrolls_page_containers_until_limit(monkeypatch):
     import app.connectors.xiaohongshu as xhs
 
@@ -557,6 +669,49 @@ def test_douyin_collector_accumulates_across_scroll_windows(monkeypatch):
     assert len(items) == 32
     assert len({it.raw_url for it in items}) == 32
     assert collector.diagnostics().get("looksLikeCollectionPage") is True
+
+
+def test_douyin_collector_rejects_local_ui_snapshot_with_douyin_links(monkeypatch):
+    import app.connectors.douyin as douyin
+    import pytest
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(douyin.asyncio, "sleep", _no_sleep)
+
+    class LocalUiRequest:
+        async def __call__(self, method, path, body=None):
+            if path.startswith("/eval"):
+                payload = {
+                    "count": 2,
+                    "items": [
+                        {
+                            "href": "https://www.douyin.com/video/7641428456118422818?source=Baiduspider",
+                            "title": "报志愿力竭了#志愿填报 报志愿比高考难",
+                            "kind": "video",
+                            "publishTime": "",
+                        },
+                        {
+                            "href": "https://www.douyin.com/video/7651941787468188955",
+                            "title": "真实收藏标题",
+                            "kind": "video",
+                            "publishTime": "",
+                        },
+                    ],
+                    "looksLikeCollectionPage": True,
+                    "isLoggedIn": True,
+                    "url": "http://127.0.0.1:8000/ui/sync?platform=douyin",
+                }
+                return {"value": json.dumps(payload)}
+            return {}
+
+    collector = douyin.DouyinBrowserCollector()
+    collector._target_id = "tab-x"
+    monkeypatch.setattr(collector, "_request", LocalUiRequest())
+
+    with pytest.raises(douyin.DouyinPageNotReady):
+        asyncio.run(collector.extract_visible_video_links(limit=None, require_collection_page=True))
 
 
 def test_douyin_collector_deduplicates_modal_and_video_urls(monkeypatch):

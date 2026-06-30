@@ -1,8 +1,9 @@
+import asyncio
 import json
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
@@ -46,6 +47,22 @@ class FakeDiandianExtractor:
 class NotReadyDiandianExtractor:
     async def check_ready(self):
         return False
+
+    async def close(self, close_tab=True):
+        return None
+
+
+class BlockingDiandianExtractor:
+    calls = []
+    block_event = None
+
+    async def check_ready(self):
+        return True
+
+    async def extract_content(self, share_text, url="", content_type="note", timeout_seconds=240):
+        type(self).calls.append(url)
+        await type(self).block_event.wait()
+        return FakeDiandianResult(url=url)
 
     async def close(self, close_tab=True):
         return None
@@ -137,6 +154,41 @@ def test_diandian_extract_selected_creator_candidate_auto_updates_creator_wiki(t
         assert page.page_type == "creator"
         assert "小红书博主人设分析" in open(page.markdown_path, encoding="utf-8").read()
     finally:
+        app.dependency_overrides.clear()
+
+
+
+def test_xiaohongshu_diandian_async_job_returns_before_extraction_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.xiaohongshu_diandian_extractor.XiaohongshuDiandianExtractor", BlockingDiandianExtractor)
+    BlockingDiandianExtractor.calls = []
+    BlockingDiandianExtractor.block_event = asyncio.Event()
+    db = make_session()
+    session_factory = sessionmaker(bind=db.get_bind(), class_=Session)
+    first = create_candidate(db, title="Anthropic博客的Agent Eval实践心得", external_item_id="6a338bc10000000021014ba1")
+    second = create_candidate(db, title="目前主流企业AI Agent 技术栈选型", external_item_id="6a338bc10000000021014ba2")
+
+    monkeypatch.setattr("app.api.routes.EXTRACT_JOB_SESSION_FACTORY", session_factory)
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/xiaohongshu/diandian/extract-selected",
+            json={"candidate_ids": [first.id, second.id], "async_job": True},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "running"
+        assert body["job_id"]
+        assert body["total"] == 2
+        assert body["success_count"] == 0
+        assert db.query(RawSource).count() == 0
+    finally:
+        BlockingDiandianExtractor.block_event.set()
         app.dependency_overrides.clear()
 
 

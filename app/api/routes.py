@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.agent import AgentRunner
 from app.connectors import BrowserDependencyMissing, CDPConnectionError, DouyinPageNotReady, cdp_proxy, douyin_browser_collector
@@ -47,7 +47,7 @@ from app.config import (
     read_json,
     write_json,
 )
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.llm import (
     add_custom_provider,
     clear_api_key,
@@ -83,6 +83,7 @@ from app.services import (
     normalize_url,
 )
 from app.services.markdown_renderer import render_markdown
+from app.services.sync_service import ScanResult as SyncResult
 from app.services.douyin_transcript_service import DouyinTranscriptError, DouyinTranscriptService
 from app.services.statuses import (
     ARCHIVED_RECOVERABLE,
@@ -104,6 +105,8 @@ BROWSER_SESSIONS: dict[str, dict[str, Any]] = {}
 # key=job_id；记录本次批次进度，用于人机验证暂停后的断点续跑聚合计数。
 # 持久断点靠 candidate.metadata_json 的 *_extracted 标记（重启后仍可续跑，只丢聚合计数）。
 DOUBAO_EXTRACT_JOBS: dict[str, dict[str, Any]] = {}
+EXTRACT_JOB_TASKS: dict[str, asyncio.Task[Any]] = {}
+EXTRACT_JOB_SESSION_FACTORY: sessionmaker[Session] = SessionLocal
 
 V3_UI_EVENT_NAMES = {
     "v3_primary_input_focused",
@@ -1375,8 +1378,11 @@ async def _run_extraction_job(
             candidate = db.get(CandidateItem, candidate_id)
             if candidate is None:
                 failed_count += 1
+                job["failed_count"] = job.get("failed_count", 0) + 1
                 _set_item_status(job, candidate_id, ITEM_FAILED, error="candidate_not_found")
-                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
+                fail_item = {"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"}
+                items.append(fail_item)
+                job["items"].append(fail_item)
                 continue
 
             _set_item_status(job, candidate_id, ITEM_EXTRACTING, title=candidate.title)
@@ -1387,8 +1393,11 @@ async def _run_extraction_job(
                 result = await extractor.extract_content(**extract_args, timeout_seconds=per_item_timeout)
             except _CDPErr as exc:
                 failed_count += 1
+                job["failed_count"] = job.get("failed_count", 0) + 1
                 _set_item_status(job, candidate.id, ITEM_FAILED, error=str(exc))
-                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
+                fail_item = {"candidate_id": candidate.id, "success": False, "error": str(exc)}
+                items.append(fail_item)
+                job["items"].append(fail_item)
                 continue
 
             attempts = int(getattr(result, "attempts", 1) or 1)
@@ -1411,6 +1420,7 @@ async def _run_extraction_job(
                     break
                 # 普通失败（含低质量回绝）：记 metadata、置失败、继续。
                 failed_count += 1
+                job["failed_count"] = job.get("failed_count", 0) + 1
                 metadata = safe_json(candidate.metadata_json)
                 fail_meta = {
                     f"{prefix}_extracted": False,
@@ -1436,6 +1446,7 @@ async def _run_extraction_job(
                 if platform == "xiaohongshu_diandian":
                     fail_item.update({"attempts": attempts, "retried": retried})
                 items.append(fail_item)
+                job["items"].append(fail_item)
                 if i < len(pending) - 1:
                     await asyncio.sleep(random.uniform(delay_min, delay_max))
                 continue
@@ -1480,6 +1491,7 @@ async def _run_extraction_job(
                 page = await wiki_service.create_page_from_raw_source(raw_source.id)
                 wiki_page_id = page.page_id
             success_count += 1
+            job["success_count"] = job.get("success_count", 0) + 1
             job["done_ids"].append(candidate.id)
             preview = content_preview_payload(raw_source)
             _set_item_status(job, candidate.id, ITEM_INGESTED, title=raw_source.title, preview=preview, error=None)
@@ -1495,6 +1507,7 @@ async def _run_extraction_job(
             if platform == "xiaohongshu_diandian":
                 success_item.update({"attempts": attempts, "retried": retried})
             items.append(success_item)
+            job["items"].append(success_item)
             if i < len(pending) - 1:
                 await asyncio.sleep(random.uniform(delay_min, delay_max))
     except Exception as exc:  # noqa: BLE001 — 后台/await 路径异常须落 job，避免轮询永转。
@@ -1510,9 +1523,6 @@ async def _run_extraction_job(
             await extractor.close(close_tab=not keep_tab_open)
 
     creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
-    job["success_count"] = job.get("success_count", 0) + success_count
-    job["failed_count"] = job.get("failed_count", 0) + failed_count
-    job["items"].extend(items)
 
     if paused:
         remaining = _filter_pending_candidates(db, job["candidate_ids"], platform)
@@ -1570,6 +1580,78 @@ async def extract_job_status(job_id: str):
         "success_count": job.get("success_count") or 0,
         "failed_count": job.get("failed_count") or 0,
         "message": message,
+    }
+
+
+async def _run_extraction_job_in_background(
+    job_id: str,
+    candidate_ids: list[Any],
+    platform: str,
+    extractor: Any,
+    *,
+    per_item_timeout: int,
+    switch_every: int,
+    delay_min: float,
+    delay_max: float,
+    generate_wiki_draft: bool,
+) -> None:
+    db = EXTRACT_JOB_SESSION_FACTORY()
+    try:
+        await _run_extraction_job(
+            job_id,
+            candidate_ids,
+            platform,
+            extractor,
+            db=db,
+            per_item_timeout=per_item_timeout,
+            switch_every=switch_every,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            generate_wiki_draft=generate_wiki_draft,
+        )
+    finally:
+        db.close()
+        EXTRACT_JOB_TASKS.pop(job_id, None)
+
+
+def _start_extraction_background_task(
+    job_id: str,
+    candidate_ids: list[Any],
+    platform: str,
+    extractor: Any,
+    *,
+    per_item_timeout: int,
+    switch_every: int,
+    delay_min: float,
+    delay_max: float,
+    generate_wiki_draft: bool,
+) -> None:
+    if job_id in EXTRACT_JOB_TASKS:
+        return
+    EXTRACT_JOB_TASKS[job_id] = asyncio.create_task(
+        _run_extraction_job_in_background(
+            job_id,
+            candidate_ids,
+            platform,
+            extractor,
+            per_item_timeout=per_item_timeout,
+            switch_every=switch_every,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            generate_wiki_draft=generate_wiki_draft,
+        )
+    )
+
+
+def _running_extract_job_response(job_id: str, job: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "status": "running",
+        "job_id": job_id,
+        "platform": job.get("platform"),
+        "total": job.get("total") or len(job.get("candidate_ids") or []),
+        "success_count": job.get("success_count") or 0,
+        "failed_count": job.get("failed_count") or 0,
+        "items": list((job.get("per_item") or {}).values()),
     }
 
 
@@ -1736,6 +1818,34 @@ def connector_item_from_filter_item(item: dict[str, Any], platform: str) -> Conn
     )
 
 
+def _candidate_is_extractable(db: Session, candidate: CandidateItem) -> bool:
+    raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
+    return raw_source is None
+
+
+def candidate_ids_for_selected_items(db: Session, items: list[dict[str, Any]], platform: str) -> list[int]:
+    candidate_ids: list[int] = []
+    seen: set[int] = set()
+    for item in items:
+        raw_id = item.get("candidate_id")
+        if raw_id is None:
+            continue
+        try:
+            candidate_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if candidate_id in seen:
+            continue
+        candidate = db.get(CandidateItem, candidate_id)
+        if candidate is None or candidate.platform != platform:
+            continue
+        if not _candidate_is_extractable(db, candidate):
+            continue
+        candidate_ids.append(candidate.id)
+        seen.add(candidate.id)
+    return candidate_ids
+
+
 def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int]:
     candidate_ids: list[int] = []
     seen: set[int] = set()
@@ -1753,11 +1863,9 @@ def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int
             .first()
         )
         if candidate and candidate.id not in seen:
-            metadata = json.loads(candidate.metadata_json or "{}")
-            raw_source = db.query(RawSource).filter(RawSource.candidate_id == candidate.id).first()
-            already_extracted = metadata.get("doubao_extracted") is True or metadata.get("xiaohongshu_diandian_extracted") is True
-            if already_extracted or raw_source is not None:
+            if not _candidate_is_extractable(db, candidate):
                 continue
+            metadata = json.loads(candidate.metadata_json or "{}")
             metadata.update(item.metadata or {})
             candidate.title = item.title or candidate.title
             candidate.author = item.author or candidate.author
@@ -1765,6 +1873,90 @@ def candidate_ids_for_items(db: Session, items: list[ConnectorItem]) -> list[int
             candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
             candidate_ids.append(candidate.id)
             seen.add(candidate.id)
+    if candidate_ids:
+        db.commit()
+    return candidate_ids
+
+
+def candidate_ids_for_history_entries_without_candidate(db: Session, connector: Connector, items: list[ConnectorItem]) -> list[int]:
+    candidate_ids: list[int] = []
+    seen: set[int] = set()
+    for item in items:
+        normalized = normalize_url(item.raw_url, item.platform)
+        if normalized.external_item_id in seen:
+            continue
+        raw_source = (
+            db.query(RawSource)
+            .filter(
+                RawSource.platform == normalized.platform,
+                RawSource.external_item_id == normalized.external_item_id,
+            )
+            .first()
+        )
+        if raw_source is not None:
+            continue
+        entry = (
+            db.query(ScanEntry)
+            .filter(
+                ScanEntry.platform == normalized.platform,
+                ScanEntry.external_item_id == normalized.external_item_id,
+                ScanEntry.extracted.is_(False),
+            )
+            .first()
+        )
+        ledger = (
+            db.query(SyncLedgerItem)
+            .filter(
+                SyncLedgerItem.platform == normalized.platform,
+                SyncLedgerItem.external_item_id == normalized.external_item_id,
+            )
+            .first()
+        )
+        if entry is None and ledger is None:
+            continue
+        existing_candidate_id = (entry.candidate_id if entry is not None else None) or (ledger.candidate_id if ledger is not None else None)
+        if existing_candidate_id:
+            continue
+        candidate = CandidateItem(
+            source_type="active_connector",
+            platform=normalized.platform,
+            connector_id=connector.id,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=normalized.raw_url,
+            title=item.title or (entry.title if entry else ""),
+            author=item.author or (entry.author if entry else None),
+            content_type=item.content_type,
+            metadata_json=json.dumps(item.metadata or {}, ensure_ascii=False),
+            status=PENDING_CLASSIFICATION,
+        )
+        db.add(candidate)
+        db.flush()
+        if entry is not None:
+            entry.candidate_id = candidate.id
+            entry.raw_url = entry.raw_url or normalized.raw_url
+            entry.canonical_url = entry.canonical_url or normalized.canonical_url
+            entry.title = entry.title or candidate.title
+            entry.author = entry.author or candidate.author
+        if ledger is not None:
+            ledger.candidate_id = candidate.id
+            ledger.connector_id = ledger.connector_id or connector.id
+            ledger.classification_label = "knowledge_selected"
+        else:
+            db.add(
+                SyncLedgerItem(
+                    connector_id=connector.id,
+                    platform=normalized.platform,
+                    external_item_id=normalized.external_item_id,
+                    canonical_url=normalized.canonical_url,
+                    raw_url=normalized.raw_url,
+                    scan_run_id=f"history_resume_{uuid4().hex[:8]}",
+                    classification_label="knowledge_selected",
+                    candidate_id=candidate.id,
+                )
+            )
+        candidate_ids.append(candidate.id)
+        seen.add(normalized.external_item_id)
     if candidate_ids:
         db.commit()
     return candidate_ids
@@ -3933,7 +4125,6 @@ def get_conversation_messages(convo_id: str, db: Session = Depends(get_db)):
 @router.post("/api/conversations/{convo_id}/messages")
 async def send_message(convo_id: str, request: Request, db: Session = Depends(get_db)):
     from app.models.records import ChatConversation, ChatMessage
-    from app.services.markdown_renderer import render_markdown
 
     convo = db.query(ChatConversation).filter_by(id=convo_id).first()
     if not convo:
@@ -4214,6 +4405,8 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     data = await request_data(request)
     platform = str(data.get("platform") or "").strip()
     requested_kind = str(data.get("collection_kind") or "").strip()
+    scan_mode = str(data.get("scan_mode") or data.get("limit_mode") or data.get("collection_limit") or data.get("limit") or "new").strip()
+    scan_mode = "all" if scan_mode == "all" else "new"
     limit = parse_collection_limit(data, default=10)
     homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
 
@@ -4245,7 +4438,7 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
         elif platform == "douyin":
             if homepage_url:
                 await douyin_browser_collector.open(homepage_url)
-            items = await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=False)
+            items = await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=True)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
     except _CDPErr as exc:
@@ -4255,24 +4448,25 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
     except DouyinPageNotReady as exc:
         raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
 
-    # 「全部已入库」只适用于新增扫描。历史扫描是在重建/扩展基线，即使前 N 条已入库也不能提示用户去新增收藏。
-    fresh_count = sum(
-        1 for i in items
-        if _extract_note_id(i.raw_url) not in existing_note_ids
-    )
     total_scanned = len(items)
-    all_duplicates = requested_kind != "history" and total_scanned > 0 and fresh_count == 0
 
     # 落库（DB 权威源）：采集即并入历史——无论历史还是新增 Tab，collection_kind 一律落 "history"，
     # 不再产生 incremental 行。新增 Tab 只是「本次扫描批次」的临时视图，靠 scan_run_id 在前端过滤。
     # determine_kind 仍用于区分首扫（全量历史）vs 后续扫描（增量去重），不决定落库 kind。
     svc = ScanEntryService(db)
     stored_kind = svc.determine_kind(platform)
-    # is_incremental 仅由本次请求的 Tab 决定：历史 Tab 可扩展重扫，新增 Tab 才遇已见即停；落库 kind 恒 history。
-    is_incremental = requested_kind == "incremental"
+    # 新增 Tab 永远只展示「历史中没见过」的条目；scan_mode 只决定是否遇到第一个旧条目就停。
+    is_incremental = requested_kind == "incremental" and stored_kind != "history"
     boundary_hit = False
+    skipped_existing_count = 0
     if is_incremental:
-        items, boundary_hit = svc.filter_incremental_until_boundary(platform, items)
+        if scan_mode == "all":
+            items, skipped_existing_count = svc.filter_unseen(platform, items)
+        else:
+            before_count = len(items)
+            items, boundary_hit = svc.filter_incremental_until_boundary(platform, items)
+            skipped_existing_count = 1 if boundary_hit and len(items) < before_count else 0
+    all_duplicates = requested_kind != "history" and total_scanned > 0 and len(items) == 0
     scan_run_id = f"scan_titles_{uuid4().hex[:8]}"
     entries = svc.upsert_from_items(platform, items, "history", scan_run_id)
     # 首扫（stored_kind==history）记录分界锚点；增量扫描不动锚点。
@@ -4286,8 +4480,12 @@ async def scan_titles(request: Request, db: Session = Depends(get_db)):
         "scan_run_id": scan_run_id,
         "boundary_hit": boundary_hit,
         "total_scanned": total_scanned,
+        "saved_to_history": True,
+        "new_count": len(entries),
+        "skipped_existing_count": skipped_existing_count,
+        "scan_mode": scan_mode,
         "all_duplicates": all_duplicates,
-        "message": "收藏夹内容均已入库，请先在平台新增收藏后再扫描" if all_duplicates else "",
+        "message": "没有新增收藏。历史收藏中已有这些内容。" if all_duplicates else "",
         "login_required": False,
     }
 
@@ -4379,6 +4577,7 @@ async def classify_batch_titles(request: Request, db: Session = Depends(get_db))
             flat.extend(group.get("items") or [])
         if flat:
             ScanEntryService(db).apply_classification(flat)
+        result["saved_to_history"] = True
     return result
 
 
@@ -4397,8 +4596,10 @@ async def prepare_selected_items(request: Request, db: Session = Depends(get_db)
         for item in selected_items
         if str(item.get("url") or item.get("raw_url") or "").strip()
     ]
+    selected_candidate_ids = candidate_ids_for_selected_items(db, selected_items, platform)
     reusable_candidate_ids = candidate_ids_for_items(db, connector_items)
-    reusable_candidates = db.query(CandidateItem).filter(CandidateItem.id.in_(reusable_candidate_ids)).all() if reusable_candidate_ids else []
+    history_resume_candidate_ids = candidate_ids_for_history_entries_without_candidate(db, connector, connector_items)
+    reusable_candidates = db.query(CandidateItem).filter(CandidateItem.id.in_([*reusable_candidate_ids, *history_resume_candidate_ids])).all() if reusable_candidate_ids or history_resume_candidate_ids else []
     reusable_urls = {candidate.raw_url for candidate in reusable_candidates} | {candidate.canonical_url for candidate in reusable_candidates}
     new_connector_items = []
     for item in connector_items:
@@ -4406,8 +4607,8 @@ async def prepare_selected_items(request: Request, db: Session = Depends(get_db)
         if item.raw_url in reusable_urls or normalized.canonical_url in reusable_urls:
             continue
         new_connector_items.append(item)
-    result = await SyncService(db).import_items(connector, new_connector_items, f"{platform}_selected")
-    merged_candidate_ids = list(dict.fromkeys([*reusable_candidate_ids, *result.candidate_ids]))
+    result = await SyncService(db).import_items(connector, new_connector_items, f"{platform}_selected") if new_connector_items else SyncResult(connector.id, f"{platform}_selected_{uuid4().hex[:8]}")
+    merged_candidate_ids = list(dict.fromkeys([*selected_candidate_ids, *reusable_candidate_ids, *history_resume_candidate_ids, *result.candidate_ids]))
     result.candidate_ids = merged_candidate_ids
 
     for candidate_id in result.candidate_ids:
@@ -4577,6 +4778,19 @@ async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Sessi
         raise HTTPException(status_code=428, detail=not_ready_detail)
 
     # 预检通过 → 进入共用提取协程（全程维护 job["per_item"]，支持并发轮询）。
+    if truthy(data.get("async_job"), False):
+        _start_extraction_background_task(
+            job_id,
+            candidate_ids,
+            "xiaohongshu_diandian",
+            extractor,
+            per_item_timeout=per_item_timeout,
+            switch_every=switch_every,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            generate_wiki_draft=generate_wiki_draft,
+        )
+        return _running_extract_job_response(job_id, job)
     return await _run_extraction_job(
         job_id,
         candidate_ids,
@@ -4626,6 +4840,19 @@ async def extract_selected_with_doubao(request: Request, db: Session = Depends(g
         job["status"] = "error"
         raise HTTPException(status_code=428, detail=login_required_detail)
 
+    if truthy(data.get("async_job"), False):
+        _start_extraction_background_task(
+            job_id,
+            candidate_ids,
+            "doubao",
+            extractor,
+            per_item_timeout=per_item_timeout,
+            switch_every=switch_every,
+            delay_min=delay_min,
+            delay_max=delay_max,
+            generate_wiki_draft=generate_wiki_draft,
+        )
+        return _running_extract_job_response(job_id, job)
     result = await _run_extraction_job(
         job_id,
         candidate_ids,
