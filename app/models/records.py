@@ -138,6 +138,8 @@ class RecycleBinItem(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidate_items.id"), nullable=True)
+    page_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    item_type: Mapped[str] = mapped_column(String(40), nullable=False, default="raw_source")
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
     external_item_id: Mapped[str] = mapped_column(String(300), nullable=False)
     title: Mapped[str] = mapped_column(String(500), nullable=False)

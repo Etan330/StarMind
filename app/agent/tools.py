@@ -38,7 +38,7 @@ class KnowledgeSearchTool:
             ][:30]
         else:
             pages = self.db.query(WikiPage).order_by(WikiPage.last_updated_at.desc()).limit(30).all()
-            raw_sources = self.db.query(RawSource).order_by(RawSource.created_at.desc()).limit(30).all()
+            raw_sources = []
         snippets: list[dict[str, str]] = []
 
         for page in pages:
@@ -56,6 +56,11 @@ class KnowledgeSearchTool:
                 snippets.append({"type": "raw_source", "title": source.title, "text": text[:1200], "url": source.canonical_url})
             if len(snippets) >= limit:
                 break
+
+        if not snippets and pages:
+            for page in pages[:limit]:
+                text = self._read_local_text(page.markdown_path)
+                snippets.append({"type": "wiki", "title": page.title, "text": text[:1200]})
 
         content = "\n\n".join(f"[{item['type']}] {item['title']}\n{item['text']}" for item in snippets)
         metadata = {"count": len(snippets), "items": snippets}

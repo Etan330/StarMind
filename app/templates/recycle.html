@@ -22,11 +22,18 @@
         <article class="source-line" style="display:flex;align-items:center;justify-content:space-between;">
           <div>
             <strong>{{ item.title }}</strong>
-            <small style="display:block;color:#888;">{{ item.platform }} · {{ item.archived_at.strftime("%Y/%m/%d") }} · {{ item.reason }}</small>
+            <small style="display:block;color:#888;">
+              {% if item.item_type == "wiki_page" %}知识库页面{% else %}{{ item.platform }}{% endif %}
+              · {{ item.archived_at.strftime("%Y/%m/%d") }} · {{ item.reason }}
+            </small>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <form method="post" action="/recycle/{{ item.id }}/restore" style="margin:0;">
+              {% if item.item_type == "wiki_page" %}
+              <input type="hidden" name="target" value="wiki">
+              {% else %}
               <input type="hidden" name="target" value="review">
+              {% endif %}
               <button class="btn secondary small" type="submit">恢复</button>
             </form>
           </div>

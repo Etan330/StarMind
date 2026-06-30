@@ -160,9 +160,9 @@ class PushSchedulerService:
         """Save push schedule. times is a list of HH:MM strings."""
         settings = self.get_or_create_settings()
         settings.push_days = ",".join(str(d) for d in sorted(days))
-        if times:
+        if times is not None:
             settings.push_time = ",".join(times) if isinstance(times, list) else times
-        elif time:
+        elif time is not None:
             settings.push_time = time
         self.db.commit()
 

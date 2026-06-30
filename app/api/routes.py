@@ -3519,9 +3519,18 @@ async def restore_recycled_item(recycle_item_id: int, request: Request, db: Sess
     data = await request_data(request)
     target = str(data.get("target") or "review")
     try:
-        candidate = RecycleService(db).restore(recycle_item_id, target=target)
+        result = RecycleService(db).restore(recycle_item_id, target=target)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Wiki page restore: redirect to wiki page
+    if hasattr(result, "page_id") and isinstance(result, WikiPage):
+        if wants_html(request):
+            return RedirectResponse("/ui/wiki?restored=1", status_code=303)
+        return {"status": "restored", "page_id": result.page_id}
+
+    # Candidate restore: existing logic
+    candidate = result
     raw_source_id = None
     if target == "knowledge":
         raw_source = RawSourceService(db).ingest_candidate(candidate.id)
@@ -3875,15 +3884,31 @@ async def resolve_creator_profile(request: Request, db: Session = Depends(get_db
 
 @router.get("/api/conversations")
 def list_conversations(db: Session = Depends(get_db)):
-    from app.models.records import ChatConversation
+    from app.models.records import ChatConversation, ChatMessage
 
-    convos = db.query(ChatConversation).order_by(ChatConversation.updated_at.desc()).all()
+    convos = (
+        db.query(ChatConversation)
+        .join(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .group_by(ChatConversation.id)
+        .order_by(ChatConversation.updated_at.desc())
+        .all()
+    )
     return [{"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()} for c in convos]
 
 
 @router.post("/api/conversations")
 def create_conversation(db: Session = Depends(get_db)):
-    from app.models.records import ChatConversation
+    from app.models.records import ChatConversation, ChatMessage
+
+    empty_convo = (
+        db.query(ChatConversation)
+        .outerjoin(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .filter(ChatMessage.id.is_(None))
+        .order_by(ChatConversation.updated_at.desc())
+        .first()
+    )
+    if empty_convo:
+        return {"id": empty_convo.id, "title": empty_convo.title}
 
     convo = ChatConversation(id=uuid4().hex, title="新对话")
     db.add(convo)
@@ -4781,9 +4806,24 @@ async def batch_delete_wiki_pages(request: Request, db: Session = Depends(get_db
     deleted = 0
     for pid in page_ids:
         page = db.query(WikiPage).filter(WikiPage.page_id == str(pid)).first()
-        if page:
-            db.delete(page)
-            deleted += 1
+        if not page:
+            continue
+        page.status = "deleted"
+        existing = db.query(RecycleBinItem).filter(
+            RecycleBinItem.page_id == page.page_id,
+            RecycleBinItem.item_type == "wiki_page",
+        ).first()
+        if not existing:
+            db.add(RecycleBinItem(
+                item_type="wiki_page",
+                page_id=page.page_id,
+                canonical_url="",
+                external_item_id="",
+                title=page.title,
+                platform="wiki",
+                reason="user_deleted",
+            ))
+        deleted += 1
     db.commit()
 
     if wants_html(request):

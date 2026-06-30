@@ -1466,6 +1466,7 @@
 
   document.querySelectorAll("form").forEach((form) => {
     form.addEventListener("submit", (event) => {
+      if (form.hasAttribute("data-no-busy")) return
       if (form.dataset.confirmMessage && !window.confirm(form.dataset.confirmMessage)) {
         event.preventDefault()
         return

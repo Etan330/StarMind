@@ -165,6 +165,19 @@ button {
   font-weight: 650;
 }
 
+.tour-help-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.help-link:hover,
+.tour-help-link:hover {
+  color: var(--color-primary);
+}
+
 .content-shell {
   width: 100%;
 }

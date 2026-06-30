@@ -86,4 +86,6 @@ def _run_migrations() -> None:
     _add_col("push_settings", "total_push_count", "INTEGER NOT NULL DEFAULT 0")
     _add_col("push_history", "wiki_page_id", "INTEGER")
     _add_col("push_history", "category_name", "VARCHAR(120)")
+    _add_col("recycle_bin_items", "item_type", "VARCHAR(40) NOT NULL DEFAULT 'raw_source'")
+    _add_col("recycle_bin_items", "page_id", "VARCHAR(200)")
 
