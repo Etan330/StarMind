@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import Base, get_db
 from app.main import app
 from app.connectors.doubao_extractor import PROMPTS, DoubaoExtractor, normalize_content_type
-from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem
+from app.models import CandidateItem, RawSource, ScanEntry, SyncLedgerItem, WikiPage
 
 
 def make_session():
@@ -114,6 +114,66 @@ def test_doubao_prompts_use_one_universal_template():
     assert "链接：{url}" in universal_prompt
 
 
+def test_extract_selected_creator_candidate_auto_updates_creator_wiki(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.services.wiki_service.LOCAL_DATA_DIR", tmp_path)
+    monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", FakeDoubaoExtractor)
+
+    class Provider:
+        provider_name = "mock"
+
+        async def chat(self, messages, model, temperature=0.2):
+            return "## 人设\n自动生成的人设分析\n\n## 最新与高赞差异\n高赞更偏教程"
+
+    monkeypatch.setattr(
+        "app.services.wiki_service.get_provider_runtime",
+        lambda provider_id=None, model=None: (Provider(), "mock-model", {"api_style": "mock"}),
+    )
+    db = make_session()
+    candidate = CandidateItem(
+        source_type="distill_profile",
+        platform="douyin",
+        external_item_id="7380000112233",
+        canonical_url="https://www.douyin.com/video/7380000112233",
+        raw_url="https://www.douyin.com/video/7380000112233",
+        title="博主教程作品",
+        author="大牙大",
+        content_type="video",
+        metadata_json=json.dumps(
+            {
+                "creator_key": "douyin:creator-1",
+                "creator_name": "大牙大",
+                "creator_bucket": "top_liked",
+            },
+            ensure_ascii=False,
+        ),
+        status="pending_classification",
+    )
+    db.add(candidate)
+    db.commit()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post("/api/doubao/extract-selected", json={"candidate_ids": [candidate.id]})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "completed"
+        assert body["items"][0]["wiki_page_id"]
+        assert body["creator_wiki_pages"] == [{"creator_key": "douyin:creator-1", "wiki_page_id": body["items"][0]["wiki_page_id"], "creator_name": "大牙大"}]
+        assert db.query(RawSource).count() == 1
+        page = db.query(WikiPage).one()
+        assert page.page_type == "creator"
+        markdown = open(page.markdown_path, encoding="utf-8").read()
+        assert "自动生成的人设分析" in markdown
+    finally:
+        app.dependency_overrides.clear()
+
+
+
 def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
     monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", FakeDoubaoExtractor)
@@ -183,6 +243,8 @@ def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monk
         assert body["success_count"] == 1
         assert body["failed_count"] == 0
         assert body["items"][0]["raw_source_id"]
+        assert body["items"][0]["title"] == "AI Agent 教程"
+        assert "这是豆包返回的完整逐字稿" in body["items"][0]["preview"]["content"]
 
         raw_source = db.query(RawSource).one()
         transcript = open(raw_source.transcript_path, encoding="utf-8").read()
@@ -208,23 +270,112 @@ def test_extract_selected_uses_doubao_result_to_create_raw_source(tmp_path, monk
         app.dependency_overrides.clear()
 
 
-def test_prepare_selected_reuses_existing_unextracted_candidate(monkeypatch):
+def test_link_extract_ingests_wechat_article_as_markdown_without_images(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
+    html = """
+    <html>
+      <head><meta property="og:title" content="公众号文章标题"></head>
+      <body>
+        <h1 id="activity-name">公众号文章标题</h1>
+        <div id="js_content">
+          <p>第一段正文。</p>
+          <img src="https://example.com/a.png">
+          <h2>小标题</h2>
+          <p>第二段正文。</p>
+        </div>
+      </body>
+    </html>
+    """
+
+    browser_calls = []
+
+    async def fake_fetch(url):
+        browser_calls.append(url)
+        assert url == "https://mp.weixin.qq.com/s/hDZa2a3jOxLP2mSv4-AUQg"
+        return html
+
+    monkeypatch.setattr("app.api.routes.fetch_wechat_article_html_from_browser", fake_fetch)
     db = make_session()
-    candidate = CandidateItem(
-        source_type="active_connector",
-        platform="xiaohongshu",
-        external_item_id="abc",
-        canonical_url="https://www.xiaohongshu.com/explore/abc",
-        raw_url="https://www.xiaohongshu.com/explore/abc",
-        title="图文笔记",
-        content_type="note",
-        metadata_json=json.dumps({"filter_usefulness": "useful"}, ensure_ascii=False),
-        status="pending_classification",
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://mp.weixin.qq.com/s/hDZa2a3jOxLP2mSv4-AUQg", "title": ""},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ingested"
+        assert body["platform"] == "wechat"
+        assert body["raw_source_id"]
+        assert body["title"] == "公众号文章标题"
+        assert "第一段正文。" in body["preview"]["content"]
+        assert body["preview"]["raw_source_id"] == body["raw_source_id"]
+        assert browser_calls == ["https://mp.weixin.qq.com/s/hDZa2a3jOxLP2mSv4-AUQg"]
+        candidate = db.get(CandidateItem, body["candidate_id"])
+        assert candidate.platform == "wechat"
+        assert candidate.content_type == "article"
+        raw_source = db.get(RawSource, body["raw_source_id"])
+        transcript = open(raw_source.transcript_path, encoding="utf-8").read()
+        assert raw_source.title == "公众号文章标题"
+        assert "第一段正文。" in transcript
+        assert "## 小标题" in transcript
+        assert "第二段正文。" in transcript
+        assert "![]" not in transcript
+        assert "https://example.com/a.png" not in transcript
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_reuses_existing_ledger_without_candidate_id():
+    db = make_session()
+    db.add(
+        SyncLedgerItem(
+            platform="xiaohongshu",
+            external_item_id="bc02115085635a1694d8",
+            canonical_url="https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33/6a338bc10000000021014bc8?xsec_source=pc_collect&xsec_token=AB2T5L_LjI-8h03NF7itAak8CoZkrDzCPQoagi6N8ilc0%3D",
+            raw_url="https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33/6a338bc10000000021014bc8?xsec_token=AB2T5L_LjI-8h03NF7itAak8CoZkrDzCPQoagi6N8ilc0=&xsec_source=pc_collect",
+            scan_run_id="history",
+        )
     )
-    db.add(candidate)
     db.commit()
 
     def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={
+                "url": "https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33/6a338bc10000000021014bc8?xsec_token=AB2T5L_LjI-8h03NF7itAak8CoZkrDzCPQoagi6N8ilc0=&xsec_source=pc_collect",
+                "title": "收藏里的小红书笔记",
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["platform"] == "xiaohongshu"
+        assert body["extract_endpoint"] == "/api/xiaohongshu/diandian/extract-selected"
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.title == "收藏里的小红书笔记"
+        ledgers = db.query(SyncLedgerItem).filter(SyncLedgerItem.external_item_id == "bc02115085635a1694d8").all()
+        assert len(ledgers) == 1
+        assert ledgers[0].candidate_id == candidate.id
+        assert ledgers[0].classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+
         yield db
 
     app.dependency_overrides[get_db] = override_get_db
@@ -247,6 +398,35 @@ def test_prepare_selected_reuses_existing_unextracted_candidate(monkeypatch):
 
         assert response.status_code == 200
         assert response.json()["candidate_ids"] == [candidate.id]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -696,6 +876,35 @@ def test_extract_selected_returns_structured_login_required_when_doubao_not_logg
         app.dependency_overrides.clear()
 
 
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_extract_selected_stops_batch_when_login_modal_appears_during_extract(monkeypatch):
     monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", LoginRequiredDuringExtractDoubaoExtractor)
     db = make_session()
@@ -725,6 +934,35 @@ def test_extract_selected_stops_batch_when_login_modal_appears_during_extract(mo
         assert response.json()["detail"]["login_url"] == "https://www.doubao.com"
         assert db.query(RawSource).count() == 0
         assert LoginRequiredDuringExtractDoubaoExtractor.closed_with[-1] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -795,6 +1033,35 @@ def test_extract_selected_records_doubao_failure_metadata_and_continues(tmp_path
         app.dependency_overrides.clear()
 
 
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_extract_selected_closes_doubao_tab_after_success(tmp_path, monkeypatch):
     CloseTrackingDoubaoExtractor.closed_with = []
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
@@ -823,6 +1090,35 @@ def test_extract_selected_closes_doubao_tab_after_success(tmp_path, monkeypatch)
 
         assert response.status_code == 200
         assert CloseTrackingDoubaoExtractor.closed_with[-1] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -961,6 +1257,35 @@ def test_extract_selected_switches_conversation_every_n_items(tmp_path, monkeypa
         app.dependency_overrides.clear()
 
 
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_extract_selected_pauses_on_human_verification_and_preserves_progress(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.raw_source_service.LOCAL_DATA_DIR", tmp_path)
     monkeypatch.setattr("app.connectors.doubao_extractor.DoubaoExtractor", HumanVerificationDoubaoExtractor)
@@ -1006,6 +1331,35 @@ def test_extract_selected_pauses_on_human_verification_and_preserves_progress(tm
         assert third_meta.get("doubao_extracted") is not True
         # 暂停时不能关掉豆包标签页（用户要在该页面手动验证）。
         assert HumanVerificationDoubaoExtractor.closed_with[-1] is False
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()
 
@@ -1076,5 +1430,34 @@ def test_extract_selected_resumes_from_breakpoint_skipping_done(tmp_path, monkey
         for candidate in (first, second, third):
             meta = json.loads(db.get(CandidateItem, candidate.id).metadata_json)
             assert meta["doubao_extracted"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_link_extract_prepares_douyin_candidate_for_doubao():
+    db = make_session()
+
+    def override_get_db():
+        yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/intake/link-extract",
+            json={"url": "https://www.douyin.com/video/7380000112233", "title": "单条抖音链接"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "prepared"
+        assert body["platform"] == "douyin"
+        assert body["extract_endpoint"] == "/api/doubao/extract-selected"
+        assert len(body["candidate_ids"]) == 1
+        candidate = db.get(CandidateItem, body["candidate_ids"][0])
+        assert candidate.source_type == "passive_link"
+        assert candidate.platform == "douyin"
+        assert candidate.title == "单条抖音链接"
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).one()
+        assert ledger.classification_label == "knowledge_selected"
     finally:
         app.dependency_overrides.clear()

@@ -66,3 +66,11 @@ def test_xiaohongshu_discovery_item_normalizes_to_note_id():
     assert normalized.platform == "xiaohongshu"
     assert normalized.external_item_id == "65fabc1234567890abcdef12"
     assert normalized.canonical_url == "https://www.xiaohongshu.com/explore/65fabc1234567890abcdef12"
+
+
+def test_wechat_article_normalization_uses_share_token():
+    normalized = normalize_url("https://mp.weixin.qq.com/s/hDZa2a3jOxLP2mSv4-AUQg?utm_source=share")
+
+    assert normalized.platform == "wechat"
+    assert normalized.external_item_id == "hDZa2a3jOxLP2mSv4-AUQg"
+    assert normalized.canonical_url == "https://mp.weixin.qq.com/s/hDZa2a3jOxLP2mSv4-AUQg"

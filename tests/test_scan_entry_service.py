@@ -94,18 +94,18 @@ def test_set_history_saved_false_without_connector_is_noop():
     assert db.query(Connector).filter(Connector.platform == "douyin").count() == 0
 
 
-def test_reset_history_clears_flag_and_first_scan_done_and_keeps_entries():
+def test_reset_history_clears_flag_first_scan_done_and_history_entries():
     db = make_session()
     svc = ScanEntryService(db)
-    # 扫描落两条历史 + 标记 first_scan_done + history_saved
+    # 扫描落两条历史 + 一条新增 + 标记 first_scan_done + history_saved
     svc.upsert_from_items("douyin", [_item("7001"), _item("7002")], HISTORY, "run1")
+    svc.upsert_from_items("douyin", [_item("8001")], INCREMENTAL, "run2")
     svc.record_boundary("douyin", [_item("7001"), _item("7002")])
     svc.set_history_saved("douyin", True)
     connector = db.query(Connector).filter(Connector.platform == "douyin").first()
     assert connector.first_scan_done is True
     assert connector.history_saved is True
-    rows_before = db.query(ScanEntry).filter(ScanEntry.platform == "douyin").count()
-    assert rows_before == 2
+    assert db.query(ScanEntry).filter(ScanEntry.platform == "douyin", ScanEntry.collection_kind == HISTORY).count() == 2
 
     svc.reset_history("douyin")
 
@@ -113,8 +113,10 @@ def test_reset_history_clears_flag_and_first_scan_done_and_keeps_entries():
     # 关键：first_scan_done 也被清，否则下次扫描 determine_kind→incremental→全滤掉
     assert connector.first_scan_done is False
     assert connector.history_saved is False
-    # ScanEntry 行保留（不删，否则丢分类/提取状态）
-    assert db.query(ScanEntry).filter(ScanEntry.platform == "douyin").count() == rows_before
+    assert connector.history_boundary_external_id is None
+    # 重新扫描历史要给用户一个干净的历史集合；新增记录不属于历史重扫范围，保留。
+    assert db.query(ScanEntry).filter(ScanEntry.platform == "douyin", ScanEntry.collection_kind == HISTORY).count() == 0
+    assert db.query(ScanEntry).filter(ScanEntry.platform == "douyin", ScanEntry.collection_kind == INCREMENTAL).count() == 1
     # 清完后 determine_kind 重新回到 history
     assert svc.determine_kind("douyin") == HISTORY
 
@@ -159,7 +161,7 @@ def test_upsert_idempotent_does_not_duplicate_or_clobber_classification():
     assert rows[0].title == "新标题"  # 展示字段可更新
 
 
-def test_filter_incremental_drops_already_seen():
+def test_filter_incremental_stops_at_first_already_seen_boundary():
     db = make_session()
     svc = ScanEntryService(db)
     svc.upsert_from_items("douyin", [_item("7001")], HISTORY, "run1")
@@ -174,7 +176,7 @@ def test_filter_incremental_drops_already_seen():
         )
     )
     db.commit()
-    kept = svc.filter_incremental("douyin", [_item("7001"), _item("7002"), _item("7003")])
+    kept = svc.filter_incremental("douyin", [_item("7003"), _item("7001"), _item("7002")])
     kept_ext = {i.raw_url.rsplit("/", 1)[-1] for i in kept}
     assert kept_ext == {"7003"}
 

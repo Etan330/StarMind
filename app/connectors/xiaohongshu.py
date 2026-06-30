@@ -23,15 +23,42 @@ class XiaohongshuFavoritesCollector:
     def __init__(self, proxy: CDPProxy | None = None) -> None:
         self._proxy = proxy or cdp_proxy
 
+    async def _scroll_xhs_feeds(self, tab: CDPTab) -> None:
+        await self._proxy.scroll(tab, distance=1200)
+        await self._proxy.eval_script(tab, """
+(() => {
+  window.__starmindScrollXhsFeeds = (window.__starmindScrollXhsFeeds || 0) + 1;
+  const selectors = [
+    '.feeds-page', '.feeds-container', '.note-list', '.user-notes',
+    '[class*="feeds"]', '[class*="Feeds"]', '[class*="waterfall"]', '[class*="Waterfall"]'
+  ];
+  const seen = new Set([document.scrollingElement, document.documentElement, document.body]);
+  for (const selector of selectors) {
+    for (const el of Array.from(document.querySelectorAll(selector))) seen.add(el);
+  }
+  for (const el of Array.from(document.querySelectorAll('*'))) {
+    const style = window.getComputedStyle(el);
+    if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 80) seen.add(el);
+  }
+  for (const el of seen) {
+    if (!el) continue;
+    try { el.scrollBy ? el.scrollBy(0, Math.max(900, Math.floor(window.innerHeight * 0.9))) : (el.scrollTop += Math.max(900, Math.floor(window.innerHeight * 0.9))); } catch (_) {}
+  }
+  return JSON.stringify({ scrolled: true, count: seen.size });
+})()
+""")
+
     async def _scroll_and_collect(self, tab: CDPTab, script: str, limit: int | None) -> list[dict[str, Any]]:
         """边滚边 eval，按 _dedupe_key 跨快照累积（首胜，XHS JS 已选好标题）。
-        按唯一 key 计数控制滚动停止，但返回时按 cap 宽切，最终精确裁剪交给 build 循环
-        （某行可能过 dedup 却被 _is_noise_title 滤掉，早切会欠量）。"""
+        小红书收藏页经常是内层瀑布流容器滚动，单滚 window 会停在首屏 10 条，所以滚动时同时推进页面和可滚容器。
+        """
         effective_cap = limit if limit is not None else ALL_CAP
         by_key: dict[str, dict[str, Any]] = {}
         ordered: list[dict[str, Any]] = []
+        usable_count = 0
 
         def absorb(snapshot: Any) -> None:
+            nonlocal usable_count
             rows = json.loads(snapshot) if isinstance(snapshot, str) else (snapshot or [])
             for item in rows:
                 href = str(item.get("url") or "").strip()
@@ -40,16 +67,21 @@ class XiaohongshuFavoritesCollector:
                 key = self._dedupe_key(item, href)
                 if not key or key in by_key:
                     continue
+                title = str(item.get("title") or "").strip()
                 by_key[key] = item
                 ordered.append(item)
+                if not self._is_noise_title(title):
+                    usable_count += 1
+                if usable_count >= effective_cap:
+                    return
 
         # 首窗先抓一次，再进入滚动循环
         absorb(await self._proxy.eval_script(tab, script))
         stalls = 0
         for _ in range(MAX_SCROLLS):
-            if len(by_key) >= effective_cap:
+            if usable_count >= effective_cap:
                 break
-            await self._proxy.scroll(tab)
+            await self._scroll_xhs_feeds(tab)
             before = len(by_key)
             absorb(await self._proxy.eval_script(tab, script))
             if len(by_key) <= before:
@@ -58,7 +90,7 @@ class XiaohongshuFavoritesCollector:
                     break
             else:
                 stalls = 0
-        return ordered[:effective_cap]
+        return ordered
 
     async def extract_favorites(self, url: str | None = None, limit: int | None = None) -> list[ConnectorItem]:
         target_url = str(url or "").strip()

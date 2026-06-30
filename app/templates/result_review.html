@@ -25,7 +25,7 @@
       </div>
       {{ ui.status_chip(quality_label, "success" if quality.quality_level == "ready" else "warning" if quality.quality_level in ["needs_source_check", "asr_pending", "metadata_only", "fallback"] else "danger") }}
     </div>
-    <div class="result-preview-grid">
+    <div class="result-preview-grid compact">
       <section>
         <h3>生成状态</h3>
         <p>{{ generation_status_label }}</p>
@@ -109,6 +109,13 @@
       <span>ID: {{ page.page_id }}</span>
       <span>Status: {{ page.status }}</span>
     </div>
+    <section class="original-source-editor">
+      <div class="agent-output-head compact">
+        <strong>原文内容（可编辑）</strong>
+        {% if original_source.raw_source_id %}<span>RawSource: {{ original_source.raw_source_id }}</span>{% endif %}
+      </div>
+      <textarea name="original_text" class="original-source-textarea">{{ original_source.text }}</textarea>
+    </section>
     <textarea name="markdown" class="review-editor" required>{{ markdown }}</textarea>
     <div class="button-row sticky-review-actions">
       <button class="btn primary" type="submit" {{ "disabled" if not refs else "" }} data-busy-text="正在保存...">确认保存到知识库</button>

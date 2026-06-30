@@ -32,13 +32,13 @@
 <section class="raw-source-layout">
   <div class="source-groups">
     <article class="source-group glass-card" data-source-group="favorites">
-      <details open>
+      <details open data-source-group-key="favorites">
         <summary><span>收藏夹<small>点击展开 / 收起</small></span><b>{{ favorite_sources | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
           {% for source in favorite_sources %}
             <div class="source-line-wrapper" style="display:flex;align-items:center;gap:8px;" data-expand-item>
               <input type="checkbox" class="batch-checkbox" value="{{ source.id }}" name="ids" form="batch-form" style="display:none;width:18px;height:18px;cursor:pointer;">
-              <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" style="flex:1;">
+              <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" style="flex:1;" data-source-select-link>
                 <strong>{{ source.title }}</strong>
                 <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
               </a>
@@ -52,13 +52,13 @@
     </article>
 
     <article class="source-group glass-card" data-source-group="links">
-      <details>
+      <details data-source-group-key="links">
         <summary><span>用户贴的链接<small>点击展开 / 收起</small></span><b>{{ link_items | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
-          {% for item in link_items %}
-            <a class="source-line" href="/ui/sources?source_id={{ item.id }}" data-expand-item>
-              <strong>{{ item.title }}</strong>
-              <span>{{ item.platform }} · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
+          {% for source in link_items %}
+            <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-expand-item data-source-select-link>
+              <strong>{{ source.title }}</strong>
+              <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
             </a>
           {% else %}
             {{ ui.empty_state("还没有单独导入的链接", "用导入链接功能加入第一条。") }}
@@ -69,13 +69,13 @@
     </article>
 
     <article class="source-group glass-card" data-source-group="ideas">
-      <details>
+      <details data-source-group-key="ideas">
         <summary><span>临时 idea<small>点击展开 / 收起</small></span><b>{{ idea_items | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
-          {% for item in idea_items %}
-            <a class="source-line" href="/ui/sources?source_id={{ item.id }}" data-expand-item>
-              <strong>{{ item.title }}</strong>
-              <span>手动录入 · {{ item.created_at.strftime("%Y/%m/%d") }}</span>
+          {% for source in idea_items %}
+            <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-expand-item data-source-select-link>
+              <strong>{{ source.title }}</strong>
+              <span>手动录入 · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
             </a>
           {% else %}
             {{ ui.empty_state("还没有手动想法", "用记录想法功能把临时 idea 写进来。") }}
@@ -86,19 +86,42 @@
     </article>
 
     <article class="source-group glass-card" data-source-group="distill">
-      <details>
-        <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_requests | length }}</b></summary>
+      <details data-source-group-key="distill">
+        <summary><span>博主蒸馏<small>点击展开 / 收起</small></span><b>{{ distill_creator_groups | length }}</b></summary>
         <div class="source-group-list" data-expand-list>
-          {% for req in distill_requests %}
-            <a class="source-line" href="/ui/distill" data-expand-item>
-              <strong>{{ req.target_name or req.profile_url }}</strong>
-              <span>{{ req.platform or "社交媒体" }} · {{ req.status or "pending" }}</span>
-            </a>
+          {% for group in distill_creator_groups %}
+            <details class="source-line-wrapper creator-source-folder" data-expand-item data-source-group-key="creator:{{ group.creator_key }}">
+              <summary class="source-line creator-source-folder-head">
+                <div>
+                  <strong>{{ group.creator_name }}</strong>
+                  <small>{{ group.platform }} · 博主蒸馏</small>
+                </div>
+                <div class="creator-source-summary-grid">
+                  <span><b>{{ group.sources | length }}</b> 已提取</span>
+                  <span class="sr-only">已提取 {{ group.sources | length }} 条</span>
+                  <span><b>{{ group.latest_count }}</b> 最新</span>
+                  <span><b>{{ group.top_liked_count }}</b> 高赞</span>
+                </div>
+              </summary>
+              <div class="source-group-actions creator-source-actions">
+                <form method="post" action="/api/creator/{{ group.creator_key | urlencode }}/create-wiki">
+                  <button class="btn secondary small" type="submit">加入知识库 / 重新生成</button>
+                </form>
+              </div>
+              <div class="source-group-list nested">
+                {% for source in group.sources %}
+                  <a class="source-line {{ 'active' if selected_source and selected_source.id == source.id else '' }}" href="/ui/sources?source_id={{ source.id }}" data-source-select-link>
+                    <strong>{{ source.title }}</strong>
+                    <span>{{ source.platform }} · {{ source.created_at.strftime("%Y/%m/%d") }}</span>
+                  </a>
+                {% endfor %}
+              </div>
+            </details>
           {% else %}
-            {{ ui.empty_state("还没有博主蒸馏请求", "在首页用「输入博主」功能添加。") }}
+            {{ ui.empty_state("还没有博主蒸馏资料", "在输入博主页面提取作品后，这里会按博主名分组。") }}
           {% endfor %}
         </div>
-        {% if distill_requests | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
+        {% if distill_creator_groups | length > 5 %}<button class="btn secondary small source-more-button" data-expand-button type="button">显示更多</button>{% endif %}
       </details>
     </article>
   </div>
@@ -179,7 +202,38 @@
 
   document.addEventListener('change', (e) => { if (e.target.classList.contains('batch-checkbox')) updateCount(); });
 
+  const sourceGroupDetails = Array.from(document.querySelectorAll('details[data-source-group-key]'));
+  const getOpenSourceGroups = () => sourceGroupDetails
+    .filter((details) => details.open)
+    .map((details) => details.dataset.sourceGroupKey);
+  const saveSourceViewState = () => {
+    sessionStorage.setItem("sourcesScrollY", String(window.scrollY || 0));
+    sessionStorage.setItem("sourcesOpenGroups", JSON.stringify(getOpenSourceGroups()));
+  };
+  try {
+    const openGroups = JSON.parse(sessionStorage.getItem("sourcesOpenGroups") || "[]");
+    sourceGroupDetails.forEach((details) => {
+      const key = details.dataset.sourceGroupKey;
+      if (key) details.open = openGroups.includes(key) || details.open;
+    });
+  } catch (error) {
+    sessionStorage.removeItem("sourcesOpenGroups");
+  }
+  sourceGroupDetails.forEach((details) => {
+    details.addEventListener("toggle", () => {
+      sessionStorage.setItem("sourcesOpenGroups", JSON.stringify(getOpenSourceGroups()));
+    });
+  });
+  const savedScrollY = Number(sessionStorage.getItem("sourcesScrollY") || 0);
+  if (savedScrollY > 0) {
+    requestAnimationFrame(() => window.scrollTo(0, savedScrollY));
+  }
+  document.querySelectorAll('[data-source-select-link]').forEach((link) => {
+    link.addEventListener('click', saveSourceViewState);
+  });
+
   // Expand/collapse
+
   document.querySelectorAll("[data-expand-list]").forEach((list) => {
     const items = Array.from(list.querySelectorAll("[data-expand-item]"));
     const button = list.parentElement.querySelector("[data-expand-button]");
@@ -365,5 +419,7 @@
 .progress-status{font-size:0.9rem;color:#555;margin:0 0 12px;}
 .progress-log{max-height:180px;overflow-y:auto;text-align:left;margin-top:12px;padding:8px;background:#fafafa;border-radius:8px;}
 .progress-log-line{font-size:0.8rem;color:#555;padding:3px 0;border-bottom:1px solid #f5f5f5;}
+.source-line-static{cursor:default;}
+.source-line-static:hover{transform:none;}
 </style>
 {% endblock %}

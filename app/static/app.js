@@ -323,6 +323,146 @@
   }
   document.querySelectorAll("[data-source-shell]").forEach(initSourceShell)
 
+  const setBusy = (button, busy, text) => {
+    if (!button) return
+    if (busy) {
+      button.dataset.originalText = button.textContent || ""
+      button.textContent = text || "处理中..."
+      button.disabled = true
+    } else {
+      button.textContent = button.dataset.originalText || button.textContent || "继续"
+      button.disabled = false
+    }
+  }
+
+
+  const apiPost = async (url, payload) => {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const detail = body.detail || body.error
+      const message = typeof detail === "object" && detail !== null ? detail.message || JSON.stringify(detail) : detail
+      const error = new Error(message || `请求失败：${response.status}`)
+      if (typeof detail === "object" && detail !== null) {
+        error.code = detail.code || body.code || ""
+        error.detail = detail
+      }
+      throw error
+    }
+    return body
+  }
+
+  const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]))
+
+  const extractStatusLabel = {
+    pending: "待提取",
+    extracting: "提取中",
+    ingested: "已入库",
+    failed: "失败",
+    needs_login: "需处理",
+  }
+
+  const extractStatusTone = {
+    pending: "",
+    extracting: "primary",
+    ingested: "success",
+    failed: "danger",
+    needs_login: "danger",
+  }
+
+  function createExtractOverlay(title) {
+    const overlay = document.createElement("div")
+    overlay.className = "extract-overlay"
+    overlay.innerHTML = `
+      <section class="extract-modal" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+        <header class="extract-modal-head">
+          <h2>${escapeHtml(title)}</h2>
+          <p data-extract-message>准备中...</p>
+        </header>
+        <div class="extract-progress-track"><span data-extract-progress style="width:5%"></span></div>
+        <div class="extract-item-list" data-extract-items></div>
+      </section>`
+    document.body.appendChild(overlay)
+    return overlay
+  }
+
+  function renderExtractOverlay(overlay, payload = {}) {
+    if (!overlay) return
+    const items = payload.items || []
+    const total = payload.total || items.length || 1
+    const done = items.filter((item) => ["ingested", "failed", "needs_login"].includes(item.status)).length
+    const message = payload.message || (payload.status === "completed" ? "提取完成。" : `正在提取 ${done}/${total}`)
+    const progress = Math.max(5, Math.round((done / total) * 100))
+    const messageEl = overlay.querySelector("[data-extract-message]")
+    const progressEl = overlay.querySelector("[data-extract-progress]")
+    const listEl = overlay.querySelector("[data-extract-items]")
+    if (messageEl) messageEl.textContent = message
+    if (progressEl) progressEl.style.width = `${progress}%`
+    if (listEl) {
+      listEl.innerHTML = items.map((item) => {
+        const tone = extractStatusTone[item.status] || ""
+        const label = extractStatusLabel[item.status] || item.status || "待提取"
+        const preview = item.preview?.content ? `
+          <details class="extract-preview">
+            <summary>展开正文</summary>
+            <pre>${escapeHtml(item.preview.content)}</pre>
+          </details>` : ""
+        return `
+          <article class="extract-item ${escapeHtml(item.status || "pending")}">
+            <div>
+              <strong>${escapeHtml(item.title || `候选 ${item.candidate_id}`)}</strong>
+              ${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}
+            </div>
+            <span class="status-chip ${tone}">${escapeHtml(label)}</span>
+            ${preview}
+          </article>`
+      }).join("") || '<div class="empty-state">等待任务开始。</div>'
+    }
+  }
+
+  function showExtractPauseDialog({ message, onResume }) {
+    const overlay = document.createElement("div")
+    overlay.className = "extract-overlay extract-overlay--danger"
+    overlay.innerHTML = `
+      <section class="extract-modal extract-modal--danger" role="dialog" aria-modal="true">
+        <header class="extract-modal-head">
+          <h2>需要手动处理</h2>
+          <p>${escapeHtml(message || "检测到登录或人机验证，请在浏览器页面完成处理后继续。")}</p>
+        </header>
+        <div class="extract-modal-actions">
+          <button class="btn secondary" type="button" data-extract-close>稍后处理</button>
+          <button class="btn primary" type="button" data-extract-resume>我已完成，继续</button>
+        </div>
+      </section>`
+    document.body.appendChild(overlay)
+    overlay.querySelector("[data-extract-close]")?.addEventListener("click", () => overlay.remove())
+    overlay.querySelector("[data-extract-resume]")?.addEventListener("click", async () => {
+      overlay.remove()
+      await onResume?.()
+    })
+    return overlay
+  }
+
+  async function pollExtractJob(jobId, { overlay, onStatus } = {}) {
+    if (!jobId) return null
+    let lastPayload = null
+    for (let attempt = 0; attempt < 720; attempt += 1) {
+      const response = await fetch(`/api/extract/job-status?job_id=${encodeURIComponent(jobId)}`)
+      if (response.status === 404) throw new Error("任务已结束或丢失，请重新发起；已提取的不会重复。")
+      if (!response.ok) throw new Error(`查询任务失败：${response.status}`)
+      lastPayload = await response.json()
+      renderExtractOverlay(overlay, lastPayload)
+      onStatus?.(lastPayload)
+      if (["completed", "paused", "error"].includes(lastPayload.status)) return lastPayload
+      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+    }
+    return lastPayload
+  }
+
   function initSourceFilter(root) {
     if (!root || root.dataset.bound === "1") return
     root.dataset.bound = "1"
@@ -336,17 +476,18 @@
     const scanButton = root.querySelector("[data-filter-scan]")
     const classifyButton = root.querySelector("[data-filter-classify]")
     const extractButton = root.querySelector("[data-filter-extract]")
-    const resumeButton = root.querySelector("[data-filter-resume]")
     const status = root.querySelector("[data-filter-status]")
     const summary = root.querySelector("[data-filter-summary]")
     const results = root.querySelector("[data-filter-results]")
     const filterToolbar = root.querySelector("[data-filter-toolbar]")
+    const controls = root.querySelector("[data-filter-controls]")
     const usefulnessFilter = root.querySelector("[data-filter-usefulness]")
     const categoryFilter = root.querySelector("[data-filter-category]")
     const timeFilter = root.querySelector("[data-filter-time]")
     const ingestedFilter = root.querySelector("[data-filter-ingested]")
     const saveHistoryButton = root.querySelector("[data-filter-save-history]")
     const rescanHistoryButton = root.querySelector("[data-filter-rescan-history]")
+    const clearHistoryButton = root.querySelector("[data-filter-clear-history]")
     const isHistory = collectionKind === "history"
     let scannedItems = []
     let classifiedItems = []
@@ -354,43 +495,27 @@
     let currentJobId = null
     let lastGroups = []
     const resumablePlatforms = new Set(["douyin", "xiaohongshu", "bilibili"])
-    // 只有历史 Tab 走 localStorage 续跑：历史是低频「采集一次保存」流程，断点续跑有意义。
-    // 新增 Tab 是高频「即采即清」流程——绝不读/写本地缓存，否则陈旧缓存会把历史/旧条目漏渲染出来；
-    // 它每次进页面都以 DB（filter_incremental 已去重）为唯一权威源，空就显示空态。
-    const canResume = resumablePlatforms.has(platform) && collectionKind === "history"
     const stateKey = `starmind.batchTitleFilter.${platform}.${collectionKind}`
-
-    // 新增 Tab 进页面先把可能残留的旧缓存键清掉（历史代码曾给它写过缓存），杜绝陈旧来源。
-    if (collectionKind !== "history") {
-      try { window.localStorage?.removeItem(stateKey) } catch (_ignored) {}
-    }
+    try { window.localStorage?.removeItem(stateKey) } catch (_ignored) {}
 
     const show = (el, visible) => { if (el) el.hidden = !visible }
+    const setControlsLayout = (mode) => {
+      if (!controls) return
+      controls.classList.toggle("source-filter-controls--saved", mode === "saved")
+      controls.classList.toggle("source-filter-controls--scan", mode !== "saved")
+    }
 
     // 历史 Tab 三态布局（gate 在 isHistory）：
-    // - 扫描模式：采集数量/扫描/分类/提取可用，藏 保存/重新扫描。
-    // - 只读模式（已保存历史）：藏 采集数量/扫描/分类/保存，留 提取(仅勾选)/重新扫描/筛选栏。
+    // - 扫描模式：采集数量/扫描/分类可用，藏 保存/重新扫描/续跑。
+    // - 只读模式（已保存历史）：藏 采集数量/扫描/分类/保存，留 重新扫描/提取/续跑，并切到三列紧凑排版。
     const enterScanMode = () => {
-      if (!isHistory) return
-      const limitLabel = limitSelect?.closest("label")
-      show(limitLabel, true)
-      show(scanButton, true)
-      show(classifyButton, true)
-      show(saveHistoryButton, false)
-      show(rescanHistoryButton, false)
+      setControlsLayout("scan")
+      show(extractButton, true)
     }
-    const revealSaveButton = () => {
-      if (!isHistory) return
-      show(saveHistoryButton, true)
-    }
+    const revealSaveButton = () => {}
     const enterReadOnlyMode = () => {
-      if (!isHistory) return
-      const limitLabel = limitSelect?.closest("label")
-      show(limitLabel, false)
-      show(scanButton, false)
-      show(classifyButton, false)
-      show(saveHistoryButton, false)
-      show(rescanHistoryButton, true)
+      setControlsLayout("saved")
+      show(extractButton, true)
     }
 
     const setStatus = (message, tone = "") => {
@@ -399,79 +524,9 @@
       status.dataset.tone = tone
     }
 
-    const setBusy = (button, busy, text) => {
-      if (!button) return
-      if (busy) {
-        button.dataset.originalText = button.textContent || ""
-        button.textContent = text || "处理中..."
-        button.disabled = true
-      } else {
-        button.textContent = button.dataset.originalText || button.textContent || "继续"
-        button.disabled = false
-      }
-    }
-
-    const apiPost = async (url, payload) => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      })
-      const body = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        const detail = body.detail || body.error
-        const message = typeof detail === "object" && detail !== null ? detail.message || JSON.stringify(detail) : detail
-        const error = new Error(message || `请求失败：${response.status}`)
-        if (typeof detail === "object" && detail !== null) {
-          error.code = detail.code || body.code || ""
-          error.detail = detail
-        }
-        throw error
-      }
-      return body
-    }
-
-    const escapeHtml = (value) => String(value || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]))
-
-    const readSavedState = () => {
-      if (!canResume) return null
-      try {
-        const raw = window.localStorage?.getItem(stateKey)
-        if (!raw) return null
-        const state = JSON.parse(raw)
-        if (!state || state.version !== 1 || state.platform !== platform) {
-          window.localStorage?.removeItem(stateKey)
-          return null
-        }
-        return state
-      } catch (_error) {
-        try { window.localStorage?.removeItem(stateKey) } catch (_ignored) {}
-        return null
-      }
-    }
-
-    const saveState = (stage, extra = {}) => {
-      if (!canResume) return
-      const state = {
-        version: 1,
-        platform,
-        stage,
-        homepageUrl: homepageInput?.value?.trim() || root.dataset.homepageUrl || "",
-        limit: limitSelect?.value || "10",
-        scannedItems,
-        classifiedItems,
-        groups: lastGroups,
-        selectedCandidateIds,
-        summaryText: summary?.textContent || "",
-        statusText: status?.textContent || "",
-        updatedAt: new Date().toISOString(),
-        ...extra,
-      }
-      try { window.localStorage?.setItem(stateKey, JSON.stringify(state)) } catch (_error) {}
-    }
-
+    const readSavedState = () => null
+    const saveState = () => {}
     const clearSavedState = () => {
-      if (!canResume) return
       try { window.localStorage?.removeItem(stateKey) } catch (_error) {}
     }
 
@@ -626,47 +681,9 @@
       select?.addEventListener("change", applyFilters)
     })
 
-    const restoreState = () => {
-      // 新增 Tab 不做 localStorage 续跑（canResume 已为 false），双保险：直接不恢复，避免陈旧缓存漏渲染。
-      if (!isHistory) return
-      const saved = readSavedState()
-      if (!saved) return
-      if (!Array.isArray(saved.scannedItems) || !Array.isArray(saved.classifiedItems) || !Array.isArray(saved.groups) || !Array.isArray(saved.selectedCandidateIds)) {
-        clearSavedState()
-        return
-      }
-      scannedItems = saved.scannedItems
-      classifiedItems = saved.classifiedItems
-      selectedCandidateIds = saved.selectedCandidateIds
-      lastGroups = saved.groups
-      if (summary && saved.summaryText) {
-        summary.hidden = false
-        summary.textContent = saved.summaryText
-      }
-      if (saved.statusText) setStatus(saved.statusText, saved.stage === "completed" ? "ok" : "")
-      if (saved.stage === "scanned") {
-        renderScannedPreview(scannedItems)
-        classifyButton.disabled = scannedItems.length === 0
-        extractButton.disabled = true
-        if (isHistory) enterScanMode()
-      } else if (saved.stage === "classified" || saved.stage === "prepared") {
-        renderGroups(lastGroups)
-        classifyButton.disabled = scannedItems.length === 0
-        extractButton.disabled = classifiedItems.length === 0 && selectedCandidateIds.length === 0
-        if (isHistory) { enterScanMode(); if (classifiedItems.length) revealSaveButton() }
-      } else if (saved.stage === "completed") {
-        if (lastGroups.length) renderGroups(lastGroups)
-        else if (scannedItems.length) renderScannedPreview(scannedItems)
-        classifyButton.disabled = scannedItems.length === 0
-        extractButton.disabled = true
-        if (isHistory) { enterScanMode(); if (classifiedItems.length) revealSaveButton() }
-      } else {
-        clearSavedState()
-      }
-    }
+    const restoreState = () => {}
 
-    // DB 权威源优先：进入页面先 GET scan-entries 渲染已落库条目（含已提取灰显），
-    // 失败再回退 localStorage 离线缓存。已分类的（有 usefulness）按分组渲染，否则按扫描预览。
+    // 历史 Tab 进入页面从 DB 恢复；新增 Tab 是本次采集临时视图，刷新后保持空态。
     const groupEntriesByClassification = (entries) => {
       const map = new Map()
       const order = []
@@ -687,7 +704,21 @@
     }
 
     const loadFromServer = async () => {
-      if (collectionKind !== "history" && !resumablePlatforms.has(platform)) return false
+      if (!isHistory) {
+        scannedItems = []
+        classifiedItems = []
+        lastGroups = []
+        if (results) { results.hidden = true; results.innerHTML = "" }
+        if (filterToolbar) filterToolbar.hidden = true
+        if (summary) {
+          summary.hidden = false
+          summary.textContent = "暂无新增收藏。点击「采集新增收藏」抓取本次新增内容。"
+        }
+        setStatus("新增收藏会在采集后展示；刷新页面后这里会清空，内容仍在历史中。", "")
+        if (classifyButton) classifyButton.disabled = true
+        if (extractButton) extractButton.disabled = true
+        return true
+      }
       try {
         const params = new URLSearchParams({ platform, kind: collectionKind })
         const response = await fetch(`/api/sync/scan-entries?${params.toString()}`)
@@ -763,6 +794,7 @@
           summary.hidden = false
           summary.textContent = `已保存 ${body.history_count != null ? body.history_count : scannedItems.length} 条历史收藏。下次进入历史收藏将直接展示，不再需要重新扫描分类。`
         }
+        clearSavedState()
         setStatus("历史收藏已保存。", "ok")
         enterReadOnlyMode()
       } catch (error) {
@@ -772,18 +804,40 @@
       }
     })
 
-    // 「重新扫描历史」：清 history_saved + first_scan_done，回到扫描模式重新走 history 全量。
-    rescanHistoryButton?.addEventListener("click", async () => {
-      setBusy(rescanHistoryButton, true, "重置中...")
+    const clearHistoryList = async (button) => {
+      if (!window.confirm("确定清空当前收藏列表吗？已入库的原始资料和 Wiki 不会被删除。")) return
+      setBusy(button, true, "清空中...")
       try {
-        await apiPost("/api/sync/reset-history", { platform })
-        setStatus("已重置历史收藏，可重新扫描。", "ok")
+        const body = await apiPost("/api/sync/clear-history-list", { platform })
+        scannedItems = []
+        classifiedItems = []
+        selectedCandidateIds = []
+        lastGroups = []
+        clearSavedState()
+        if (results) { results.hidden = true; results.innerHTML = "" }
+        if (filterToolbar) filterToolbar.hidden = true
+        if (summary) {
+          summary.hidden = false
+          summary.textContent = `已清空 ${body.scan_entry_count || 0} 条当前收藏列表记录。可到新增收藏重新扫描。`
+        }
+        if (classifyButton) classifyButton.disabled = true
+        if (extractButton) extractButton.disabled = true
+        setStatus("当前收藏列表已清空。可到新增收藏选择数量后重新采集。", "ok")
         enterScanMode()
       } catch (error) {
-        setStatus(error.message || "重置失败", "bad")
+        setStatus(error.message || "清空失败", "bad")
       } finally {
-        setBusy(rescanHistoryButton, false)
+        setBusy(button, false)
       }
+    }
+
+    // 「重新扫描历史」：清 history_saved + first_scan_done，回到扫描模式重新走 history 全量。
+    rescanHistoryButton?.addEventListener("click", async () => {
+      await clearHistoryList(rescanHistoryButton)
+    })
+
+    clearHistoryButton?.addEventListener("click", async () => {
+      await clearHistoryList(clearHistoryButton)
     })
 
     scanButton?.addEventListener("click", async () => {
@@ -791,8 +845,8 @@
       setStatus("正在通过浏览器读取收藏标题，请不要关闭浏览器。")
       try {
         const currentHomepageUrl = homepageInput?.value?.trim() || root.dataset.homepageUrl || ""
-        // 历史用下拉的采集数量；新增没有下拉、固定扫全量（limit:"all"），后端 filter_incremental 在全量上去重。
-        const scanLimit = isHistory ? (limitSelect?.value || 10) : "all"
+        const selectedLimit = limitSelect?.value || "new"
+        const scanLimit = selectedLimit === "new" ? "all" : selectedLimit
         const body = await apiPost("/api/sync/scan-titles", { platform, limit: scanLimit, homepage_url: currentHomepageUrl, collection_kind: collectionKind })
         scannedItems = body.items || []
         classifiedItems = []
@@ -852,43 +906,12 @@
       }
       const isXiaohongshu = platform === "xiaohongshu"
       setBusy(extractButton, true, isXiaohongshu ? "点点提取中..." : "豆包提取中...")
-      // Show progress modal
-      const progressOverlay = document.createElement('div')
-      progressOverlay.className = 'distill-overlay'
-      progressOverlay.innerHTML = `
-        <div style="background:#fff;border-radius:16px;padding:2rem;max-width:420px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.12);">
-          <h2 style="margin:0 0 8px;font-size:1.1rem;">🤖 ${isXiaohongshu ? '点点' : '豆包'}正在提取</h2>
-          <div style="width:100%;height:8px;background:#eee;border-radius:4px;margin:16px 0;overflow:hidden;">
-            <div id="extract-progress-bar" style="height:100%;background:linear-gradient(90deg,#215f52,#3a9e85);border-radius:4px;width:5%;transition:width 0.5s;"></div>
-          </div>
-          <p id="extract-progress-text" style="font-size:0.9rem;color:#555;margin:0 0 8px;">准备中...</p>
-          <div id="extract-progress-log" style="max-height:150px;overflow-y:auto;text-align:left;background:#fafafa;border-radius:8px;padding:8px;font-size:0.8rem;color:#555;"></div>
-        </div>`
-      document.body.appendChild(progressOverlay)
-      const pBar = document.getElementById('extract-progress-bar')
-      const pText = document.getElementById('extract-progress-text')
-      const pLog = document.getElementById('extract-progress-log')
-      function updateExtractProgress(current, total, msg) {
-        const pct = Math.max(5, Math.round((current / total) * 100))
-        pBar.style.width = pct + '%'
-        pText.textContent = msg
-      }
-      function addExtractLog(msg) {
-        pLog.innerHTML += `<div style="padding:2px 0;border-bottom:1px solid #f0f0f0;">${msg}</div>`
-        pLog.scrollTop = pLog.scrollHeight
-      }
-      setStatus(isXiaohongshu
-        ? `已选择 ${selected.length} 条。正在发送到小红书点点提取。`
-        : `已选择 ${selected.length} 条。正在发送到豆包提取。`)
+      setStatus(isXiaohongshu ? `已选择 ${selected.length} 条。正在发送到小红书点点提取。` : `已选择 ${selected.length} 条。正在发送到豆包提取。`)
       try {
-        updateExtractProgress(0, selected.length, '正在准备候选...')
-        addExtractLog('📋 准备 ' + selected.length + ' 条待提取内容')
         const prepared = await apiPost("/api/sync/prepare-selected", { platform, selected_items: selected, skipped_items: skipped })
         const preparedIds = prepared.candidate_ids || []
         if (preparedIds.length) selectedCandidateIds = preparedIds
-        saveState("prepared")
         if (!selectedCandidateIds.length) {
-          progressOverlay.remove()
           setStatus("没有可提取的候选。可能这些内容已经准备过或已入库，请重新扫描/分类后再试。", "bad")
           return
         }
@@ -901,48 +924,36 @@
       }
     })
 
-    // 续跑：用户在豆包/点点页面手动完成人机验证后点此按钮。
-    // 带上原 candidate_ids + currentJobId 重 POST 同一端点，后端靠 *_extracted 标记
-    // 跳过已完成、从断点续跑。循环直到 status === "completed"。
-    resumeButton?.addEventListener("click", async () => {
-      if (!selectedCandidateIds.length) {
-        setStatus("没有可续跑的候选。", "bad")
-        return
-      }
-      const isXiaohongshu = platform === "xiaohongshu"
-      resumeButton.hidden = true
-      setBusy(extractButton, true, isXiaohongshu ? "点点续跑中..." : "豆包续跑中...")
-      setStatus("正在从断点继续提取剩余条目...")
-      try {
-        await runExtraction(isXiaohongshu)
-      } catch (error) {
-        handleExtractError(error, isXiaohongshu)
-      } finally {
-        setBusy(extractButton, false)
-      }
-    })
-
-    // 单次 POST extract-selected，根据返回的 status 处理 paused / completed。
-    // paused 是 200（不是错误），据此显示续跑按钮 + reason 提示。
-    async function runExtraction(isXiaohongshu) {
+    async function runExtraction(isXiaohongshu, existingOverlay = null) {
       const extractEndpoint = isXiaohongshu ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
       const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
       if (currentJobId) payload.job_id = currentJobId
+      const overlay = existingOverlay || createExtractOverlay(`${isXiaohongshu ? "点点" : "豆包"}正在提取`)
+      renderExtractOverlay(overlay, { total: selectedCandidateIds.length, items: selectedCandidateIds.map((candidateId) => ({ candidate_id: candidateId, status: "pending" })) })
       const extracted = await apiPost(extractEndpoint, payload)
       currentJobId = extracted.job_id || currentJobId
-      if (extracted.status === "paused") {
+      const finalStatus = await pollExtractJob(currentJobId, { overlay })
+      const payloadStatus = finalStatus || extracted
+      if (payloadStatus.status === "paused") {
         const remaining = extracted.pending_remaining != null ? extracted.pending_remaining : "若干"
-        const baseMsg = extracted.message || "检测到人机验证，已暂停。请在浏览器页面完成验证后继续。"
-        setStatus(`${baseMsg}（本轮已入库 ${extracted.success_count || 0} 条，剩余 ${remaining} 条待续跑）`, "bad")
-        if (resumeButton) resumeButton.hidden = false
-        saveState("paused")
+        const baseMsg = payloadStatus.message || extracted.message || "检测到人机验证，已暂停。请在浏览器页面完成验证后继续。"
+        setStatus(`${baseMsg}（本轮已入库 ${payloadStatus.success_count || 0} 条，剩余 ${remaining} 条待续跑）`, "bad")
+        showExtractPauseDialog({
+          message: baseMsg,
+          onResume: async () => {
+            await runExtraction(isXiaohongshu, overlay)
+          },
+        })
         return
       }
-      // completed
-      if (resumeButton) resumeButton.hidden = true
-      setStatus(`完成：成功入库 ${extracted.success_count || 0} 条，失败 ${extracted.failed_count || 0} 条。`, "ok")
-      if (summary) summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
-      saveState("completed")
+      if (payloadStatus.status === "error") {
+        throw new Error(payloadStatus.error || "提取任务失败")
+      }
+      setStatus(`完成：成功入库 ${payloadStatus.success_count || 0} 条，失败 ${payloadStatus.failed_count || 0} 条。`, "ok")
+      if (summary) {
+        summary.hidden = false
+        summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
+      }
     }
 
     function handleExtractError(error, isXiaohongshu) {
@@ -956,6 +967,436 @@
     }
   }
   document.querySelectorAll("[data-source-filter]").forEach(initSourceFilter)
+
+  function initLinkExtractPanel(panel) {
+    if (!panel || panel.dataset.bound === "1") return
+    panel.dataset.bound = "1"
+    const form = panel.querySelector("[data-link-extract-form]")
+    const submitButton = panel.querySelector("[data-link-extract-submit]")
+    const status = panel.querySelector("[data-link-extract-status]")
+    const summary = panel.querySelector("[data-link-extract-summary]")
+    const preview = panel.querySelector("[data-link-extract-preview]")
+    const previewTitle = panel.querySelector("[data-link-extract-preview-title]")
+    const previewSource = panel.querySelector("[data-link-extract-preview-source]")
+    const previewContent = panel.querySelector("[data-link-extract-preview-content]")
+    let selectedCandidateIds = []
+    let extractEndpoint = ""
+    let currentJobId = null
+    const setStatusText = (message, tone) => {
+      if (!status) return
+      status.textContent = message
+      status.dataset.tone = tone || ""
+    }
+    const showPreview = (payload) => {
+      const data = payload?.preview || payload
+      if (!preview || !data || !data.content) return
+      preview.hidden = false
+      if (previewTitle) previewTitle.textContent = data.title || payload?.title || "提取结果"
+      if (previewContent) previewContent.innerHTML = escapeHtml(data.content)
+      if (previewSource && data.raw_source_id) {
+        previewSource.hidden = false
+        previewSource.href = `/ui/sources?source_id=${encodeURIComponent(data.raw_source_id)}`
+      }
+    }
+    const showFirstPreview = (items = []) => {
+      const item = items.find((current) => current && current.success && current.preview?.content)
+      if (item) showPreview(item)
+    }
+    const runExtraction = async (existingOverlay = null) => {
+      if (!extractEndpoint || !selectedCandidateIds.length) return
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      if (currentJobId) payload.job_id = currentJobId
+      const overlay = existingOverlay || createExtractOverlay("链接内容正在提取")
+      renderExtractOverlay(overlay, { total: selectedCandidateIds.length, items: selectedCandidateIds.map((candidateId) => ({ candidate_id: candidateId, status: "pending" })) })
+      const extracted = await apiPost(extractEndpoint, payload)
+      currentJobId = extracted.job_id || currentJobId
+      const finalStatus = await pollExtractJob(currentJobId, { overlay })
+      const payloadStatus = finalStatus || extracted
+      if (payloadStatus.status === "paused") {
+        const remaining = extracted.pending_remaining != null ? extracted.pending_remaining : "若干"
+        const message = payloadStatus.message || extracted.message || "检测到登录或人机验证，已暂停。"
+        setStatusText(`${message} 本轮已入库 ${payloadStatus.success_count || 0} 条，剩余 ${remaining} 条。`, "bad")
+        showExtractPauseDialog({
+          message,
+          onResume: async () => {
+            await runExtraction(overlay)
+          },
+        })
+        return
+      }
+      if (payloadStatus.status === "error") throw new Error(payloadStatus.error || "提取任务失败")
+      setStatusText(`完成：成功入库 ${payloadStatus.success_count || 0} 条，失败 ${payloadStatus.failed_count || 0} 条。`, "ok")
+      if (summary) {
+        summary.hidden = false
+        summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${selectedCandidateIds.join(", ")}`
+      }
+      showFirstPreview((payloadStatus.items || extracted.items) || [])
+    }
+    form?.addEventListener("submit", async (event) => {
+      event.preventDefault()
+      setBusy(submitButton, true, "准备中...")
+      setStatusText("正在识别平台并准备提取。")
+      try {
+        const data = Object.fromEntries(new FormData(form).entries())
+        const prepared = await apiPost("/api/intake/link-extract", data)
+        if (prepared.status === "ingested") {
+          selectedCandidateIds = prepared.candidate_id ? [prepared.candidate_id] : []
+          extractEndpoint = ""
+          currentJobId = null
+          setStatusText("已提取微信公众号正文并写入原始资料库。", "ok")
+          if (summary) {
+            summary.hidden = false
+            summary.textContent = `RawSource 已写入，可前往“原始资料”查看。候选 ID：${prepared.candidate_id || "-"}`
+          }
+          showPreview(prepared)
+          return
+        }
+        selectedCandidateIds = prepared.candidate_ids || []
+        extractEndpoint = prepared.extract_endpoint || ""
+        currentJobId = null
+        setStatusText(prepared.platform === "xiaohongshu" ? "已识别为小红书，正在发送到点点。" : "已识别为抖音，正在发送到豆包。")
+        await runExtraction()
+      } catch (error) {
+        const detail = error?.detail || {}
+        if (detail.code === "unsupported_link_extract_platform") {
+          setStatusText(detail.message || "当前平台暂不支持自动提取。", "bad")
+        } else if (error.code === "xiaohongshu_diandian_not_ready") {
+          setStatusText("小红书点点页面未就绪。请打开 https://www.xiaohongshu.com/ai_chat 后重试。", "bad")
+        } else if (error.code === "doubao_login_required") {
+          setStatusText("需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录后回到这里重试。", "bad")
+        } else {
+          setStatusText(error.message || "链接提取失败", "bad")
+        }
+      } finally {
+        setBusy(submitButton, false)
+      }
+    })
+  }
+  document.querySelectorAll("[data-link-extract-panel]").forEach(initLinkExtractPanel)
+
+  // 博主蒸馏面板初始化
+  function initCreatorDistillPanel(panel) {
+    if (!panel || panel.dataset.bound === "1") return
+    panel.dataset.bound = "1"
+
+    const tabbar = panel.querySelector("[data-creator-platform-tabs]")
+    const tabs = Array.from(tabbar?.querySelectorAll("[data-creator-platform-tab]") || [])
+    const creatorInput = panel.querySelector("[data-creator-input]")
+    const scanButton = panel.querySelector("[data-creator-scan]")
+    const extractButton = panel.querySelector("[data-creator-extract]")
+    const status = panel.querySelector("[data-creator-status]")
+    const results = panel.querySelector("[data-creator-results]")
+
+    const creatorStateKey = "creatorDistillState:v4"
+    let currentPlatform = "douyin"
+    let scannedItems = []
+    let selectedItemIds = []
+    let currentCreator = null
+    let selectedCandidateIds = []
+    let currentJobId = null
+
+    const setStatusText = (message, tone) => {
+      if (!status) return
+      status.textContent = message
+      status.dataset.tone = tone || ""
+    }
+
+    const numberText = (value) => {
+      const numeric = Number(value || 0)
+      if (!numeric) return ""
+      if (numeric >= 10000) return `${(numeric / 10000).toFixed(numeric >= 100000 ? 0 : 1)}万`
+      return String(numeric)
+    }
+
+    const cleanCreatorWorkTitle = (value) => String(value || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^(?:(?:点赞|赞|收藏|喜欢)\s*[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k)?|[0-9]+(?:\.[0-9]+)?\s*(?:万|亿|w|k))\s+/i, "")
+      .trim()
+
+    const normalizeCreatorWorkItem = (item) => ({
+      ...item,
+      title: cleanCreatorWorkTitle(item.title) || item.title || "未命名作品",
+    })
+
+    const saveCreatorState = () => {
+      try {
+        window.localStorage?.setItem(creatorStateKey, JSON.stringify({
+          version: 1,
+          platform: currentPlatform,
+          creatorUrl: creatorInput?.value || "",
+          creator: currentCreator,
+          items: scannedItems,
+          selectedItemIds,
+          selectedCandidateIds,
+          currentJobId,
+          updatedAt: new Date().toISOString(),
+        }))
+      } catch (_error) {}
+    }
+
+    const renderCreatorProfile = () => {
+      if (!results || !currentCreator) return ""
+      const name = currentCreator.creator_name || "未命名博主"
+      const fans = numberText(currentCreator.follower_count)
+      const liked = numberText(currentCreator.liked_count)
+      return `
+        <section class="creator-profile-card" data-creator-profile>
+          <strong>${escapeHtml(name)}</strong>
+          <span>${fans ? `粉丝 ${escapeHtml(fans)}` : "粉丝数未抓到"}</span>
+          <span>${liked ? `获赞 ${escapeHtml(liked)}` : "获赞数未抓到"}</span>
+        </section>
+      `
+    }
+
+    const restoreCreatorState = () => {
+      try {
+        const raw = window.localStorage?.getItem(creatorStateKey)
+        if (!raw) return
+        const state = JSON.parse(raw)
+        if (!state || state.version !== 1 || !Array.isArray(state.items)) return
+        currentPlatform = state.platform || "douyin"
+        scannedItems = (state.items || []).map(normalizeCreatorWorkItem)
+        selectedItemIds = state.selectedItemIds || []
+        selectedCandidateIds = state.selectedCandidateIds || []
+        currentJobId = state.currentJobId || null
+        currentCreator = state.creator || null
+        if (creatorInput) creatorInput.value = state.creatorUrl || ""
+        tabs.forEach((tab) => {
+          const active = tab.dataset.creatorPlatformTab === currentPlatform
+          tab.classList.toggle("is-active", active)
+          tab.setAttribute("aria-selected", active ? "true" : "false")
+        })
+        if (scannedItems.length) {
+          renderResults()
+          if (extractButton) extractButton.disabled = false
+          setStatusText(`已恢复上次扫描：找到 ${scannedItems.length} 个作品，请继续勾选或提取。`, "ok")
+        }
+      } catch (_error) {}
+    }
+
+    // 平台切换
+    tabs.forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const platform = tab.dataset.creatorPlatformTab
+        currentPlatform = platform
+        tabs.forEach((t) => {
+          const active = t.dataset.creatorPlatformTab === platform
+          t.classList.toggle("is-active", active)
+          t.setAttribute("aria-selected", active ? "true" : "false")
+        })
+        // 清空扫描结果
+        scannedItems = []
+        selectedItemIds = []
+        currentCreator = null
+        selectedCandidateIds = []
+        currentJobId = null
+        saveCreatorState()
+        if (results) {
+          results.innerHTML = ""
+          results.hidden = true
+        }
+        if (extractButton) extractButton.disabled = true
+        setStatusText(`已切换到${platform === "douyin" ? "抖音" : "小红书"}平台，请输入博主链接。`)
+      })
+    })
+
+    // 扫描作品
+    scanButton?.addEventListener("click", async () => {
+      const creatorUrl = creatorInput?.value?.trim()
+      if (!creatorUrl) {
+        setStatusText("请先输入博主主页链接", "bad")
+        return
+      }
+
+      setBusy(scanButton, true, "扫描中...")
+      setStatusText("正在获取博主作品列表...")
+      if (results) results.hidden = true
+
+      try {
+        // TODO: 替换为实际的 API 端点
+        const response = await apiPost("/api/creator/scan", {
+          platform: currentPlatform,
+          creator_url: creatorUrl,
+        })
+        scannedItems = (response.items || []).map(normalizeCreatorWorkItem)
+        currentCreator = response.creator || null
+        selectedItemIds = []
+        selectedCandidateIds = []
+        currentJobId = null
+
+        if (scannedItems.length === 0) {
+          setStatusText("未找到作品，请检查链接是否正确。", "bad")
+        } else {
+          setStatusText(`找到 ${scannedItems.length} 个作品，请勾选要提取的内容。`, "ok")
+          renderResults()
+          saveCreatorState()
+          if (extractButton) extractButton.disabled = false
+        }
+      } catch (error) {
+        setStatusText(error.message || "扫描失败", "bad")
+      } finally {
+        setBusy(scanButton, false)
+      }
+    })
+
+    // 渲染作品列表
+    const renderResults = () => {
+      if (!results) return
+      results.hidden = false
+
+      const itemStats = (item) => [
+        ["点赞", item.like_count],
+        ["评论", item.comment_count],
+        ["收藏", item.collect_count],
+        ["转发", item.share_count],
+      ].map(([label, value]) => {
+        const text = numberText(value)
+        return text ? `<span>${label} ${escapeHtml(text)}</span>` : ""
+      }).join("")
+
+      const itemCard = (item) => `
+        <div class="creator-work-item" data-item-id="${escapeHtml(item.id)}">
+          <input class="creator-work-checkbox" type="checkbox" data-item-checkbox value="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.title)}">
+          <div class="creator-work-body">
+            <div class="creator-work-title-row">
+              <strong class="creator-work-title">${escapeHtml(cleanCreatorWorkTitle(item.title) || item.title)}</strong>
+              ${item.bucket === "both" ? '<span class="creator-work-badge">最新 + 高赞</span>' : item.bucket === "top_liked" ? '<span class="creator-work-badge">高赞</span>' : '<span class="creator-work-badge">最新</span>'}
+            </div>
+            <div class="creator-work-stats">
+              ${itemStats(item)}
+              ${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener">查看原文</a>` : ""}
+            </div>
+          </div>
+        </div>
+      `
+
+      const topLikedItems = scannedItems
+        .filter((item) => item.bucket === "top_liked" || item.bucket === "both")
+        .sort((a, b) => Number(b.like_count || 0) - Number(a.like_count || 0))
+      const latestItems = scannedItems.filter((item) => item.bucket === "latest" || item.bucket === "both")
+      results.innerHTML = `
+        ${renderCreatorProfile()}
+        <section class="creator-work-section">
+          <div class="creator-work-section-head">
+            <h3>高赞 10 条</h3>
+            <button class="btn secondary small" type="button" data-select-group="top_liked">全选</button>
+          </div>
+          <div class="creator-work-list">${topLikedItems.map(itemCard).join("") || '<p class="muted">暂无高赞作品</p>'}</div>
+        </section>
+        <section class="creator-work-section">
+          <div class="creator-work-section-head">
+            <h3>最新 10 条</h3>
+            <button class="btn secondary small" type="button" data-select-group="latest">全选</button>
+          </div>
+          <div class="creator-work-list">${latestItems.map(itemCard).join("") || '<p class="muted">暂无最新作品</p>'}</div>
+        </section>
+      `
+
+      const syncCreatorCheckboxes = (itemId, checked) => {
+        results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+          if (checkbox.value === itemId) checkbox.checked = checked
+        })
+      }
+
+      const selectCreatorGroup = (group) => {
+        const groupItems = group === "top_liked" ? topLikedItems : latestItems
+        selectedItemIds = Array.from(new Set(selectedItemIds.concat(groupItems.map((item) => String(item.id)))))
+        results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+          checkbox.checked = selectedItemIds.includes(checkbox.value)
+        })
+        saveCreatorState()
+      }
+
+      results.querySelectorAll("[data-select-group]").forEach((button) => {
+        button.addEventListener("click", () => selectCreatorGroup(button.dataset.selectGroup))
+      })
+
+      // 绑定复选框事件
+      results.querySelectorAll("[data-item-checkbox]").forEach((checkbox) => {
+        checkbox.checked = selectedItemIds.includes(checkbox.value)
+        checkbox.addEventListener("change", () => {
+          syncCreatorCheckboxes(checkbox.value, checkbox.checked)
+          selectedItemIds = Array.from(new Set(
+            Array.from(results.querySelectorAll("[data-item-checkbox]:checked")).map((cb) => cb.value)
+          ))
+          saveCreatorState()
+        })
+      })
+    }
+
+    const runCreatorExtraction = async (existingOverlay = null) => {
+      if (!selectedCandidateIds.length) return null
+      const extractEndpoint = currentPlatform === "xiaohongshu" ? "/api/xiaohongshu/diandian/extract-selected" : "/api/doubao/extract-selected"
+      const payload = { candidate_ids: selectedCandidateIds, per_item_timeout_seconds: 240 }
+      if (currentJobId) payload.job_id = currentJobId
+      const overlay = existingOverlay || createExtractOverlay("作品内容正在提取")
+      renderExtractOverlay(overlay, { total: selectedCandidateIds.length, items: selectedCandidateIds.map((candidateId) => ({ candidate_id: candidateId, status: "pending" })) })
+      const response = await apiPost(extractEndpoint, payload)
+      currentJobId = response.job_id || currentJobId
+      saveCreatorState()
+      const finalStatus = await pollExtractJob(currentJobId, { overlay })
+      const payloadStatus = finalStatus || response
+      if (payloadStatus.status === "paused") {
+        const remaining = response.pending_remaining != null ? response.pending_remaining : "若干"
+        const message = payloadStatus.message || response.message || "检测到人机验证，已暂停。"
+        setStatusText(`${message} 本轮已入库 ${payloadStatus.success_count || 0} 条，剩余 ${remaining} 条。`, "bad")
+        showExtractPauseDialog({
+          message,
+          onResume: async () => {
+            await runCreatorExtraction(overlay)
+          },
+        })
+        return payloadStatus
+      }
+      if (payloadStatus.status === "error") throw new Error(payloadStatus.error || "提取任务失败")
+      currentJobId = null
+      setStatusText(`提取完成：成功 ${payloadStatus.success_count || 0} 条，失败 ${payloadStatus.failed_count || 0} 条。`, "ok")
+      selectedItemIds = []
+      if (results) {
+        results.querySelectorAll("[data-item-checkbox]").forEach((cb) => {
+          cb.checked = false
+        })
+      }
+      saveCreatorState()
+      return payloadStatus
+    }
+
+    // 提取选中的作品
+    extractButton?.addEventListener("click", async () => {
+      if (selectedItemIds.length === 0) {
+        setStatusText("请先勾选要提取的作品", "bad")
+        return
+      }
+
+      setBusy(extractButton, true, "提取中...")
+      setStatusText(`正在提取 ${selectedItemIds.length} 个作品...`)
+
+      try {
+        const selectedItems = scannedItems.filter((item) => selectedItemIds.includes(String(item.id)))
+        const prepared = await apiPost("/api/creator/prepare-selected", {
+          platform: currentPlatform,
+          creator: currentCreator || {},
+          selected_items: selectedItems,
+        })
+        selectedCandidateIds = prepared.candidate_ids || []
+        currentJobId = null
+        saveCreatorState()
+        if (!selectedCandidateIds.length) {
+          setStatusText("没有可提取的作品，请重新扫描后再试。", "bad")
+          return
+        }
+        await runCreatorExtraction()
+      } catch (error) {
+        setStatusText(error.message || "提取失败", "bad")
+      } finally {
+        setBusy(extractButton, false)
+      }
+    })
+
+    restoreCreatorState()
+  }
+  document.querySelectorAll("[data-creator-distill-panel]").forEach(initCreatorDistillPanel)
 
   // 同步收藏页：顶部平台标签栏，点标签按需 AJAX 注入该平台提取面板，URL 同步 ?platform=。
   // 独立页 /ui/source-setup/{platform} 仍在（片段来源 + 旧书签兼容）。

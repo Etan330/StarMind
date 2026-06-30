@@ -8,10 +8,14 @@ from time import monotonic
 from typing import Any
 
 from app.connectors.cdp_proxy import CDPConnectionError, CDPProxy, CDPTab, cdp_proxy
-from app.connectors.extract_pacing import CHALLENGE_DETECT_JS
+from app.connectors.extract_pacing import CHALLENGE_DETECT_JS, is_low_quality_extract
 
 
 DOUBAO_URL = "https://www.doubao.com"
+
+# 提取所用 prompt 的版本号。每次实质改动 UNIVERSAL_PROMPT 时 bump，
+# 写入 candidate/RawSource.metadata 的 extract_prompt_version，便于追溯/对比提取效果。
+DOUBAO_PROMPT_VERSION = "doubao_v1"
 
 UNIVERSAL_PROMPT = """请打开并解析下面这个链接，尽可能提取原始内容，不要只做摘要。
 
@@ -272,6 +276,19 @@ class DoubaoExtractor:
                     title="",
                     success=False,
                     error=error,
+                    prompt=prompt,
+                    elapsed_seconds=monotonic() - started_at,
+                )
+
+            # 低质量回绝（无法访问/请登录/无内容这类短回复）不算成功，避免噪声入库。
+            if is_low_quality_extract(content):
+                return ExtractResult(
+                    url=url,
+                    transcript="",
+                    text_content="",
+                    title="",
+                    success=False,
+                    error="doubao_low_quality_response",
                     prompt=prompt,
                     elapsed_seconds=monotonic() - started_at,
                 )

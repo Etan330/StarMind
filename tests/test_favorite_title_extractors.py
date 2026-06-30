@@ -176,6 +176,25 @@ const document = new Element('document', {}, '', [
     assert items[0]["title"] == "Anthropic博客的Agent Eval实践心得"
 
 
+def test_xiaohongshu_extractor_prefers_profile_note_link_over_hidden_explore_link():
+    items = run_extractor(
+        "extension/xiaohongshu_eval.js",
+        r'''
+const document = new Element('document', {}, '', [
+  new Element('section', {class: 'note-item'}, '', [
+    new Element('a', {href: 'https://www.xiaohongshu.com/explore/6a338bc10000000021014bc8'}, ''),
+    new Element('a', {href: 'https://www.xiaohongshu.com/user/profile/5fb234c4000000000101db33/6a338bc10000000021014bc8?xsec_token=TOKEN&xsec_source=pc_user'}, ''),
+    new Element('div', {class: 'title'}, 'Anthropic博客的Agent Eval实践心得')
+  ])
+]);
+''',
+    )
+
+    assert len(items) == 1
+    assert items[0]["url"].startswith("https://www.xiaohongshu.com/user/profile/")
+    assert "/explore/" not in items[0]["url"]
+
+
 def test_xiaohongshu_extractor_deduplicates_multiple_anchors_in_same_card():
     items = run_extractor(
         "extension/xiaohongshu_eval.js",
@@ -311,18 +330,19 @@ class FakeProxy:
     async def wait_for_load(self, tab):
         return None
 
-    async def scroll(self, tab):
+    async def scroll(self, tab, distance=800):
         return None
 
     async def eval_script(self, tab, script):
-        if self._payloads is not None:
-            snap = self._payloads[min(self._idx, len(self._payloads) - 1)]
-            self._idx += 1
-            return json.dumps(snap)
-        return json.dumps(self.raw)
+        if self._payloads is None:
+            return json.dumps(self.raw)
+        snap = self._payloads[min(self._idx, len(self._payloads) - 1)]
+        self._idx += 1
+        return json.dumps(snap)
 
     async def close_tab(self, tab):
         return None
+
 
 
 def test_bilibili_collector_marks_missing_title_without_using_url():
@@ -454,6 +474,43 @@ def test_xiaohongshu_collector_unions_notes_across_scroll_windows_and_filters_no
     assert note_ids == {"a" * 24, "b" * 24, "d" * 24}  # 噪声 c 被滤、b 去重
 
 
+class ScrollAwareXhsProxy(FakeProxy):
+    def __init__(self, windows):
+        super().__init__([], payloads=windows)
+        self._unlocked_windows = 1
+
+    async def scroll(self, tab, distance=800):
+        return None
+
+    async def eval_script(self, tab, script):
+        if "__starmindScrollXhsFeeds" in script:
+            self._unlocked_windows = min(self._unlocked_windows + 1, len(self._payloads))
+            return json.dumps({"scrolled": True})
+        snap = []
+        for window in self._payloads[:self._unlocked_windows]:
+            snap.extend(window)
+        return json.dumps(snap)
+
+
+def test_xiaohongshu_collector_scrolls_page_containers_until_limit(monkeypatch):
+    import app.connectors.xiaohongshu as xhs
+
+    monkeypatch.setattr(xhs, "MAX_SCROLLS", 60)
+    monkeypatch.setattr(xhs, "STALL_ROUNDS", 3)
+
+    def note(index):
+        nid = f"{index:024x}"
+        return {"url": f"https://www.xiaohongshu.com/explore/{nid}", "title": f"收藏标题{index}", "note_id": nid}
+
+    windows = [[note(i) for i in range(start, start + 10)] for start in range(0, 50, 10)]
+    collector = XiaohongshuFavoritesCollector(proxy=ScrollAwareXhsProxy(windows))
+
+    items = asyncio.run(collector.extract_favorites("https://www.xiaohongshu.com/user/profile/abc?tab=fav", limit=50))
+
+    assert len(items) == 50
+    assert items[-1].title == "收藏标题49"
+
+
 class FakeDouyinRequest:
     """模拟抖音 CDP proxy：每次 /eval 返回逐窗递增的卡片对象（含 guard 字段）。"""
 
@@ -500,6 +557,40 @@ def test_douyin_collector_accumulates_across_scroll_windows(monkeypatch):
     assert len(items) == 32
     assert len({it.raw_url for it in items}) == 32
     assert collector.diagnostics().get("looksLikeCollectionPage") is True
+
+
+def test_douyin_collector_deduplicates_modal_and_video_urls(monkeypatch):
+    import app.connectors.douyin as douyin
+
+    async def _no_sleep(*a, **k):
+        return None
+
+    monkeypatch.setattr(douyin.asyncio, "sleep", _no_sleep)
+
+    windows = [
+        [
+            {
+                "href": "https://www.douyin.com/user/self?modal_id=7400000000000000001",
+                "title": "欢迎报考信阳科技职业学院～",
+                "kind": "video",
+                "publishTime": "00-14",
+            },
+            {
+                "href": "https://www.douyin.com/video/7400000000000000001",
+                "title": "欢迎报考信阳科技职业学院～",
+                "kind": "video",
+                "publishTime": "00-14",
+            },
+        ]
+    ]
+    collector = douyin.DouyinBrowserCollector()
+    collector._target_id = "tab-x"
+    monkeypatch.setattr(collector, "_request", FakeDouyinRequest(windows))
+
+    items = asyncio.run(collector.extract_visible_video_links(limit=None, require_collection_page=True))
+
+    assert len(items) == 1
+    assert items[0].raw_url == "https://www.douyin.com/video/7400000000000000001"
 
 
 def test_douyin_collector_guard_reads_last_snapshot_meta(monkeypatch):

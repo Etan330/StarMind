@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import random
 import re
+from html.parser import HTMLParser
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from uuid import uuid4
+
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -376,11 +380,11 @@ FAVORITE_PLATFORM_CAPABILITIES: dict[str, dict[str, str]] = {
         "workflow": "打开官网 → 登录小红书 → 自动进入收藏页 → 扫描标题并预筛选",
     },
     "bilibili": {
-        "status_label": "可执行预筛选",
-        "status_tone": "success",
-        "support_level": "live",
-        "capability": "本地浏览器登录后，可自动尝试进入收藏页并扫描可见视频标题。",
-        "workflow": "打开官网 → 登录 B站 → 自动进入收藏页 → 扫描标题并预筛选",
+        "status_label": "待接入",
+        "status_tone": "neutral",
+        "support_level": "planned",
+        "capability": "暂时只作为收藏来源展示，不进入同步收藏顶部实现区。",
+        "workflow": "等待 B站解析器接入",
     },
 }
 
@@ -691,6 +695,7 @@ WIKI_SECTIONS = [
     {"id": "knowledge", "name": "知识主题", "page_type": "knowledge"},
     {"id": "methodology", "name": "方法论", "page_type": "methodology"},
     {"id": "sop", "name": "SOP", "page_type": "sop"},
+    {"id": "creator", "name": "博主", "page_type": "creator"},
 ]
 
 
@@ -734,6 +739,13 @@ def page_tags(raw_value: str | None) -> list[str]:
     except json.JSONDecodeError:
         return []
     return [str(item) for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
+def creator_key_from_page(page: WikiPage | None) -> str:
+    for tag in page_tags(page.tags_json if page else "[]"):
+        if tag.startswith("creator:"):
+            return tag.removeprefix("creator:")
+    return ""
 
 
 def safe_json(raw_value: str | None) -> dict[str, Any]:
@@ -802,6 +814,229 @@ def duplicate_query_params(existing_context: dict[str, Any]) -> str:
         "existing_url": existing_context.get("candidate").canonical_url if candidate else "",
     }
     return urlencode({key: value for key, value in params.items() if value})
+
+
+def extraction_endpoint_for_platform(platform: str) -> str:
+    if platform == "xiaohongshu":
+        return "/api/xiaohongshu/diandian/extract-selected"
+    if platform == "douyin":
+        return "/api/doubao/extract-selected"
+    return ""
+
+
+class WechatArticleParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title = ""
+        self._capture_title = False
+        self._in_content = False
+        self._content_depth = 0
+        self._skip_depth = 0
+        self._blocks: list[str] = []
+        self._current: list[str] = []
+        self._current_prefix = ""
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr = dict(attrs)
+        tag = tag.lower()
+        if tag == "meta" and attr.get("property") == "og:title" and attr.get("content") and not self.title:
+            self.title = html.unescape(str(attr["content"])).strip()
+        if tag in {"script", "style"}:
+            self._skip_depth += 1
+            return
+        if attr.get("id") == "activity-name":
+            self._capture_title = True
+        if attr.get("id") == "js_content":
+            self._in_content = True
+            self._content_depth = 1
+            return
+        if self._in_content:
+            self._content_depth += 1
+            if tag in {"p", "section", "div", "li", "blockquote"}:
+                self._flush_current()
+                self._current_prefix = "- " if tag == "li" else ""
+            elif tag in {"h1", "h2", "h3"}:
+                self._flush_current()
+                self._current_prefix = {"h1": "# ", "h2": "## ", "h3": "### "}[tag]
+            elif tag == "br":
+                self._current.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self._skip_depth:
+            if tag in {"script", "style"}:
+                self._skip_depth -= 1
+            return
+        if tag == "h1" and self._capture_title:
+            self._capture_title = False
+        if self._in_content:
+            if tag in {"p", "section", "div", "li", "blockquote", "h1", "h2", "h3"}:
+                self._flush_current()
+            self._content_depth -= 1
+            if self._content_depth <= 0:
+                self._in_content = False
+                self._content_depth = 0
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
+        text = re.sub(r"\s+", " ", data or " ").strip()
+        if not text:
+            return
+        if self._capture_title and not self.title:
+            self.title = text
+        if self._in_content:
+            self._current.append(text)
+
+    def content_markdown(self) -> str:
+        self._flush_current()
+        return "\n\n".join(block for block in self._blocks if block).strip()
+
+    def _flush_current(self) -> None:
+        text = " ".join(part.strip() for part in self._current if part.strip()).strip()
+        if text:
+            self._blocks.append(f"{self._current_prefix}{text}".strip())
+        self._current = []
+        self._current_prefix = ""
+
+
+async def fetch_wechat_article_html_from_browser(url: str) -> str:
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    await cdp_proxy.connect()
+    tab = await cdp_proxy.new_tab(url)
+    try:
+        await cdp_proxy.wait_for_load(tab, timeout=12)
+        for _ in range(6):
+            html_text = await cdp_proxy.eval_script(
+                tab,
+                "document.querySelector('#js_content') ? document.documentElement.outerHTML : ''",
+            )
+            if str(html_text or "").strip():
+                return str(html_text)
+            await asyncio.sleep(0.8)
+        html_text = await cdp_proxy.eval_script(tab, "document.documentElement.outerHTML")
+        if str(html_text or "").strip():
+            return str(html_text)
+        raise _CDPErr("微信公众号文章页面没有返回可读取正文")
+    finally:
+        await cdp_proxy.close_tab(tab)
+
+
+async def fetch_wechat_article_html(url: str) -> str:
+    return await fetch_wechat_article_html_from_browser(url)
+
+
+def parse_wechat_article(html_text: str) -> tuple[str, str]:
+    parser = WechatArticleParser()
+    parser.feed(html_text)
+    title = parser.title.strip() or "微信公众号文章"
+    content = parser.content_markdown()
+    if not content:
+        raise ValueError("wechat article content not found")
+    return title, content
+
+
+def content_preview_payload(raw_source: RawSource, content: str | None = None, limit: int = 5000) -> dict[str, Any]:
+    text = str(content if content is not None else read_local_text(raw_source.transcript_path)).strip()
+    return {
+        "raw_source_id": raw_source.id,
+        "title": raw_source.title,
+        "content": text[:limit],
+        "truncated": len(text) > limit,
+        "source_url": raw_source.source_url,
+    }
+
+
+def review_original_source(page: WikiPage, source_map: dict[int, RawSource]) -> dict[str, Any]:
+    refs = page_json_list(page.source_refs_json)
+    for ref in refs:
+        raw_source = source_map.get(int(ref.get("raw_source_id") or 0))
+        if not raw_source:
+            continue
+        text = read_local_text(raw_source.transcript_path).strip()
+        if text:
+            return {
+                "raw_source_id": raw_source.id,
+                "title": raw_source.title or "原文内容",
+                "text": text,
+            }
+    return {"raw_source_id": None, "title": "原文内容", "text": ""}
+
+
+def primary_raw_source_for_page(page: WikiPage, db: Session) -> RawSource | None:
+    refs = page_json_list(page.source_refs_json)
+    for ref in refs:
+        raw_source_id = int(ref.get("raw_source_id") or 0)
+        if raw_source_id:
+            raw_source = db.get(RawSource, raw_source_id)
+            if raw_source:
+                return raw_source
+    return None
+
+
+def create_passive_link_candidate(
+    db: Session,
+    raw_url: str,
+    title: str = "",
+    tags: str = "",
+    metadata: dict[str, Any] | None = None,
+    author: str | None = None,
+    content_type: str | None = None,
+) -> tuple[CandidateItem, SyncLedgerItem, bool]:
+    normalized = normalize_url(raw_url, "" or None)
+    existing = (
+        db.query(SyncLedgerItem)
+        .filter(
+            or_(
+                (SyncLedgerItem.platform == normalized.platform) & (SyncLedgerItem.external_item_id == normalized.external_item_id),
+                SyncLedgerItem.canonical_url == normalized.canonical_url,
+            )
+        )
+        .first()
+    )
+    if existing and existing.candidate_id:
+        candidate = db.get(CandidateItem, existing.candidate_id)
+        if candidate:
+            return candidate, existing, True
+
+    candidate_metadata = {"source": "passive_link", "tags": tags}
+    candidate_metadata.update(metadata or {})
+    candidate = CandidateItem(
+        source_type="passive_link",
+        platform=normalized.platform,
+        external_item_id=normalized.external_item_id,
+        canonical_url=normalized.canonical_url,
+        raw_url=raw_url,
+        title=title or raw_url or "Untitled passive link",
+        author=author,
+        content_type=content_type or ("note" if normalized.platform == "xiaohongshu" else "video" if normalized.platform == "douyin" else None),
+        metadata_json=json.dumps(candidate_metadata, ensure_ascii=False),
+        status=PENDING_CLASSIFICATION,
+    )
+    db.add(candidate)
+    db.flush()
+    if existing:
+        existing.candidate_id = candidate.id
+        existing.raw_url = existing.raw_url or raw_url
+        existing.canonical_url = existing.canonical_url or normalized.canonical_url
+        ledger = existing
+        duplicated = True
+    else:
+        ledger = SyncLedgerItem(
+            connector_id=None,
+            platform=normalized.platform,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=raw_url,
+            scan_run_id=f"passive_{candidate.id}",
+            candidate_id=candidate.id,
+        )
+        db.add(ledger)
+        duplicated = False
+    db.commit()
+    db.refresh(candidate)
+    return candidate, ledger, duplicated
 
 
 def task_view_model(db: Session, candidate: CandidateItem, raw_source: RawSource | None, pages: list[WikiPage]) -> dict[str, Any]:
@@ -938,6 +1173,35 @@ def _pacing_params(data: dict[str, Any]) -> tuple[int, float, float]:
     return switch_every, delay_min, delay_max
 
 
+async def auto_update_creator_wiki_pages(db: Session, raw_sources: list[RawSource], items: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    creator_keys: dict[str, str] = {}
+    source_creator_keys: dict[int, str] = {}
+    for source in raw_sources:
+        if source.source_type != "distill_profile":
+            continue
+        metadata = safe_json(source.metadata_json)
+        creator_key = str(metadata.get("creator_key") or "").strip()
+        if creator_key:
+            creator_keys[creator_key] = str(metadata.get("creator_name") or source.author or "未命名博主").strip()
+            source_creator_keys[source.id] = creator_key
+    pages: list[dict[str, Any]] = []
+    page_ids_by_creator: dict[str, str] = {}
+    service = WikiMaintenanceService(db)
+    for creator_key, creator_name in creator_keys.items():
+        page = await service.create_creator_page(creator_key, force=True)
+        page_ids_by_creator[creator_key] = page.page_id
+        pages.append({"creator_key": creator_key, "wiki_page_id": page.page_id, "creator_name": creator_name})
+    if items is not None:
+        for item in items:
+            raw_source_id = item.get("raw_source_id")
+            if not raw_source_id:
+                continue
+            creator_key = source_creator_keys.get(int(raw_source_id))
+            if creator_key and page_ids_by_creator.get(creator_key):
+                item["wiki_page_id"] = page_ids_by_creator[creator_key]
+    return pages
+
+
 def _filter_pending_candidates(db: Session, candidate_ids: list[Any], platform: str) -> list[int]:
     """从 candidate_ids 里筛出该平台尚未提取的（断点续跑用，幂等跳过已完成）。"""
     from app.connectors.extract_pacing import next_pending
@@ -952,6 +1216,383 @@ def _filter_pending_candidates(db: Session, candidate_ids: list[Any], platform: 
         meta = safe_json(candidate.metadata_json) if candidate is not None else {}
         metas.append((cid, meta))
     return next_pending(metas, platform)
+
+
+# --- 批量提取共用骨架（豆包/点点）：逐条 per_item 状态 + 异步轮询支撑 ---
+
+# 逐条状态机：待提取 → 提取中 → 已入库 / 失败 / 需登录。前端据此渲染徽章。
+ITEM_PENDING = "pending"
+ITEM_EXTRACTING = "extracting"
+ITEM_INGESTED = "ingested"
+ITEM_FAILED = "failed"
+ITEM_NEEDS_LOGIN = "needs_login"
+
+
+def _init_extract_job(job_id: str, candidate_ids: list[Any], platform: str, pending: list[int]) -> dict[str, Any]:
+    """新建/复用 job dict，确保 §2.3 的逐条字段齐备（续跑时补齐缺失键）。
+
+    per_item 以 candidate_id(str) 为键；首次见到的 pending 条目初始化为 ITEM_PENDING。
+    已完成（不在 pending 里）的条目若 job 里没有记录，标记为 ITEM_INGESTED 占位，
+    使 job-status 的 items 顺序覆盖全部 candidate_ids。
+    """
+    ids = [int(c) for c in candidate_ids if str(c).strip()]
+    job = DOUBAO_EXTRACT_JOBS.setdefault(
+        job_id,
+        {
+            "platform": platform,
+            "candidate_ids": ids,
+            "status": "running",
+            "paused_reason": None,
+            "error": None,
+            "total": len(ids),
+            "current_index": 0,
+            "per_item": {},
+            "done_ids": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "items": [],
+            "message": None,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    # 续跑：合并新传入的 candidate_ids（保持原顺序，去重），补齐缺失字段。
+    if ids and ids != job.get("candidate_ids"):
+        job["candidate_ids"] = ids
+    job.setdefault("per_item", {})
+    job.setdefault("done_ids", [])
+    job.setdefault("items", [])
+    job["platform"] = platform
+    job["total"] = len(job["candidate_ids"])
+    job["status"] = "running"
+    job["paused_reason"] = None
+    job["error"] = None
+    job["message"] = None
+    pending_set = {int(c) for c in pending}
+    for cid in job["candidate_ids"]:
+        key = str(cid)
+        if cid in pending_set:
+            # 未完成条目（含续跑剩余）重置为待提取，清掉上轮的失败/需登录态。
+            existing = job["per_item"].get(key) or {}
+            if existing.get("status") != ITEM_INGESTED:
+                job["per_item"][key] = {"candidate_id": cid, "status": ITEM_PENDING, "title": existing.get("title"), "preview": None, "error": None}
+        elif key not in job["per_item"]:
+            # 已提取但本 job 无记录（重启/换 extractor 续跑）→ 占位为已入库。
+            job["per_item"][key] = {"candidate_id": cid, "status": ITEM_INGESTED, "title": None, "preview": None, "error": None}
+    return job
+
+
+def _set_item_status(job: dict[str, Any], candidate_id: int, status: str, **fields: Any) -> None:
+    """更新 job["per_item"][cid] 的状态与附加字段（title/preview/error）。"""
+    key = str(candidate_id)
+    item = job.setdefault("per_item", {}).setdefault(key, {"candidate_id": candidate_id, "status": ITEM_PENDING, "title": None, "preview": None, "error": None})
+    item["status"] = status
+    for name, value in fields.items():
+        item[name] = value
+
+
+def build_extract_args(db: Session, candidate: CandidateItem, platform: str) -> dict[str, Any]:
+    """构造调用 extractor.extract_content 的入参（平台差异点之一）。
+
+    豆包：url（raw_url 优先）+ content_type（默认 auto）。
+    点点：share_text（必填，由分享文案构造）+ url + content_type（默认 note）。
+    """
+    if platform == "doubao":
+        return {
+            "url": candidate.raw_url or candidate.canonical_url,
+            "content_type": candidate.content_type or "auto",
+        }
+    share_text, share_url = xiaohongshu_share_text_for_candidate(candidate)
+    return {
+        "share_text": share_text,
+        "url": share_url or candidate.raw_url or candidate.canonical_url,
+        "content_type": candidate.content_type or "note",
+        "_share_text": share_text,
+        "_share_url": share_url,
+    }
+
+
+# 平台差异封装：metadata 键前缀、失败 ledger label、人机验证/登录失效 error 串、是否回写标题。
+_EXTRACT_PLATFORM_SPEC: dict[str, dict[str, Any]] = {
+    "doubao": {
+        "extractor_module": "app.connectors.doubao_extractor",
+        "extractor_class": "DoubaoExtractor",
+        "prompt_version_attr": "DOUBAO_PROMPT_VERSION",
+        "meta_prefix": "doubao",
+        "failed_label": "doubao_failed",
+        "human_verification_error": "doubao_human_verification_required",
+        "login_required_error": "doubao_login_required",
+        "writes_title": True,
+        "sets_knowledge_label": False,
+        "verification_message": "检测到豆包人机验证。请在已打开的豆包页面完成验证，然后点「我已完成，继续」继续提取剩余条目。",
+        "login_message": "豆包登录状态失效。请在豆包页面重新登录后，点「我已完成，继续」继续提取剩余条目。",
+    },
+    "xiaohongshu_diandian": {
+        "extractor_module": "app.connectors.xiaohongshu_diandian_extractor",
+        "extractor_class": "XiaohongshuDiandianExtractor",
+        "prompt_version_attr": "DIANDIAN_PROMPT_VERSION",
+        "meta_prefix": "xiaohongshu_diandian",
+        "failed_label": "xiaohongshu_diandian_failed",
+        "human_verification_error": "xiaohongshu_diandian_human_verification_required",
+        "login_required_error": "xiaohongshu_diandian_not_ready",
+        "writes_title": False,
+        "sets_knowledge_label": True,
+        "verification_message": "检测到小红书点点人机验证。请在已打开的点点页面完成验证，然后点「我已完成，继续」继续提取剩余条目。",
+        "login_message": "小红书点点页面未就绪。请在点点页面重新登录/打开后，点「我已完成，继续」继续提取剩余条目。",
+    },
+}
+
+
+def _resolve_prompt_version(platform: str) -> str:
+    spec = _EXTRACT_PLATFORM_SPEC[platform]
+    import importlib
+
+    module = importlib.import_module(spec["extractor_module"])
+    return str(getattr(module, spec["prompt_version_attr"], ""))
+
+
+async def _run_extraction_job(
+    job_id: str,
+    candidate_ids: list[Any],
+    platform: str,
+    extractor: Any,
+    *,
+    db: Session,
+    per_item_timeout: int,
+    switch_every: int,
+    delay_min: float,
+    delay_max: float,
+    generate_wiki_draft: bool,
+) -> dict[str, Any]:
+    """豆包/点点共用的提取主循环（预检已在端点完成）。
+
+    全程维护 job["per_item"] 实时状态，使 GET /api/extract/job-status 可并发轮询。
+    返回端点要回传的 completed/paused 结果字典；顶层异常写 job["status"]="error"。
+    """
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    spec = _EXTRACT_PLATFORM_SPEC[platform]
+    prefix = spec["meta_prefix"]
+    prompt_version = _resolve_prompt_version(platform)
+    job = DOUBAO_EXTRACT_JOBS[job_id]
+    keep_tab_open = False
+
+    raw_service = RawSourceService(db)
+    wiki_service = WikiMaintenanceService(db)
+    items: list[dict[str, Any]] = []
+    successful_raw_sources: list[RawSource] = []
+    success_count = 0
+    failed_count = 0
+    paused = False
+    pause_reason: str | None = None
+    try:
+        pending = _filter_pending_candidates(db, candidate_ids, platform)
+        job["total"] = len(job.get("candidate_ids") or pending)
+        for i, candidate_id in enumerate(pending):
+            job["current_index"] = i
+            if i > 0 and i % switch_every == 0:
+                try:
+                    await extractor.start_new_conversation()
+                except Exception:
+                    pass
+            candidate = db.get(CandidateItem, candidate_id)
+            if candidate is None:
+                failed_count += 1
+                _set_item_status(job, candidate_id, ITEM_FAILED, error="candidate_not_found")
+                items.append({"candidate_id": candidate_id, "success": False, "error": "candidate_not_found"})
+                continue
+
+            _set_item_status(job, candidate_id, ITEM_EXTRACTING, title=candidate.title)
+            extract_args = build_extract_args(db, candidate, platform)
+            share_text = extract_args.pop("_share_text", "")
+            share_url = extract_args.pop("_share_url", "")
+            try:
+                result = await extractor.extract_content(**extract_args, timeout_seconds=per_item_timeout)
+            except _CDPErr as exc:
+                failed_count += 1
+                _set_item_status(job, candidate.id, ITEM_FAILED, error=str(exc))
+                items.append({"candidate_id": candidate.id, "success": False, "error": str(exc)})
+                continue
+
+            attempts = int(getattr(result, "attempts", 1) or 1)
+            retried = bool(getattr(result, "retried", False))
+            content = str(result.transcript or result.text_content or "").strip()
+
+            if not result.success or not content:
+                # 人机验证 / 登录失效：保留进度、暂停、break，由前端续跑。
+                if result.error == spec["human_verification_error"]:
+                    keep_tab_open = True
+                    paused = True
+                    pause_reason = "human_verification"
+                    _set_item_status(job, candidate.id, ITEM_NEEDS_LOGIN, error=result.error)
+                    break
+                if result.error == spec["login_required_error"]:
+                    keep_tab_open = True
+                    paused = True
+                    pause_reason = "login_required" if platform == "doubao" else "not_ready"
+                    _set_item_status(job, candidate.id, ITEM_NEEDS_LOGIN, error=result.error)
+                    break
+                # 普通失败（含低质量回绝）：记 metadata、置失败、继续。
+                failed_count += 1
+                metadata = safe_json(candidate.metadata_json)
+                fail_meta = {
+                    f"{prefix}_extracted": False,
+                    f"{prefix}_error": result.error or "empty_response",
+                    f"{prefix}_prompt": str(getattr(result, "prompt", "") or ""),
+                    f"{prefix}_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                }
+                if platform == "xiaohongshu_diandian":
+                    fail_meta.update({
+                        f"{prefix}_share_text": share_text,
+                        f"{prefix}_share_url": share_url,
+                        f"{prefix}_attempts": attempts,
+                        f"{prefix}_retried": retried,
+                    })
+                metadata.update(fail_meta)
+                candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+                ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+                if ledger:
+                    ledger.classification_label = spec["failed_label"]
+                db.commit()
+                _set_item_status(job, candidate.id, ITEM_FAILED, error=result.error or "empty_response")
+                fail_item = {"candidate_id": candidate.id, "success": False, "error": result.error or "empty_response"}
+                if platform == "xiaohongshu_diandian":
+                    fail_item.update({"attempts": attempts, "retried": retried})
+                items.append(fail_item)
+                if i < len(pending) - 1:
+                    await asyncio.sleep(random.uniform(delay_min, delay_max))
+                continue
+
+            # 成功：写 metadata（含 extract_prompt_version）→ 入库 → mark_extracted。
+            metadata = safe_json(candidate.metadata_json)
+            prompt = str(getattr(result, "prompt", "") or "")
+            success_meta = {
+                "transcript": content,
+                "content": content,
+                "page_text": content,
+                f"{prefix}_extracted": True,
+                f"{prefix}_error": None,
+                f"{prefix}_prompt": prompt,
+                f"{prefix}_extracted_at": datetime.now().isoformat(timespec="seconds"),
+                f"{prefix}_response_length": len(content),
+                f"{prefix}_elapsed_seconds": getattr(result, "elapsed_seconds", None),
+                "extract_prompt_version": prompt_version,
+            }
+            if platform == "xiaohongshu_diandian":
+                success_meta.update({
+                    f"{prefix}_share_text": share_text,
+                    f"{prefix}_share_url": share_url,
+                    f"{prefix}_attempts": attempts,
+                    f"{prefix}_retried": retried,
+                })
+            metadata.update(success_meta)
+            candidate.metadata_json = json.dumps(metadata, ensure_ascii=False)
+            if spec["writes_title"]:
+                candidate.title = result.title or candidate.title
+            db.commit()
+            raw_source = raw_service.ingest_candidate(candidate.id)
+            successful_raw_sources.append(raw_source)
+            ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate.id).first()
+            if ledger and spec["sets_knowledge_label"]:
+                ledger.classification_label = "knowledge"
+                ledger.raw_source_id = raw_source.id
+                db.commit()
+            ScanEntryService(db).mark_extracted(candidate.id, raw_source.id)
+            wiki_page_id = None
+            if generate_wiki_draft:
+                page = await wiki_service.create_page_from_raw_source(raw_source.id)
+                wiki_page_id = page.page_id
+            success_count += 1
+            job["done_ids"].append(candidate.id)
+            preview = content_preview_payload(raw_source)
+            _set_item_status(job, candidate.id, ITEM_INGESTED, title=raw_source.title, preview=preview, error=None)
+            success_item = {
+                "candidate_id": candidate.id,
+                "success": True,
+                "raw_source_id": raw_source.id,
+                "wiki_page_id": wiki_page_id,
+                "title": raw_source.title,
+                "preview": preview,
+                "error": None,
+            }
+            if platform == "xiaohongshu_diandian":
+                success_item.update({"attempts": attempts, "retried": retried})
+            items.append(success_item)
+            if i < len(pending) - 1:
+                await asyncio.sleep(random.uniform(delay_min, delay_max))
+    except Exception as exc:  # noqa: BLE001 — 后台/await 路径异常须落 job，避免轮询永转。
+        job["status"] = "error"
+        job["error"] = str(exc)
+        try:
+            await extractor.close(close_tab=not keep_tab_open)
+        except Exception:
+            pass
+        return {"status": "error", "job_id": job_id, "error": str(exc), "items": items}
+    finally:
+        if job.get("status") != "error":
+            await extractor.close(close_tab=not keep_tab_open)
+
+    creator_wiki_pages = await auto_update_creator_wiki_pages(db, successful_raw_sources, items)
+    job["success_count"] = job.get("success_count", 0) + success_count
+    job["failed_count"] = job.get("failed_count", 0) + failed_count
+    job["items"].extend(items)
+
+    if paused:
+        remaining = _filter_pending_candidates(db, job["candidate_ids"], platform)
+        reason = pause_reason or "human_verification"
+        message = spec["verification_message"] if reason == "human_verification" else spec["login_message"]
+        job["status"] = "paused"
+        job["paused_reason"] = reason
+        job["message"] = message
+        return {
+            "status": "paused",
+            "job_id": job_id,
+            "reason": reason,
+            "message": message,
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "done": len(job["done_ids"]),
+            "pending_remaining": len(remaining),
+            "items": items,
+            "creator_wiki_pages": creator_wiki_pages,
+        }
+
+    job["status"] = "completed"
+    job["message"] = None
+    return {
+        "status": "completed",
+        "job_id": job_id,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "items": items,
+        "creator_wiki_pages": creator_wiki_pages,
+    }
+
+
+@router.get("/api/extract/job-status")
+async def extract_job_status(job_id: str):
+    job = DOUBAO_EXTRACT_JOBS.get(str(job_id or "").strip())
+    if not job:
+        raise HTTPException(status_code=404, detail="extract job not found")
+    candidate_ids = job.get("candidate_ids") or []
+    per_item = job.get("per_item") or {}
+    items = [per_item.get(str(cid), {"candidate_id": cid, "status": ITEM_PENDING, "title": None, "preview": None, "error": None}) for cid in candidate_ids]
+    status = job.get("status") or "running"
+    message = job.get("message")
+    if status == "paused" and not message:
+        message = "检测到登录或人机验证，已暂停。请在浏览器页面完成处理后继续。"
+    return {
+        "job_id": job_id,
+        "platform": job.get("platform"),
+        "status": status,
+        "paused_reason": job.get("paused_reason"),
+        "error": job.get("error"),
+        "total": job.get("total") or len(candidate_ids),
+        "current_index": job.get("current_index") or 0,
+        "items": items,
+        "success_count": job.get("success_count") or 0,
+        "failed_count": job.get("failed_count") or 0,
+        "message": message,
+    }
 
 
 async def process_candidate_ids(db: Session, candidate_ids: list[int], limit: int = 10) -> list[dict[str, Any]]:
@@ -1442,6 +2083,7 @@ def review_page(page_id: str, request: Request, db: Session = Depends(get_db)):
             suggested_questions=suggested_questions(page.title),
             refs=refs,
             source_map=source_map,
+            original_source=review_original_source(page, source_map),
             validation_error=request.query_params.get("error"),
             saved=request.query_params.get("saved"),
         ),
@@ -1467,6 +2109,13 @@ async def confirm_review_page(page_id: str, request: Request, db: Session = Depe
     path = Path(page.markdown_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown, encoding="utf-8")
+    original_text = str(data.get("original_text") or "").strip()
+    if original_text:
+        raw_source = primary_raw_source_for_page(page, db)
+        if raw_source and raw_source.transcript_path:
+            Path(raw_source.transcript_path).write_text(original_text, encoding="utf-8")
+            if raw_source.clean_text_path:
+                Path(raw_source.clean_text_path).write_text(original_text, encoding="utf-8")
     page.status = "active"
     page.updated_by = "user_reviewed"
     db.commit()
@@ -1486,8 +2135,11 @@ def guide_page(request: Request, db: Session = Depends(get_db)):
 @router.get("/ui/sync", response_class=HTMLResponse)
 def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
     cards = favorite_platform_cards(db)
-    live_platforms = [card for card in cards if card["support_level"] == "live"]
+    live_platforms = [card for card in cards if card["support_level"] == "live" and card["platform"] in {"douyin", "xiaohongshu"}]
     planned_platforms = [card for card in cards if card["support_level"] != "live"]
+    mode = str(request.query_params.get("mode") or "sync").strip()
+    if mode not in {"sync", "link", "creator", "idea"}:
+        mode = "sync"
     return templates.TemplateResponse(
         request,
         "sync_favorites.html",
@@ -1498,6 +2150,7 @@ def sync_favorites_page(request: Request, db: Session = Depends(get_db)):
             favorite_platforms=cards,
             live_platforms=live_platforms,
             planned_platforms=planned_platforms,
+            sync_mode=mode,
         ),
     )
 
@@ -2340,8 +2993,38 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
         candidate = db.get(CandidateItem, source.candidate_id) if source.candidate_id else None
         source.title = raw_service.display_title_for_source(source, candidate)
     favorite_sources = [source for source in sources if source.source_type not in {"passive_link", "manual_idea", "distill_profile"}]
-    link_items = db.query(CandidateItem).filter(CandidateItem.source_type == "passive_link").order_by(CandidateItem.created_at.desc()).all()
-    idea_items = db.query(CandidateItem).filter(CandidateItem.source_type == "manual_idea").order_by(CandidateItem.created_at.desc()).all()
+    link_items = [source for source in sources if source.source_type == "passive_link"]
+    idea_items = [source for source in sources if source.source_type == "manual_idea"]
+    distill_sources = [source for source in sources if source.source_type == "distill_profile"]
+    distill_creator_groups: dict[str, dict[str, Any]] = {}
+    for source in distill_sources:
+        metadata = safe_json(source.metadata_json)
+        creator_key = str(metadata.get("creator_key") or f"{source.platform}:{source.author or 'unknown'}")
+        creator_name = str(metadata.get("creator_name") or source.author or "未命名博主")
+        raw_platform = source.platform or str(metadata.get("creator_platform") or "社交媒体")
+        platform_label = {"douyin": "抖音", "xiaohongshu": "小红书"}.get(raw_platform, raw_platform)
+        group = distill_creator_groups.setdefault(
+            creator_key,
+            {
+                "creator_key": creator_key,
+                "creator_name": creator_name,
+                "platform": platform_label,
+                "sources": [],
+                "latest_count": 0,
+                "top_liked_count": 0,
+            },
+        )
+        bucket = str(metadata.get("creator_bucket") or "")
+        if bucket in {"latest", "both"}:
+            group["latest_count"] += 1
+        if bucket in {"top_liked", "both"}:
+            group["top_liked_count"] += 1
+        group["sources"].append(source)
+    distill_creator_groups_list = sorted(
+        distill_creator_groups.values(),
+        key=lambda group: max((source.created_at for source in group["sources"]), default=datetime.min),
+        reverse=True,
+    )
     source_id = request.query_params.get("source_id")
     selected_source = db.get(RawSource, int(source_id)) if source_id and source_id.isdigit() else (sources[0] if sources else None)
     if selected_source:
@@ -2368,6 +3051,7 @@ def sources_page(request: Request, db: Session = Depends(get_db)):
             selected_source_type_label=source_type_label(selected_source.source_type if selected_source else None),
             favorite_sources=favorite_sources,
             distill_requests=get_distill_requests()["requests"],
+            distill_creator_groups=distill_creator_groups_list,
             link_items=link_items,
             idea_items=idea_items,
         ),
@@ -2435,7 +3119,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         pages = query.all()
 
     page_id = request.query_params.get("page_id")
-    selected_page = next((page for page in all_pages if page.page_id == page_id), None) if page_id else None
+    selected_page = next((page for page in pages if page.page_id == page_id), None) if page_id else None
     if selected_page is None and pages:
         selected_page = pages[0]
     selected_refs = page_json_list(selected_page.source_refs_json if selected_page else "[]")
@@ -2445,6 +3129,7 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         "knowledge": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "knowledge").count(),
         "methodology": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "methodology").count(),
         "sop": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "sop").count(),
+        "creator": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "creator").count(),
         "skills": db.query(WikiPage).filter(WikiPage.status.in_(visible_statuses), WikiPage.page_type == "skill").count(),
         "index": len(all_pages),
     }
@@ -2469,19 +3154,28 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
         )
 
     selected_markdown = read_wiki_markdown(selected_page)
+    selected_creator_key = creator_key_from_page(selected_page)
+    selected_creator_sources = []
+    if selected_creator_key:
+        selected_creator_sources = [
+            source for source in source_map.values()
+            if safe_json(source.metadata_json).get("creator_key") == selected_creator_key
+        ]
     wiki_question = (request.query_params.get("q") or "").strip()
     wiki_answer = None
     wiki_answer_html = ""
     if wiki_question and selected_page:
-        wiki_answer = SimpleNamespace(
-            run_id="local",
-            provider="local",
-            model="wiki-page",
-            sources=[{"title": selected_page.title}],
+        track_event(db, "previous_task_reused", {"reuse_type": "page_question"}, page_id=selected_page.page_id)
+        track_event(db, "v3_followup_question_clicked", {"question_type": "page_question"}, page_id=selected_page.page_id)
+        contextual_question = f"请优先基于知识页《{selected_page.title}》和它的来源回答：{wiki_question}"
+        wiki_answer = await AgentRunner(db).answer_question(contextual_question, creator_key=selected_creator_key or None)
+        wiki_answer_html = render_markdown(wiki_answer.answer)
+        track_event(
+            db,
+            "query_answer_viewed",
+            {"source": "suggested_question", "has_sources": bool(wiki_answer.sources)},
+            page_id=selected_page.page_id,
         )
-        text = selected_markdown.strip()
-        excerpt = text[:900] if text else "这篇页面还没有可读取的正文。"
-        wiki_answer_html = render_markdown(f"基于当前页面内容：\n\n{excerpt}")
 
     return templates.TemplateResponse(
         request,
@@ -2506,6 +3200,8 @@ async def wiki_page(request: Request, db: Session = Depends(get_db)):
             wiki_answer=wiki_answer,
             wiki_answer_html=wiki_answer_html,
             source_map=source_map,
+            selected_creator_key=selected_creator_key,
+            selected_creator_sources=selected_creator_sources,
         ),
     )
 
@@ -2519,6 +3215,1410 @@ async def delete_wiki_page(page_id: str, request: Request, db: Session = Depends
     if wants_html(request):
         return RedirectResponse("/ui/wiki?deleted=1", status_code=303)
     return {"status": "deleted", "page_id": page_id}
+
+
+@router.post("/api/creator/{creator_key:path}/create-wiki")
+async def create_creator_wiki(creator_key: str, request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    force = truthy(data.get("force"), False)
+    try:
+        page = await WikiMaintenanceService(db).create_creator_page(creator_key, force=force)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    refs = page_json_list(page.source_refs_json)
+    if wants_html(request):
+        return RedirectResponse(f"/ui/wiki?section=creator&page_id={page.page_id}&created=creator-wiki", status_code=303)
+    return {
+        "status": "created",
+        "creator_key": creator_key,
+        "wiki_page_id": page.page_id,
+        "source_count": len(refs),
+    }
+
+
+@router.post("/agent/classify-pending")
+async def classify_pending(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    limit = int(data.get("limit") or 20)
+    candidates = (
+        db.query(CandidateItem)
+        .filter(CandidateItem.status == PENDING_CLASSIFICATION)
+        .order_by(CandidateItem.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    routed = await classify_and_route_candidates(db, [candidate.id for candidate in candidates], limit=limit)
+    if wants_html(request):
+        return RedirectResponse(f"/ui/pending?created=classified&count={len(routed)}", status_code=303)
+    return {"status": "classified", "items": routed}
+
+
+@router.post("/agent/raw-sources/{raw_source_id}/create-page")
+async def create_page_from_raw_source(raw_source_id: int, request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    page_type = str(data.get("page_type") or "knowledge").strip()
+    force = truthy(data.get("force"), False)
+    if page_type not in {"knowledge", "methodology", "sop", "skill"}:
+        raise HTTPException(status_code=400, detail="Unsupported page_type")
+    track_event(db, "task_processing_started", {"step": "page_generation", "page_type": page_type}, raw_source_id=raw_source_id)
+    track_event(db, "v3_processing_started", {"current_step": "page_generation", "page_type": page_type}, raw_source_id=raw_source_id)
+    try:
+        page = await WikiMaintenanceService(db).create_page_from_raw_source(raw_source_id, page_type=page_type, force=force)
+    except ValueError as exc:
+        track_event(db, "task_processing_failed", {"step": "page_generation", "reason": str(exc)}, raw_source_id=raw_source_id)
+        track_event(db, "v3_task_create_failed", {"reason": "page_generation_failed"}, raw_source_id=raw_source_id)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    track_event(
+        db,
+        "task_processing_completed",
+        {"step": "page_generation", "page_type": page_type},
+        raw_source_id=raw_source_id,
+        page_id=page.page_id,
+    )
+    track_event(
+        db,
+        "v3_processing_completed",
+        {"current_step": "page_generation", "page_type": page_type},
+        raw_source_id=raw_source_id,
+        page_id=page.page_id,
+    )
+    if wants_html(request):
+        return RedirectResponse(f"/ui/review/{page.page_id}?saved={page_type}-page", status_code=303)
+    return {"status": "created", "raw_source_id": raw_source_id, "wiki_page_id": page.page_id, "page_type": page_type}
+
+
+@router.post("/agent/process-pending")
+async def process_pending(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    limit = int(data.get("limit") or 5)
+    candidates = (
+        db.query(CandidateItem)
+        .filter(CandidateItem.status.in_(REVIEWABLE_STATUSES))
+        .order_by(CandidateItem.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    processed = []
+    raw_service = RawSourceService(db)
+    wiki_service = WikiMaintenanceService(db)
+    for candidate in candidates:
+        raw_source = raw_service.ingest_candidate(candidate.id)
+        page = await wiki_service.create_page_from_raw_source(raw_source.id)
+        processed.append({"candidate_id": candidate.id, "raw_source_id": raw_source.id, "wiki_page_id": page.page_id})
+    if wants_html(request):
+        return RedirectResponse("/ui/pending?created=batch-processed", status_code=303)
+    return {"status": "processed", "items": processed}
+
+
+@router.post("/candidates/{candidate_id}/skip")
+async def skip_candidate(candidate_id: int, request: Request, db: Session = Depends(get_db)):
+    candidate = db.get(CandidateItem, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    candidate.status = SKIPPED
+    db.commit()
+    if wants_html(request):
+        return RedirectResponse("/ui/pending?created=skipped", status_code=303)
+    return {"status": "skipped", "candidate_id": candidate_id}
+
+
+@router.post("/candidates/{candidate_id}/recycle")
+async def recycle_candidate(candidate_id: int, request: Request, db: Session = Depends(get_db)):
+    candidate = db.get(CandidateItem, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    exists = db.query(RecycleBinItem).filter(RecycleBinItem.candidate_id == candidate.id).first()
+    if exists is None:
+        db.add(
+            RecycleBinItem(
+                candidate_id=candidate.id,
+                canonical_url=candidate.canonical_url,
+                external_item_id=candidate.external_item_id,
+                title=candidate.title,
+                platform=candidate.platform,
+                reason="user_recycled",
+            )
+        )
+    candidate.status = RECYCLED
+    db.commit()
+    if wants_html(request):
+        return RedirectResponse("/ui/pending?created=recycled", status_code=303)
+    return {"status": "recycled", "candidate_id": candidate_id}
+
+
+@router.post("/recycle/{recycle_item_id}/restore")
+async def restore_recycled_item(recycle_item_id: int, request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    target = str(data.get("target") or "review")
+    try:
+        result = RecycleService(db).restore(recycle_item_id, target=target)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Wiki page restore: redirect to wiki page
+    if hasattr(result, "page_id") and isinstance(result, WikiPage):
+        if wants_html(request):
+            return RedirectResponse("/ui/wiki?restored=1", status_code=303)
+        return {"status": "restored", "page_id": result.page_id}
+
+    # Candidate restore: existing logic
+    candidate = result
+    raw_source_id = None
+    if target == "knowledge":
+        raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+        raw_source_id = raw_source.id
+    if wants_html(request):
+        return RedirectResponse("/ui/pending?created=restored", status_code=303)
+    return {"status": "restored", "candidate_id": candidate.id, "candidate_status": candidate.status, "raw_source_id": raw_source_id}
+
+
+@router.post("/api/recycle/clear-all")
+async def clear_all_recycle(request: Request, db: Session = Depends(get_db)):
+    """Permanently delete all items in recycle bin."""
+    count = db.query(RecycleBinItem).count()
+    db.query(RecycleBinItem).delete()
+    db.commit()
+    if wants_html(request):
+        return RedirectResponse(f"/ui/pending?created=recycle-cleared-{count}", status_code=303)
+    return {"status": "cleared", "count": count}
+
+
+@router.post("/passive/link")
+async def passive_link(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    raw_url = str(data.get("url") or data.get("raw_url") or "").strip()
+    title = str(data.get("title") or raw_url or "Untitled passive link")
+    tags = str(data.get("tags") or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="url is required")
+    track_event(db, "task_create_submitted", {"task_type": "passive_link"})
+    normalized = normalize_url(raw_url, str(data.get("platform") or "") or None)
+
+    def duplicate_payload(existing: SyncLedgerItem):
+        existing_context = existing_context_for_ledger(db, existing)
+        track_event(db, "duplicate_detected", {"task_type": "passive_link"}, candidate_id=existing.candidate_id)
+        track_event(db, "v3_task_created", {"input_type": "link", "duplicate": True}, candidate_id=existing.candidate_id)
+        if wants_html(request):
+            return RedirectResponse(f"/ui/create?{duplicate_query_params(existing_context)}", status_code=303)
+        return {
+            "status": "duplicate",
+            "canonical_url": normalized.canonical_url,
+            "ledger_id": existing.id,
+            "existing": {
+                "candidate_id": existing_context["candidate"].id if existing_context["candidate"] else None,
+                "raw_source_id": existing_context["raw_source"].id if existing_context["raw_source"] else None,
+                "page_id": existing_context["latest_page"].page_id if existing_context["latest_page"] else None,
+            },
+        }
+
+    metadata: dict[str, Any] = {}
+    author = None
+    content_type = None
+    if normalized.platform == "douyin" and truthy(data.get("transcribe"), True):
+        try:
+            enriched = DouyinTranscriptService().enrich_item(
+                ConnectorItem(
+                    raw_url=normalized.canonical_url,
+                    title=title,
+                    author=None,
+                    platform=normalized.platform,
+                    content_type="video",
+                    metadata={"source": "passive_link", "tags": tags},
+                ),
+                require_transcript=truthy(data.get("require_transcript"), True),
+            )
+        except DouyinTranscriptError as exc:
+            raise HTTPException(status_code=422, detail=f"抖音链接转写失败：{exc}") from exc
+        raw_url = enriched.raw_url
+        title = enriched.title
+        author = enriched.author
+        content_type = enriched.content_type
+        metadata = enriched.metadata
+    candidate, ledger, duplicated = create_passive_link_candidate(db, raw_url, title, tags, metadata, author=author, content_type=content_type)
+    if duplicated:
+        return duplicate_payload(ledger)
+    track_event(db, "task_created", {"task_type": "passive_link"}, candidate_id=candidate.id)
+    track_event(db, "v3_task_created", {"input_type": "link", "duplicate": False}, candidate_id=candidate.id)
+    if truthy(data.get("process_now"), False):
+        page_type = str(data.get("page_type") or "knowledge").strip()
+        if page_type not in WikiMaintenanceService.SUPPORTED_PAGE_TYPES:
+            page_type = "knowledge"
+        raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+        page = await WikiMaintenanceService(db).create_page_from_raw_source(raw_source.id, page_type=page_type)
+        track_event(
+            db,
+            "v3_processing_completed",
+            {"current_step": "link_processed", "page_type": page_type},
+            candidate_id=candidate.id,
+            raw_source_id=raw_source.id,
+            page_id=page.page_id,
+        )
+        if wants_html(request):
+            return RedirectResponse(f"/ui/review/{page.page_id}?saved=passive-link", status_code=303)
+        return {
+            "status": "created",
+            "candidate": candidate_to_dict(candidate),
+            "raw_source_id": raw_source.id,
+            "wiki_page_id": page.page_id,
+            "page_type": page.page_type,
+        }
+    if wants_html(request):
+        return RedirectResponse(f"/ui/task/candidate/{candidate.id}?created=passive-link", status_code=303)
+    return {"status": "created", "candidate": candidate_to_dict(candidate)}
+
+
+@router.post("/api/intake/link-extract")
+async def intake_link_extract(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    raw_url = str(data.get("url") or data.get("raw_url") or "").strip()
+    title = str(data.get("title") or raw_url or "Untitled passive link").strip()
+    tags = str(data.get("tags") or "").strip()
+    prompt = str(data.get("prompt") or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="url is required")
+    normalized = normalize_url(raw_url, None)
+    if normalized.platform == "wechat":
+        from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+        try:
+            article_html = await fetch_wechat_article_html_from_browser(normalized.canonical_url)
+            article_title, article_markdown = parse_wechat_article(article_html)
+        except (httpx.HTTPError, ValueError, _CDPErr) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "wechat_article_extract_failed", "message": f"微信公众号正文提取失败：{exc}"},
+            ) from exc
+        metadata: dict[str, Any] = {"content": article_markdown, "title": article_title, "source": "passive_link"}
+        if prompt:
+            metadata["intake_prompt"] = prompt
+        candidate, ledger, duplicated = create_passive_link_candidate(
+            db,
+            normalized.canonical_url,
+            article_title,
+            tags,
+            metadata,
+            content_type="article",
+        )
+        ledger.classification_label = "knowledge_selected"
+        db.commit()
+        raw_source = RawSourceService(db).ingest_candidate(candidate.id)
+        track_event(
+            db,
+            "task_created",
+            {"task_type": "passive_link", "entry": "link_extract", "platform": "wechat", "duplicate": duplicated},
+            candidate_id=candidate.id,
+            raw_source_id=raw_source.id,
+        )
+        return {
+            "status": "ingested",
+            "platform": candidate.platform,
+            "candidate_id": candidate.id,
+            "raw_source_id": raw_source.id,
+            "title": raw_source.title,
+            "preview": content_preview_payload(raw_source),
+            "duplicate": duplicated,
+        }
+
+    endpoint = extraction_endpoint_for_platform(normalized.platform)
+    if not endpoint:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "unsupported_link_extract_platform",
+                "message": "当前粘贴链接自动提取只支持抖音、小红书和微信公众号，其他链接可先加入待处理。",
+                "platform": normalized.platform,
+            },
+        )
+
+    metadata: dict[str, Any] = {"intake_prompt": prompt} if prompt else {}
+    if normalized.platform == "xiaohongshu":
+        metadata.update(
+            {
+                "xiaohongshu_share_url": xiaohongshu_share_url_from_candidate(
+                    SimpleNamespace(raw_url=raw_url, canonical_url=normalized.canonical_url),
+                    {"xiaohongshu_note_id": normalized.external_item_id},
+                ),
+                "xiaohongshu_note_id": normalized.external_item_id,
+            }
+        )
+    candidate, ledger, duplicated = create_passive_link_candidate(db, raw_url, title, tags, metadata)
+    ledger.classification_label = "knowledge_selected"
+    db.commit()
+    track_event(db, "task_created", {"task_type": "passive_link", "entry": "link_extract", "duplicate": duplicated}, candidate_id=candidate.id)
+    return {
+        "status": "prepared",
+        "platform": candidate.platform,
+        "candidate_ids": [candidate.id],
+        "extract_endpoint": endpoint,
+        "duplicate": duplicated,
+    }
+
+
+@router.post("/agent/query")
+async def agent_query(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    question = str(data.get("question") or data.get("q") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+    profile = get_model_profile(str(data.get("model_profile") or ""))
+    answer = await AgentRunner(db).answer_question(
+        question,
+        provider_id=profile.get("provider") if profile else None,
+        model=profile.get("model") if profile else None,
+        model_profile_name=profile.get("name") if profile else None,
+    )
+    return answer.model_dump()
+
+
+
+
+# --- Creator Profile Resolution ---
+
+
+@router.post("/api/creator/scan")
+async def scan_creator_profile(request: Request, db: Session = Depends(get_db)):
+    from app.services.creator_profile_service import CreatorProfileService
+
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    profile_url = str(data.get("creator_url") or data.get("profile_url") or data.get("value") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform is required")
+    if not profile_url:
+        raise HTTPException(status_code=400, detail="creator_url is required")
+    try:
+        return await CreatorProfileService().scan_profile(platform, profile_url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail={"code": "creator_scan_failed", "message": str(exc)}) from exc
+
+
+@router.post("/api/creator/prepare-selected")
+async def prepare_selected_creator_items(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    platform = str(data.get("platform") or "unknown").strip()
+    creator = data.get("creator") or {}
+    selected_items = data.get("selected_items") or data.get("selected") or data.get("items") or []
+    if not isinstance(creator, dict):
+        raise HTTPException(status_code=400, detail="creator must be an object")
+    if not isinstance(selected_items, list):
+        raise HTTPException(status_code=400, detail="selected_items must be an array")
+
+    candidate_ids: list[int] = []
+    connector = ensure_connector(db, platform, f"{platform} 博主蒸馏", f"creator_{platform}")
+    creator_key = str(creator.get("creator_key") or "").strip()
+    creator_name = str(creator.get("creator_name") or "").strip()
+    creator_profile_id = str(creator.get("creator_profile_id") or "").strip()
+    creator_profile_url = str(creator.get("creator_profile_url") or creator.get("profile_url") or "").strip()
+
+    for item in selected_items:
+        if not isinstance(item, dict):
+            continue
+        raw_url = str(item.get("url") or item.get("raw_url") or item.get("work_url") or "").strip()
+        if not raw_url:
+            continue
+        normalized = normalize_url(raw_url, platform)
+        metadata = {
+            "source": "distill_profile",
+            "creator_key": creator_key,
+            "creator_name": creator_name,
+            "creator_profile_id": creator_profile_id,
+            "creator_profile_url": creator_profile_url,
+            "creator_platform": platform,
+            "follower_count": creator.get("follower_count") or 0,
+            "liked_count": creator.get("liked_count") or 0,
+            "creator_bucket": str(item.get("bucket") or "").strip(),
+            "creator_task_id": str(data.get("creator_task_id") or "").strip(),
+            "creator_scan_snapshot_id": str(data.get("creator_scan_snapshot_id") or "").strip(),
+            "work_id": str(item.get("work_id") or item.get("id") or normalized.external_item_id),
+            "work_url": raw_url,
+            "work_title": str(item.get("title") or raw_url).strip(),
+            "published_at": str(item.get("published_at") or "").strip(),
+            "like_count": item.get("like_count") or 0,
+            "comment_count": item.get("comment_count") or 0,
+            "collect_count": item.get("collect_count") or 0,
+            "share_count": item.get("share_count") or 0,
+            "cover_url": str(item.get("cover_url") or "").strip(),
+            "extract_prompt_version": "sync_extract_v1",
+        }
+        existing = (
+            db.query(CandidateItem)
+            .filter(
+                CandidateItem.source_type == "distill_profile",
+                CandidateItem.platform == normalized.platform,
+                CandidateItem.external_item_id == normalized.external_item_id,
+            )
+            .first()
+        )
+        if existing:
+            candidate_ids.append(existing.id)
+            continue
+        candidate = CandidateItem(
+            source_type="distill_profile",
+            platform=normalized.platform,
+            connector_id=connector.id,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=raw_url,
+            title=str(item.get("title") or raw_url).strip(),
+            author=creator_name or None,
+            content_type=str(item.get("content_type") or "video"),
+            metadata_json=json.dumps(metadata, ensure_ascii=False),
+            status="pending_extraction",
+        )
+        db.add(candidate)
+        db.flush()
+        candidate_ids.append(candidate.id)
+        ledger = SyncLedgerItem(
+            connector_id=connector.id,
+            platform=normalized.platform,
+            external_item_id=normalized.external_item_id,
+            canonical_url=normalized.canonical_url,
+            raw_url=raw_url,
+            scan_run_id=f"creator_selected_{uuid4().hex[:8]}",
+            classification_label="knowledge_selected",
+            candidate_id=candidate.id,
+        )
+        db.add(ledger)
+    db.commit()
+    return {"status": "prepared", "selected_count": len(candidate_ids), "candidate_ids": candidate_ids}
+
+
+@router.post("/api/creator/resolve-profile")
+async def resolve_creator_profile(request: Request, db: Session = Depends(get_db)):
+    from app.services.creator_profile_service import normalize_creator_input
+
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    value = str(data.get("value") or data.get("input") or data.get("profile_url") or "").strip()
+
+    search_results_count = data.get("search_results_count")
+    if search_results_count is not None:
+        search_results_count = int(search_results_count)
+
+    resolved_profile_url = data.get("resolved_profile_url")
+
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform is required")
+    if not value:
+        raise HTTPException(status_code=400, detail="value (or input or profile_url) is required")
+
+    result = normalize_creator_input(
+        platform=platform,
+        value=value,
+        search_results_count=search_results_count,
+        resolved_profile_url=resolved_profile_url,
+    )
+
+    return result.to_dict()
+
+# --- Chat Conversations ---
+
+
+@router.get("/api/conversations")
+def list_conversations(db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation, ChatMessage
+
+    convos = (
+        db.query(ChatConversation)
+        .join(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .group_by(ChatConversation.id)
+        .order_by(ChatConversation.updated_at.desc())
+        .all()
+    )
+    return [{"id": c.id, "title": c.title, "updated_at": c.updated_at.isoformat()} for c in convos]
+
+
+@router.post("/api/conversations")
+def create_conversation(db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation, ChatMessage
+
+    empty_convo = (
+        db.query(ChatConversation)
+        .outerjoin(ChatMessage, ChatMessage.conversation_id == ChatConversation.id)
+        .filter(ChatMessage.id.is_(None))
+        .order_by(ChatConversation.updated_at.desc())
+        .first()
+    )
+    if empty_convo:
+        return {"id": empty_convo.id, "title": empty_convo.title}
+
+    convo = ChatConversation(id=uuid4().hex, title="新对话")
+    db.add(convo)
+    db.commit()
+    return {"id": convo.id, "title": convo.title}
+
+
+@router.get("/api/conversations/{convo_id}/messages")
+def get_conversation_messages(convo_id: str, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation, ChatMessage
+
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    msgs = db.query(ChatMessage).filter_by(conversation_id=convo_id).order_by(ChatMessage.created_at).all()
+    return [
+        {"id": m.id, "role": m.role, "content": m.content, "sources": json.loads(m.sources_json), "created_at": m.created_at.isoformat()}
+        for m in msgs
+    ]
+
+
+@router.post("/api/conversations/{convo_id}/messages")
+async def send_message(convo_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation, ChatMessage
+    from app.services.markdown_renderer import render_markdown
+
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    data = await request_data(request)
+    question = str(data.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    # Save user message
+    user_msg = ChatMessage(conversation_id=convo_id, role="user", content=question)
+    db.add(user_msg)
+
+    # Update conversation title from first message
+    existing_count = db.query(ChatMessage).filter_by(conversation_id=convo_id, role="user").count()
+    if existing_count == 0:
+        convo.title = question[:20]
+
+    db.commit()
+
+    # Get agent answer
+    profile = get_model_profile(str(data.get("model_profile") or ""))
+    answer = await AgentRunner(db).answer_question(
+        question,
+        provider_id=profile.get("provider") if profile else None,
+        model=profile.get("model") if profile else None,
+        model_profile_name=profile.get("name") if profile else None,
+    )
+
+    # Save assistant message
+    assistant_msg = ChatMessage(
+        conversation_id=convo_id, role="assistant", content=answer.answer, sources_json=json.dumps(answer.sources, ensure_ascii=False)
+    )
+    db.add(assistant_msg)
+    db.commit()
+
+    return {
+        "id": assistant_msg.id,
+        "role": "assistant",
+        "content": answer.answer,
+        "content_html": render_markdown(answer.answer),
+        "sources": answer.sources,
+    }
+
+
+@router.delete("/api/conversations/{convo_id}")
+def delete_conversation(convo_id: str, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    db.delete(convo)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@router.post("/api/conversations/{convo_id}/rename")
+async def rename_conversation(convo_id: str, request: Request, db: Session = Depends(get_db)):
+    from app.models.records import ChatConversation
+    data = await request_data(request)
+    title = (data.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title required")
+    convo = db.query(ChatConversation).filter_by(id=convo_id).first()
+    if not convo:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    convo.title = title
+    db.commit()
+    return {"status": "renamed", "title": title}
+
+
+# --- CDP Status ---
+
+
+@router.get("/api/cdp/status")
+async def cdp_status():
+    from app.connectors import cdp_proxy as _cdp
+    return await _cdp.check_status()
+
+
+# --- Bilibili / Xiaohongshu CDP collection ---
+
+
+@router.post("/bilibili/favorites/extract")
+async def extract_bilibili_favorites(request: Request, db: Session = Depends(get_db)):
+    from app.connectors import bilibili_collector as _bili
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    data = await request_data(request)
+    limit = parse_collection_limit(data, 10)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
+    favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
+    try:
+        items = await _bili.extract_favorites(url=favorites_url, limit=limit)
+    except _CDPErr as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    connector = ensure_connector(db, "bilibili", "B站收藏夹", "browser_bilibili")
+    result = await SyncService(db).import_items(connector, items, "bilibili_cdp")
+    track_event(db, "v3_task_created", {"input_type": "favorites", "source_count": result.new_count, "mode": "favorites"})
+    if wants_html(request):
+        return RedirectResponse(f"/ui/source-setup/bilibili?saved=extracted-{result.new_count}", status_code=303)
+    return result.as_dict()
+
+
+@router.post("/xiaohongshu/favorites/extract")
+async def extract_xiaohongshu_favorites(request: Request, db: Session = Depends(get_db)):
+    from app.connectors import xiaohongshu_collector as _xhs
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    data = await request_data(request)
+    limit = parse_collection_limit(data, 10)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
+    favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
+    try:
+        items = await _xhs.extract_favorites(url=favorites_url, limit=limit)
+    except _CDPErr as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    connector = ensure_connector(db, "xiaohongshu", "小红书收藏夹", "browser_xiaohongshu")
+    result = await SyncService(db).import_items(connector, items, "xiaohongshu_cdp")
+    track_event(db, "v3_task_created", {"input_type": "favorites", "source_count": result.new_count, "mode": "favorites"})
+    if wants_html(request):
+        return RedirectResponse(f"/ui/source-setup/xiaohongshu?saved=extracted-{result.new_count}", status_code=303)
+    return result.as_dict()
+
+
+# --- Onboarding ---
+
+
+@router.get("/api/onboarding/status")
+def onboarding_status_api(db: Session = Depends(get_db)):
+    from app.models import OnboardingStatus
+    status = db.query(OnboardingStatus).first()
+    if not status:
+        return {"current_step": 0, "completed": False, "skipped": False}
+    return {"current_step": status.current_step, "completed": status.completed_at is not None, "skipped": status.skipped}
+
+
+@router.post("/api/onboarding/advance")
+async def onboarding_advance(request: Request, db: Session = Depends(get_db)):
+    from app.models import OnboardingStatus
+    data = await request_data(request)
+    step = int(data.get("step") or 1)
+    status = db.query(OnboardingStatus).first()
+    if not status:
+        status = OnboardingStatus()
+        db.add(status)
+    status.current_step = step
+    if step >= 6:
+        status.completed_at = datetime.now()
+    db.commit()
+    return {"current_step": status.current_step, "completed": status.completed_at is not None}
+
+
+@router.post("/api/onboarding/skip")
+async def onboarding_skip(db: Session = Depends(get_db)):
+    from app.models import OnboardingStatus
+    status = db.query(OnboardingStatus).first()
+    if not status:
+        status = OnboardingStatus()
+        db.add(status)
+    status.skipped = True
+    db.commit()
+    return {"skipped": True}
+
+
+@router.post("/api/onboarding/reset")
+async def onboarding_reset(db: Session = Depends(get_db)):
+    from app.models import OnboardingStatus
+    status = db.query(OnboardingStatus).first()
+    if status:
+        status.current_step = 0
+        status.completed_at = None
+        status.skipped = False
+        db.commit()
+    return {"current_step": 0, "completed": False, "skipped": False}
+
+
+# --- Preferences ---
+
+
+@router.get("/api/preferences")
+def list_preferences(db: Session = Depends(get_db)):
+    from app.models import UserPreference
+    prefs = db.query(UserPreference).order_by(UserPreference.score.desc()).all()
+    return [{"domain": p.domain, "score": p.score} for p in prefs]
+
+
+@router.post("/api/preferences")
+async def save_preference(request: Request, db: Session = Depends(get_db)):
+    from app.models import UserPreference
+    data = await request_data(request)
+    domain = str(data.get("domain") or "").strip()
+    score = max(0, min(100, int(data.get("score") or 50)))
+    if not domain:
+        raise HTTPException(status_code=400, detail="domain is required")
+    pref = db.query(UserPreference).filter(UserPreference.domain == domain).first()
+    if pref:
+        pref.score = score
+    else:
+        db.add(UserPreference(domain=domain, score=score))
+    db.commit()
+    return {"domain": domain, "score": score}
+
+
+# --- Push ---
+
+
+@router.get("/api/push/settings")
+def push_settings_api(db: Session = Depends(get_db)):
+    from app.models import PushSettings
+    s = db.query(PushSettings).first()
+    if not s:
+        return {"start_time": "08:00", "end_time": "22:00", "frequency_hours": 4, "items_per_push": 3, "is_paused": False}
+    return {"start_time": s.start_time, "end_time": s.end_time, "frequency_hours": s.frequency_hours, "items_per_push": s.items_per_push, "is_paused": s.is_paused}
+
+
+@router.post("/api/push/settings")
+async def save_push_settings(request: Request, db: Session = Depends(get_db)):
+    from app.models import PushSettings
+    data = await request_data(request)
+    s = db.query(PushSettings).first()
+    if not s:
+        s = PushSettings()
+        db.add(s)
+    s.start_time = str(data.get("start_time") or "08:00")
+    s.end_time = str(data.get("end_time") or "22:00")
+    s.frequency_hours = int(data.get("frequency_hours") or 4)
+    s.items_per_push = int(data.get("items_per_push") or 3)
+    s.is_paused = truthy(data.get("is_paused"), False)
+    db.commit()
+    return {"status": "saved"}
+
+
+@router.get("/api/push/current")
+async def push_current(db: Session = Depends(get_db)):
+    from app.services.push_service import PushService
+    items = await PushService(db).generate_push()
+    return {"items": items}
+
+
+@router.post("/api/push/feedback")
+async def push_feedback(request: Request, db: Session = Depends(get_db)):
+    from app.services.push_service import PushService
+    data = await request_data(request)
+    push_id = int(data.get("push_id") or 0)
+    feedback = str(data.get("feedback") or "").strip()
+    if not push_id or feedback not in {"like", "unlike"}:
+        raise HTTPException(status_code=400, detail="push_id and feedback (like/unlike) required")
+    await PushService(db).handle_feedback(push_id, feedback)
+    return {"status": "recorded"}
+
+
+# --- Knowledge Graph ---
+
+
+@router.get("/api/graph")
+def graph_api(request: Request, db: Session = Depends(get_db)):
+    from app.services.graph_service import GraphService
+    domain_filter = request.query_params.get("domain")
+    return GraphService(db).get_graph_data(domain_filter=domain_filter)
+
+
+@router.get("/api/graph/node/{raw_source_id}")
+def graph_node_detail(raw_source_id: int, db: Session = Depends(get_db)):
+    from app.services.graph_service import GraphService
+    return GraphService(db).get_node_detail(raw_source_id)
+
+
+# --- Batch title classification ---
+
+
+@router.post("/api/sync/scan-titles")
+async def scan_titles(request: Request, db: Session = Depends(get_db)):
+    from app.connectors import bilibili_collector, xiaohongshu_collector, cdp_proxy as _cdp
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    requested_kind = str(data.get("collection_kind") or "").strip()
+    limit = parse_collection_limit(data, default=10)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
+
+    # 已入库去重集（仅用于「全部已入库」UX 提示，按 note_id 匹配成功入库的条目）
+    def _extract_note_id(url: str) -> str:
+        path = str(url or "").split('?')[0].rstrip('/')
+        return path.split('/')[-1]
+
+    existing_note_ids = set()
+    for ledger in db.query(SyncLedgerItem).filter(
+        SyncLedgerItem.platform == platform,
+        SyncLedgerItem.raw_source_id != None,  # noqa: E711
+    ).all():
+        existing_note_ids.add(_extract_note_id(ledger.raw_url))
+        existing_note_ids.add(_extract_note_id(ledger.canonical_url))
+    for rs in db.query(RawSource).filter(RawSource.platform == platform).all():
+        existing_note_ids.add(_extract_note_id(rs.canonical_url))
+        existing_note_ids.add(_extract_note_id(rs.source_url))
+    existing_note_ids.discard('')
+
+    # 单次采集：collector 内部已做滚动累积 + 跨快照去重（_scroll_and_collect），无需在此重复滚动循环。
+    try:
+        if platform == "bilibili":
+            favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
+            items = await bilibili_collector.extract_favorites(url=favorites_url, limit=limit)
+        elif platform == "xiaohongshu":
+            favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
+            items = await xiaohongshu_collector.extract_favorites(url=favorites_url, limit=limit)
+        elif platform == "douyin":
+            if homepage_url:
+                await douyin_browser_collector.open(homepage_url)
+            items = await douyin_browser_collector.extract_visible_video_links(limit=limit, require_collection_page=False)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    except _CDPErr as exc:
+        raise HTTPException(status_code=503, detail={"code": "cdp_proxy_error", "message": str(exc)}) from exc
+    except BrowserDependencyMissing as exc:
+        raise HTTPException(status_code=503, detail={"code": "browser_missing", "message": str(exc)}) from exc
+    except DouyinPageNotReady as exc:
+        raise HTTPException(status_code=428, detail={"code": "platform_page_not_ready", "message": str(exc)}) from exc
+
+    # 「全部已入库」只适用于新增扫描。历史扫描是在重建/扩展基线，即使前 N 条已入库也不能提示用户去新增收藏。
+    fresh_count = sum(
+        1 for i in items
+        if _extract_note_id(i.raw_url) not in existing_note_ids
+    )
+    total_scanned = len(items)
+    all_duplicates = requested_kind != "history" and total_scanned > 0 and fresh_count == 0
+
+    # 落库（DB 权威源）：采集即并入历史——无论历史还是新增 Tab，collection_kind 一律落 "history"，
+    # 不再产生 incremental 行。新增 Tab 只是「本次扫描批次」的临时视图，靠 scan_run_id 在前端过滤。
+    # determine_kind 仍用于区分首扫（全量历史）vs 后续扫描（增量去重），不决定落库 kind。
+    svc = ScanEntryService(db)
+    stored_kind = svc.determine_kind(platform)
+    # is_incremental 仅由本次请求的 Tab 决定：历史 Tab 可扩展重扫，新增 Tab 才遇已见即停；落库 kind 恒 history。
+    is_incremental = requested_kind == "incremental"
+    boundary_hit = False
+    if is_incremental:
+        items, boundary_hit = svc.filter_incremental_until_boundary(platform, items)
+    scan_run_id = f"scan_titles_{uuid4().hex[:8]}"
+    entries = svc.upsert_from_items(platform, items, "history", scan_run_id)
+    # 首扫（stored_kind==history）记录分界锚点；增量扫描不动锚点。
+    if stored_kind == "history" and requested_kind != "incremental":
+        svc.record_boundary(platform, items)
+
+    return {
+        "items": entries,
+        "total": len(entries),
+        "collection_kind": "history",
+        "scan_run_id": scan_run_id,
+        "boundary_hit": boundary_hit,
+        "total_scanned": total_scanned,
+        "all_duplicates": all_duplicates,
+        "message": "收藏夹内容均已入库，请先在平台新增收藏后再扫描" if all_duplicates else "",
+        "login_required": False,
+    }
+
+
+@router.get("/api/sync/scan-entries")
+async def list_scan_entries(request: Request, db: Session = Depends(get_db)):
+    """刷新/换设备恢复：返回该平台（可选 kind）已落库的 ScanEntry（DB 权威源）。"""
+    platform = str(request.query_params.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    kind = str(request.query_params.get("kind") or "").strip() or None
+    svc = ScanEntryService(db)
+    entries = svc.list_entries(platform, kind)
+    return {
+        "items": entries,
+        "total": len(entries),
+        "collection_kind": kind,
+        "history_saved": svc.is_history_saved(platform),
+    }
+
+
+@router.post("/api/sync/save-history")
+async def save_history_favorites(request: Request, db: Session = Depends(get_db)):
+    """历史「采集一次保存」：翻 history_saved=True，重入历史 Tab 走只读模式。
+
+    无需单独 bulk-save——扫描已把每条 collection_kind=history 落库、分类已经 apply_classification 落库，
+    保存只翻 flag + 前端重渲染只读（保存全部已分类条目，忽略勾选）。
+    """
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    if not any(item["platform"] == platform for item in PLATFORM_PRESETS):
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    svc = ScanEntryService(db)
+    svc.set_history_saved(platform, True)
+    history_count = len(svc.list_entries(platform, "history"))
+    return {"status": "saved", "history_saved": True, "history_count": history_count}
+
+
+@router.post("/api/sync/reset-history")
+async def reset_history_favorites(request: Request, db: Session = Depends(get_db)):
+    """「重新扫描历史」：清 history_saved + first_scan_done，使下次扫描重新走 history 全量。"""
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    if not any(item["platform"] == platform for item in PLATFORM_PRESETS):
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    ScanEntryService(db).reset_history(platform)
+    return {"status": "reset", "history_saved": False}
+
+
+async def _clear_history_list_response(request: Request, db: Session) -> dict[str, Any]:
+    data = await request_data(request)
+    platform = str(data.get("platform") or "").strip()
+    if not platform:
+        raise HTTPException(status_code=400, detail="platform required")
+    if not any(item["platform"] == platform for item in PLATFORM_PRESETS):
+        raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    result = ScanEntryService(db).clear_history_list(platform)
+    return {"status": "cleared", "history_saved": False, **result}
+
+
+@router.post("/api/sync/clear-history-list")
+async def clear_history_list(request: Request, db: Session = Depends(get_db)):
+    """清空当前历史收藏列表，保留已经入库的 RawSource/Wiki。"""
+    return await _clear_history_list_response(request, db)
+
+
+@router.post("/api/sync/clear-history")
+async def clear_history_list_compat(request: Request, db: Session = Depends(get_db)):
+    """兼容旧前端缓存里的清空历史收藏列表路径。"""
+    return await _clear_history_list_response(request, db)
+
+
+@router.post("/api/classify/batch-titles")
+async def classify_batch_titles(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    items = data.get("items") or []
+    if not items:
+        raise HTTPException(status_code=400, detail="items required")
+    result = await ClassifierService(db).batch_classify_titles(items)
+    # 回写分类结果到 ScanEntry（前端 items 透传 scan_entry_id，分类器原样保留在各 group.items 里）。
+    # 纯函数分类器不动，回写在路由层。
+    if isinstance(result, dict):
+        flat: list[dict] = []
+        for group in result.get("groups") or []:
+            flat.extend(group.get("items") or [])
+        if flat:
+            ScanEntryService(db).apply_classification(flat)
+    return result
+
+
+@router.post("/api/sync/prepare-selected")
+async def prepare_selected_items(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    platform = str(data.get("platform") or "unknown").strip()
+    selected_items = data.get("selected_items") or data.get("selected") or []
+    skipped_items = data.get("skipped_items") or data.get("skipped") or []
+    if not isinstance(selected_items, list) or not isinstance(skipped_items, list):
+        raise HTTPException(status_code=400, detail="selected_items and skipped_items must be arrays")
+
+    connector = ensure_connector(db, platform, f"{platform} 收藏夹", f"browser_{platform}")
+    connector_items = [
+        connector_item_from_filter_item(item, platform)
+        for item in selected_items
+        if str(item.get("url") or item.get("raw_url") or "").strip()
+    ]
+    reusable_candidate_ids = candidate_ids_for_items(db, connector_items)
+    reusable_candidates = db.query(CandidateItem).filter(CandidateItem.id.in_(reusable_candidate_ids)).all() if reusable_candidate_ids else []
+    reusable_urls = {candidate.raw_url for candidate in reusable_candidates} | {candidate.canonical_url for candidate in reusable_candidates}
+    new_connector_items = []
+    for item in connector_items:
+        normalized = normalize_url(item.raw_url, item.platform)
+        if item.raw_url in reusable_urls or normalized.canonical_url in reusable_urls:
+            continue
+        new_connector_items.append(item)
+    result = await SyncService(db).import_items(connector, new_connector_items, f"{platform}_selected")
+    merged_candidate_ids = list(dict.fromkeys([*reusable_candidate_ids, *result.candidate_ids]))
+    result.candidate_ids = merged_candidate_ids
+
+    for candidate_id in result.candidate_ids:
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate_id).first()
+        if ledger:
+            ledger.classification_label = "knowledge_selected"
+
+    # 把 candidate_id 回填到对应 ScanEntry（勾选提取的串联点）。
+    scan_svc = ScanEntryService(db)
+    for candidate_id in result.candidate_ids:
+        scan_svc.link_candidate(platform, candidate_id)
+
+    for item in skipped_items:
+        raw_url = str(item.get("url") or item.get("raw_url") or "").strip()
+        if not raw_url:
+            continue
+        normalized = normalize_url(raw_url, platform)
+        existing = db.query(SyncLedgerItem).filter(
+            SyncLedgerItem.platform == normalized.platform,
+            SyncLedgerItem.external_item_id == normalized.external_item_id,
+        ).first()
+        if existing:
+            existing.classification_label = existing.classification_label or "user_skipped"
+            continue
+        db.add(
+            SyncLedgerItem(
+                connector_id=connector.id,
+                platform=normalized.platform,
+                external_item_id=normalized.external_item_id,
+                canonical_url=normalized.canonical_url,
+                raw_url=raw_url,
+                scan_run_id=f"user_skipped_{uuid4().hex[:8]}",
+                classification_label="user_skipped",
+            )
+        )
+    db.commit()
+    return {
+        "status": "prepared",
+        "selected_count": len(connector_items),
+        "skipped_count": len(skipped_items),
+        **result.as_dict(),
+    }
+
+
+@router.post("/api/sync/confirm-categories")
+async def confirm_categories(request: Request, db: Session = Depends(get_db)):
+    data = await request_data(request)
+    selected_domains = data.get("selected_domains") or []
+    items = data.get("items") or []
+    platform = str(data.get("platform") or "unknown")
+
+    selected_items = [i for i in items if i.get("domain") in selected_domains]
+    skipped_items = [i for i in items if i.get("domain") not in selected_domains]
+
+    # Write selected items as candidates
+    connector = ensure_connector(db, platform, f"{platform} 收藏夹", f"browser_{platform}")
+    connector_items = [
+        connector_item_from_filter_item(i, platform)
+        for i in selected_items
+    ]
+    result = await SyncService(db).import_items(connector, connector_items, f"{platform}_category_confirmed")
+    for candidate_id in result.candidate_ids:
+        ledger = db.query(SyncLedgerItem).filter(SyncLedgerItem.candidate_id == candidate_id).first()
+        if ledger:
+            ledger.classification_label = "knowledge_selected"
+
+    # Write skipped items to ledger only
+    for item in skipped_items:
+        normalized = normalize_url(item["url"], platform)
+        existing = db.query(SyncLedgerItem).filter(
+            SyncLedgerItem.platform == normalized.platform,
+            SyncLedgerItem.external_item_id == normalized.external_item_id,
+        ).first()
+        if not existing:
+            db.add(SyncLedgerItem(
+                platform=normalized.platform,
+                external_item_id=normalized.external_item_id,
+                canonical_url=normalized.canonical_url,
+                raw_url=item["url"],
+                scan_run_id=f"user_skipped_{uuid4().hex[:8]}",
+                classification_label="user_skipped",
+            ))
+    db.commit()
+
+    return {"status": "confirmed", "selected_count": len(selected_items), "skipped_count": len(skipped_items), **result.as_dict()}
+
+
+# --- Doubao / Xiaohongshu Diandian Extract Selected Candidates ---
+
+
+XIAOHONGSHU_NOTE_ID_RE = re.compile(r"[a-f0-9]{12,}", re.IGNORECASE)
+
+
+def xiaohongshu_note_id_from_url(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    for part in reversed(parts):
+        if XIAOHONGSHU_NOTE_ID_RE.fullmatch(part):
+            return part
+    return ""
+
+
+def xiaohongshu_share_url_from_candidate(candidate: CandidateItem, metadata: dict[str, Any]) -> str:
+    share_url = str(metadata.get("xiaohongshu_share_url") or "").strip()
+    if share_url:
+        return share_url
+    source_url = str(candidate.raw_url or candidate.canonical_url or "")
+    note_id = str(metadata.get("xiaohongshu_note_id") or "").strip() or xiaohongshu_note_id_from_url(source_url)
+    if not note_id:
+        return source_url
+    parsed = urlparse(source_url)
+    source_query = parse_qs(parsed.query)
+    params = {"source": "webshare", "xhsshare": "pc_web"}
+    token = (source_query.get("xsec_token") or [""])[0]
+    if token:
+        params["xsec_token"] = token
+    params["xsec_source"] = "pc_share"
+    return f"https://www.xiaohongshu.com/discovery/item/{note_id}?{urlencode(params)}"
+
+
+def xiaohongshu_share_text_for_candidate(candidate: CandidateItem) -> tuple[str, str]:
+    metadata = safe_json(candidate.metadata_json)
+    share_url = xiaohongshu_share_url_from_candidate(candidate, metadata)
+    share_text = str(metadata.get("xiaohongshu_share_text") or "").strip()
+    if share_text:
+        return share_text, share_url or str(candidate.raw_url or candidate.canonical_url or "")
+    title = str(candidate.title or "未识别标题").strip() or "未识别标题"
+    if share_url:
+        return f"【{title} | 小红书 - 你的生活兴趣社区】 {share_url}", share_url
+    return title, str(candidate.raw_url or candidate.canonical_url or "")
+
+
+@router.post("/api/xiaohongshu/diandian/extract-selected")
+async def extract_selected_with_xiaohongshu_diandian(request: Request, db: Session = Depends(get_db)):
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+    from app.connectors.xiaohongshu_diandian_extractor import XiaohongshuDiandianExtractor
+
+    data = await request_data(request)
+    candidate_ids = data.get("candidate_ids") or []
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        raise HTTPException(status_code=400, detail="candidate_ids required")
+    per_item_timeout = int(data.get("per_item_timeout_seconds") or 240)
+    generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
+    switch_every, delay_min, delay_max = _pacing_params(data)
+
+    job_id = str(data.get("job_id") or "").strip() or uuid4().hex
+    pending = _filter_pending_candidates(db, candidate_ids, "xiaohongshu_diandian")
+    job = _init_extract_job(job_id, candidate_ids, "xiaohongshu_diandian", pending)
+
+    extractor = XiaohongshuDiandianExtractor()
+    not_ready_detail = {
+        "code": "xiaohongshu_diandian_not_ready",
+        "message": "小红书点点页面未就绪。请确认浏览器仍登录小红书，并打开 https://www.xiaohongshu.com/ai_chat 后重试。",
+        "action": "open_xiaohongshu_diandian_then_retry",
+        "login_url": "https://www.xiaohongshu.com/ai_chat",
+    }
+    # 预检留同步：失败抛 428/503，前端据状态码做就绪引导（绝不挪进后台协程）。
+    try:
+        ready = await extractor.check_ready()
+    except _CDPErr as exc:
+        await extractor.close(close_tab=True)
+        job["status"] = "error"
+        raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
+    if not ready:
+        await extractor.close(close_tab=False)
+        job["status"] = "error"
+        raise HTTPException(status_code=428, detail=not_ready_detail)
+
+    # 预检通过 → 进入共用提取协程（全程维护 job["per_item"]，支持并发轮询）。
+    return await _run_extraction_job(
+        job_id,
+        candidate_ids,
+        "xiaohongshu_diandian",
+        extractor,
+        db=db,
+        per_item_timeout=per_item_timeout,
+        switch_every=switch_every,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        generate_wiki_draft=generate_wiki_draft,
+    )
+
+
+@router.post("/api/doubao/extract-selected")
+async def extract_selected_with_doubao(request: Request, db: Session = Depends(get_db)):
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+    from app.connectors.doubao_extractor import DoubaoExtractor
+
+    data = await request_data(request)
+    candidate_ids = data.get("candidate_ids") or []
+    if not isinstance(candidate_ids, list) or not candidate_ids:
+        raise HTTPException(status_code=400, detail="candidate_ids required")
+    per_item_timeout = int(data.get("per_item_timeout_seconds") or 240)
+    generate_wiki_draft = truthy(data.get("generate_wiki_draft"), False)
+    switch_every, delay_min, delay_max = _pacing_params(data)
+
+    job_id = str(data.get("job_id") or "").strip() or uuid4().hex
+    pending = _filter_pending_candidates(db, candidate_ids, "doubao")
+    job = _init_extract_job(job_id, candidate_ids, "doubao", pending)
+
+    extractor = DoubaoExtractor()
+    login_required_detail = {
+        "code": "doubao_login_required",
+        "message": "需要先登录豆包。系统已打开豆包页面，请在浏览器完成登录；如果豆包没有主动弹窗，请在豆包页面发送任意一句话触发登录弹窗，登录完成后回到这里重试。豆包登录入口：https://www.doubao.com",
+        "action": "open_doubao_and_login_then_retry",
+        "login_url": "https://www.doubao.com",
+    }
+    try:
+        logged_in = await extractor.check_login()
+    except _CDPErr as exc:
+        await extractor.close(close_tab=True)
+        job["status"] = "error"
+        raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}") from exc
+    if not logged_in:
+        await extractor.close(close_tab=False)
+        job["status"] = "error"
+        raise HTTPException(status_code=428, detail=login_required_detail)
+
+    result = await _run_extraction_job(
+        job_id,
+        candidate_ids,
+        "doubao",
+        extractor,
+        db=db,
+        per_item_timeout=per_item_timeout,
+        switch_every=switch_every,
+        delay_min=delay_min,
+        delay_max=delay_max,
+        generate_wiki_draft=generate_wiki_draft,
+    )
+    if result.get("status") == "paused" and result.get("reason") == "login_required" and not result.get("success_count"):
+        raise HTTPException(status_code=428, detail=login_required_detail)
+    return result
+
+
+# --- Collect + Doubao Extract + Write to Knowledge Base (一键全流程) ---
+
+
+@router.post("/api/collect-and-extract/{platform}")
+async def collect_and_extract(platform: str, request: Request, db: Session = Depends(get_db)):
+    """Full pipeline: CDP collect favorites → Doubao extract content → write RawSource."""
+    from app.connectors import bilibili_collector, xiaohongshu_collector
+    from app.connectors.cdp_proxy import CDPConnectionError as _CDPErr
+    from app.connectors.doubao_extractor import DoubaoExtractor
+
+    data = await request_data(request)
+    raw_limit = str(data.get("limit") or "10").strip()
+    limit = None if raw_limit == "all" else int(raw_limit)
+    homepage_url = str(data.get("homepage_url") or data.get("url") or "").strip()
+    next_url = str(data.get("next") or f"/ui/source-setup/{platform}")
+
+    # Step 1: Collect favorites via CDP
+    effective_limit = limit or 1000
+    try:
+        if platform == "douyin":
+            # Try CDP proxy first, fall back to Playwright collector
+            try:
+                from app.connectors.cdp_proxy import cdp_proxy as _proxy
+                await _proxy.connect()
+                tab = await _proxy.new_tab("https://www.douyin.com/user/self?showTab=favorite_collection")
+                await _proxy.wait_for_load(tab)
+                for _ in range(min(effective_limit // 3, 20)):
+                    await _proxy.scroll(tab)
+                import json as _json
+                from pathlib import Path as _Path
+                eval_path = _Path(__file__).resolve().parents[1] / "extension" / "douyin_eval.js"
+                script = eval_path.read_text(encoding="utf-8") if eval_path.exists() else "(() => JSON.stringify([]))()"
+                raw = await _proxy.eval_script(tab, script)
+                raw_items = _json.loads(raw) if isinstance(raw, str) else (raw or [])
+                await _proxy.close_tab(tab)
+                items = [
+                    ConnectorItem(raw_url=i.get("url", ""), title=i.get("title", ""), platform="douyin", content_type=i.get("kind", "video"), metadata={"source": "douyin_cdp_proxy"})
+                    for i in raw_items[:effective_limit] if i.get("url")
+                ]
+            except _CDPErr:
+                items = await douyin_browser_collector.extract_visible_video_links(limit=effective_limit, require_collection_page=False)
+        elif platform == "bilibili":
+            favorites_url = resolve_platform_favorites_url("bilibili", homepage_url)
+            items = await bilibili_collector.extract_favorites(url=favorites_url, limit=effective_limit)
+        elif platform == "xiaohongshu":
+            favorites_url = resolve_platform_favorites_url("xiaohongshu", homepage_url)
+            items = await xiaohongshu_collector.extract_favorites(url=favorites_url, limit=effective_limit)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported platform: {platform}")
+    except _CDPErr as exc:
+        if wants_html(request):
+            return RedirectResponse(f"{next_url}?saved=collect-failed", status_code=303)
+        raise HTTPException(status_code=503, detail=f"CDP Proxy 未连接: {exc}")
+    except (BrowserDependencyMissing, DouyinPageNotReady) as exc:
+        if wants_html(request):
+            return RedirectResponse(f"{next_url}?saved=page-not-ready", status_code=303)
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    if not items:
+        if wants_html(request):
+            return RedirectResponse(f"{next_url}?saved=page-not-ready", status_code=303)
+        raise HTTPException(status_code=422, detail="未提取到任何收藏内容")
+
+    # Step 2: Doubao extract content for each item
+    extractor = DoubaoExtractor()
+    enriched_items = []
+    extract_count = 0
+    try:
+        for item in items:
+            try:
+                result = await extractor.extract_content(item.raw_url)
+            except _CDPErr:
+                # Doubao CDP failed — keep item without transcript
+                enriched_items.append(ConnectorItem(
+                    raw_url=item.raw_url,
+                    title=item.title,
+                    platform=item.platform,
+                    author=item.author,
+                    content_type=item.content_type,
+                    metadata={**(item.metadata or {}), "doubao_extracted": False, "extract_error": "cdp_connection_failed"},
+                ))
+                continue
+            if result.success and result.transcript:
+                enriched_items.append(ConnectorItem(
+                    raw_url=item.raw_url,
+                    title=result.title or item.title,
+                    platform=item.platform,
+                    author=item.author,
+                    content_type=item.content_type,
+                    metadata={
+                        **(item.metadata or {}),
+                        "transcript": result.transcript,
+                        "text_content": result.text_content,
+                        "doubao_extracted": True,
+                    },
+                ))
+                extract_count += 1
+            else:
+                # Keep item even if doubao fails (with metadata_only quality)
+                enriched_items.append(ConnectorItem(
+                    raw_url=item.raw_url,
+                    title=item.title,
+                    platform=item.platform,
+                    author=item.author,
+                    content_type=item.content_type,
+                    metadata={**(item.metadata or {}), "doubao_extracted": False, "extract_error": result.error or "empty"},
+                ))
+    finally:
+        await extractor.close()
+
+    # Step 3: Import to SyncService + ingest as RawSource
+    connector = ensure_connector(db, platform, f"{platform} 收藏夹", f"browser_{platform}")
+    scan_result = await SyncService(db).import_items(connector, enriched_items, f"{platform}_collect_extract")
+    candidate_ids = scan_result.candidate_ids or candidate_ids_for_items(db, enriched_items)
+
+    raw_service = RawSourceService(db)
+    ingested_count = 0
+    for cid in candidate_ids:
+        try:
+            raw_service.ingest_candidate(cid)
+            ingested_count += 1
+        except Exception:
+            continue
+
+    track_event(db, "collect_and_extract_completed", {
+        "platform": platform,
+        "collected": len(items),
+        "doubao_extracted": extract_count,
+        "ingested": ingested_count,
+    })
+
+    if wants_html(request):
+        return RedirectResponse(f"{next_url}?saved=collected-{len(items)}-{ingested_count}", status_code=303)
+    return {
+        "status": "completed",
+        "platform": platform,
+        "collected": len(items),
+        "doubao_extracted": extract_count,
+        "ingested": ingested_count,
+        "candidate_ids": candidate_ids,
+    }
+
+
+# --- Wiki batch delete ---
 
 
 @router.post("/api/wiki/batch-delete")
