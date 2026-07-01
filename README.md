@@ -37,9 +37,10 @@ This MVP implements the local Agent foundation:
 
 - 如果项目里还没有 `.venv`，自动创建 Python 虚拟环境。
 - 安装或更新 `requirements.txt` 里的运行依赖。
+- 自动安装 `web-access` skill，并把 Claude/Codex 两条 skill 路径映射到同一份安装。
 - 启动本地服务：`http://127.0.0.1:8000`。
 
-第一次启动需要联网下载依赖，后续再次运行同一个命令即可。项目要求 Python 3.9+；如果系统默认 `python3` 不可用，可以这样指定：
+第一次启动需要联网下载依赖和安装 `web-access`。项目要求 Python 3.9+；自动安装 `web-access` 需要 Node.js 22+ 和 `npx`。后续再次运行同一个命令即可。如果系统默认 `python3` 不可用，可以这样指定：
 
 ```bash
 PYTHON=/path/to/python ./start.sh
